@@ -1,0 +1,36 @@
+{
+  "name": "careerlinkai-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src test",
+    "format": "prettier --write \"{src,test}/**/*.ts\"",
+    "format:check": "prettier --check \"{src,test}/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "wrangler d1 migrations apply CareerLinkAI_Main --local",
+    "db:migrate:remote": "wrangler d1 migrations apply CareerLinkAI_Main --remote",
+    "db:seed": "wrangler d1 execute CareerLinkAI_Main --local --file=./seeds/0001_staff_accounts.sql",
+    "db:seed:remote": "wrangler d1 execute CareerLinkAI_Main --remote --file=./seeds/0001_staff_accounts.sql"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.30",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/workers-types": "^5.20260713.1",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.7.0",
+    "prettier": "^3.9.5",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.110.0"
+  }
+}

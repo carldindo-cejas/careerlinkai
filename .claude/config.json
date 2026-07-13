@@ -1,0 +1,124 @@
+{
+    "project": {
+        "name": "CareerLinkAI",
+        "description": "AI-assisted career & college guidance platform for senior high school students",
+        "stack": ["TypeScript on Cloudflare Workers (Hono + Zod + Drizzle/D1)", "React 19 + TypeScript", "Cloudflare (D1, R2, Vectorize, Workers AI, Queues, KV)"],
+        "planVersion": "1.4",
+        "sourceOfTruth": "FULLPLAN.md",
+        "deployment": "Existing careerlinkai.online Worker (API) + careerlinkai.online Pages project (frontend)",
+        "note": "This file never restates the architecture. Every specific (schema, endpoints, formulas) is looked up in FULLPLAN.md. Values here are working conventions only."
+    },
+    "conventions": {
+        "backend": {
+            "language": "TypeScript",
+            "runtime": "Cloudflare Workers (one Worker: HTTP API + queue consumers)",
+            "framework": "Hono",
+            "validation": "Zod - one schema per write endpoint",
+            "dataAccess": "Drizzle ORM over the D1 binding",
+            "testing": "Vitest via @cloudflare/vitest-pool-workers (runs in workerd with real local bindings)",
+            "pathPattern": "backend/src/",
+            "routesPath": "backend/src/modules/{module}/routes.ts",
+            "apiBasePath": "/api/v1/",
+            "patterns": {
+                "handlers": "Thin: Zod schema -> one Service method -> serialized envelope",
+                "businessLogic": "Services only",
+                "persistence": "Drizzle queries inside Services are the repository - no Repository layer",
+                "models": "No model classes - src/db/schema.ts defines every table once; row types via $inferSelect",
+                "forbidden": ["Repository classes", "Action classes", "DTOs for internal calls"],
+                "events": "Exactly 4, in-process dispatcher - see FULLPLAN section 11",
+                "jobs": "Cloudflare Queues messages consumed by the same Worker's queue() handler - heavy work never runs in a request handler"
+            }
+        },
+        "frontend": {
+            "language": "TypeScript",
+            "framework": "React 19",
+            "build": "Vite",
+            "styling": "Tailwind CSS + shadcn/ui",
+            "serverState": "TanStack Query",
+            "clientState": "Zustand",
+            "forms": "React Hook Form + Zod",
+            "testing": "Vitest + React Testing Library (E2E: Playwright)",
+            "pathPattern": "frontend/src/",
+            "organization": "Feature-based: src/features/{module}/ owns its api, components, pages, hooks, types",
+            "strict": true,
+            "apiAccess": "Component -> hook -> services/{module}Api.ts. Never call the API from a component."
+        },
+        "database": {
+            "type": "Cloudflare D1 (SQLite dialect), native binding",
+            "primaryKeys": "UUID v4, column name 'id'. No auto-increment integers, ever.",
+            "foreignKeys": "<singular_entity>_id, always indexed",
+            "naming": "snake_case, plural tables",
+            "enums": "No native ENUM in D1/SQLite. Use TEXT + CHECK constraint in the migration SQL, string-literal union on the Drizzle column.",
+            "softDeletes": "Business entities only (users, classes, colleges, programs, careers, assessment_templates). NEVER on the attempt -> answer -> result chain.",
+            "tableCount": 28,
+            "infrastructureTables": ["api_tokens", "password_reset_tokens"],
+            "migrations_path": "backend/migrations/ (plain SQL, wrangler d1 migrations apply)",
+            "migrationRule": "Append-only. Never edit a shipped migration."
+        }
+    },
+    "workflow": {
+        "phasePlan": "FULLPLAN Part XVI section 57 - Phases 0 through 6 plus Phase 3.5 Platform Port (vertical slices, each ending in a demo)",
+        "currentFocus": "Phase 3.5 - port the Phase 0-3 scope from the retired Laravel implementation to the Worker stack; blocks Phase 4",
+        "withinPhase": "Layered: migrations -> schema types -> auth -> policies -> services -> routes/API -> frontend",
+        "rules": [
+            "Only work on the explicitly requested phase. Never skip ahead. Never auto-continue.",
+            "Before coding, state: goal, files affected, dependencies, risks, step-by-step plan.",
+            "Never invent tables, rename fields, change API contracts, or alter folder structure.",
+            "The port must not change the HTTP contract - the unchanged React frontend is the check.",
+            "If FULLPLAN is unclear or silent, ask. Do not invent."
+        ]
+    },
+    "constraints": {
+        "assessments": {
+            "aiGeneration": "CUSTOM category only",
+            "humanRequired": ["RIASEC", "SCCT"],
+            "enforcement": "generateWithAi policy function - first check, API layer, not the UI",
+            "confirmationGate": "A version cannot reach status=PUBLISHED while any question_dimensions row has confirmed_at IS NULL",
+            "immutability": "PUBLISHED versions are write-rejected in the Service layer. Assignments and attempts reference assessment_version_id, never a template."
+        },
+        "authentication": {
+            "mechanism": "First-party bearer tokens for BOTH flows (api_tokens table: SHA-256-hashed opaque tokens with expiry; not sessions)",
+            "staff": "POST /auth/login - email + password, PBKDF2-SHA256 (WebCrypto), min 10 chars, 5 fails -> 15-min lock",
+            "students": "POST /student-access/join - class code + per-class username. users.password IS NULL for every student, permanently.",
+            "studentErrorPolicy": "Wrong class code and wrong username must return an IDENTICAL generic error (prevents roster enumeration)"
+        },
+        "authorization": {
+            "mechanism": "Plain policy functions in src/policies/ only - no database permission tables",
+            "enforcement": "authorize(...) on every handler touching a specific record",
+            "studentDataScoping": "Students see only their own data",
+            "counselorDataScoping": "Counselors see only their own classes",
+            "adminAccess": "Full system access"
+        },
+        "recommendations": {
+            "determinism": "The recommendation engine is fully deterministic. AI writes only the explanation of an already-computed result - never the score or the ranking."
+        }
+    },
+    "rateLimits": {
+        "general": "100/min",
+        "ai": "10/min on /ai/* and the AI-generation endpoint group",
+        "staffLogin": "5/min per email",
+        "studentAccess": "10 FAILED per 15min per (class code, IP) - failures only, there is no user yet"
+    },
+    "toolRestrictions": {
+        "never_hardcode": ["Credentials (Cloudflare services are bindings; deploy tokens live in CI secrets; runtime secrets via wrangler secret)", "AI policies (they live in the ai_policies table)", "API secrets"],
+        "always_validate": "User input server-side via the endpoint's Zod schema, before it reaches a Service",
+        "always_check": "Authorization before database access",
+        "always_scope": "Student/class data, to prevent cross-class leakage",
+        "always_inject": "Active ai_policies into every AI prompt"
+    },
+    "keyReferences": {
+        "masterPlan": "FULLPLAN.md",
+        "schema": "FULLPLAN.md Part III section 13 (index: section 62)",
+        "backendStructure": "FULLPLAN.md Part IV sections 16-17",
+        "apiCatalog": "FULLPLAN.md Part V section 20",
+        "scoringAlgorithms": "FULLPLAN.md Part VI sections 22-23",
+        "confirmationGate": "FULLPLAN.md Part VI section 25",
+        "recommendationAlgorithm": "FULLPLAN.md Part VII sections 27-28",
+        "aiPipelines": "FULLPLAN.md Part VIII sections 30-34",
+        "frontendStructure": "FULLPLAN.md Part IX sections 35-36",
+        "security": "FULLPLAN.md Part X sections 38-41",
+        "deployment": "FULLPLAN.md Part XII sections 45-48",
+        "phasePlan": "FULLPLAN.md Part XVI section 57",
+        "terminology": "FULLPLAN.md Part XV section 55"
+    }
+}

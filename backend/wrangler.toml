@@ -1,0 +1,137 @@
+name = "careerlinkai"
+main = "src/index.ts"
+compatibility_date = "2026-07-13"
+compatibility_flags = ["nodejs_compat"]
+
+# Custom domains (careerlinkai.online, www.careerlinkai.online) are already
+# attached to this Worker script name via Cloudflare Workers Custom Domains
+# (dashboard-managed, not declared here).
+
+# --- Vars (FULLPLAN §48 — committed, non-secret) -------------------------------------
+# v1 has no secrets in steady state: every Cloudflare service is reached through a
+# binding, not a credential.
+[vars]
+APP_ENV = "local"
+FRONTEND_URL = "http://localhost:5173"
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+STUDENT_JOIN_CODE_TTL_DAYS = "90"
+STUDENT_TOKEN_TTL_HOURS = "12"
+ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+
+# --- Bindings (FULLPLAN §48) ---------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "CareerLinkAI_Main"
+database_id = "a3d20b3b-d9dd-435c-b6a7-2eb85e746942"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "careerlinkai-docs"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "careerlinkai_main_knowledge"
+
+[ai]
+binding = "AI"
+
+# Rate-limit counters and staff lockouts (§38, §41). Miniflare emulates KV locally, so
+# `wrangler dev` and the Vitest pool need no real namespace. Replace the placeholder id
+# with a real one (`wrangler kv namespace create CACHE`) before the first remote deploy.
+[[kv_namespaces]]
+binding = "KV"
+id = "0000000000000000000000000000ffff"
+
+# Two logical queues (§42): `default` for notifications/light work, `ai` for anything that
+# calls Workers AI or does heavy text processing, so an AI burst never starves a
+# notification. Neither queue exists in the account yet — create them before deploying:
+#   wrangler queues create careerlinkai-default-queue
+#   wrangler queues create careerlinkai-ai-queue
+[[queues.producers]]
+binding = "QUEUE_DEFAULT"
+queue = "careerlinkai-default-queue"
+
+[[queues.producers]]
+binding = "QUEUE_AI"
+queue = "careerlinkai-ai-queue"
+
+[[queues.consumers]]
+queue = "careerlinkai-default-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+
+[[queues.consumers]]
+queue = "careerlinkai-ai-queue"
+max_batch_size = 5
+max_batch_timeout = 30
+max_retries = 3
+
+# --- Environments (FULLPLAN §45) -----------------------------------------------------
+# Staging and production are two Wrangler environments of the same Worker. Wrangler
+# environments do not inherit top-level bindings, so each block is self-contained.
+#
+# Staging's own Cloudflare resources (D1 database, R2 bucket, Vectorize index, KV
+# namespace, queues) are provisioned in Phase 3.5 Step 5 — the staging deploy — which is
+# why only its vars are declared here. Do not `deploy --env staging` before that step.
+
+[env.staging.vars]
+APP_ENV = "staging"
+FRONTEND_URL = "https://staging.careerlinkai.online"
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+STUDENT_JOIN_CODE_TTL_DAYS = "90"
+STUDENT_TOKEN_TTL_HOURS = "12"
+ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+
+[env.production.vars]
+APP_ENV = "production"
+FRONTEND_URL = "https://careerlinkai.online"
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+STUDENT_JOIN_CODE_TTL_DAYS = "90"
+STUDENT_TOKEN_TTL_HOURS = "12"
+ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "CareerLinkAI_Main"
+database_id = "a3d20b3b-d9dd-435c-b6a7-2eb85e746942"
+migrations_dir = "migrations"
+
+[[env.production.r2_buckets]]
+binding = "STORAGE"
+bucket_name = "careerlinkai-docs"
+
+[[env.production.vectorize]]
+binding = "VECTORIZE"
+index_name = "careerlinkai_main_knowledge"
+
+[env.production.ai]
+binding = "AI"
+
+[[env.production.kv_namespaces]]
+binding = "KV"
+id = "0000000000000000000000000000ffff"
+
+[[env.production.queues.producers]]
+binding = "QUEUE_DEFAULT"
+queue = "careerlinkai-default-queue"
+
+[[env.production.queues.producers]]
+binding = "QUEUE_AI"
+queue = "careerlinkai-ai-queue"
+
+[[env.production.queues.consumers]]
+queue = "careerlinkai-default-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+
+[[env.production.queues.consumers]]
+queue = "careerlinkai-ai-queue"
+max_batch_size = 5
+max_batch_timeout = 30
+max_retries = 3
