@@ -57,7 +57,24 @@ export const resetPasswordSchema = z
     path: ['password_confirmation'],
   });
 
+/**
+ * Passwordless student access (§38).
+ *
+ * Note what is *not* here: any format rule on either field. A `regex` on `class_code` would
+ * answer — in a 422, and before the attempt is even charged against the rate limit — exactly
+ * the question this endpoint is built not to answer. Both fields are matched trimmed and
+ * case-insensitively in the Service; a malformed code is simply a code that matches nothing,
+ * and gets the same 401 as a wrong one.
+ *
+ * There is no `password` field, and there never will be. One appearing here is a bug.
+ */
+export const joinClassSchema = z.object({
+  class_code: z.string().trim().min(1, 'A class code is required.').max(20),
+  username: z.string().trim().min(1, 'A username is required.').max(50),
+});
+
 export type LoginInput = z.infer<typeof loginSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+export type JoinClassInput = z.infer<typeof joinClassSchema>;

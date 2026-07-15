@@ -3,6 +3,20 @@ main = "src/index.ts"
 compatibility_date = "2026-07-13"
 compatibility_flags = ["nodejs_compat"]
 
+# --- CPU budget (§38, §45 v1.5) --------------------------------------------------------
+# There is NO [limits] block in this file, permanently, and the platform gate
+# (scripts/platform-gates.mjs) fails the build if one appears: the Free plan is a ratified
+# product requirement (FULLPLAN v1.5) and a free deploy *rejects* the block outright —
+# "CPU limits are not supported for the Free plan. [code: 100328]".
+#
+# §38's password hashing does not fit in a free Worker's 10 ms CPU budget — that is the
+# story of deviation D14, found on the Step 5 staging deploy when 600,000 PBKDF2 iterations
+# killed /auth/change-password with error 1102 (reported by the browser as a CORS failure,
+# because a Worker killed mid-request emits no headers at all). The fix is not a paid plan:
+# a **Durable Object gets the standard 30-second CPU budget per invocation on every plan,
+# including Free**, so the derivation lives in AuthGuardDO (Phase 4.5) at the full 600,000
+# iterations, and the Worker only ever forwards hash/verify calls to the stub.
+
 # Custom domains (careerlinkai.online, www.careerlinkai.online) are already
 # attached to this Worker script name via Cloudflare Workers Custom Domains
 # (dashboard-managed, not declared here).
@@ -13,7 +27,13 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 APP_ENV = "local"
 FRONTEND_URL = "http://localhost:5173"
-WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+# -fp8, not the base model: `@cf/meta/llama-3.1-8b-instruct` was deprecated by Cloudflare on
+# 2026-05-30 and every call to it fails with error 5028 — found live on the Phase 5a staging
+# exit demo (a model retirement happens server-side, with no deploy on our end; the gateway
+# logged FAILED ai_requests rows and every student saw the deterministic §27 reason, exactly
+# the §29 posture). If explanations ever degrade to MODEL_ERROR again, check the model's
+# lifecycle page before suspecting the code.
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
@@ -37,18 +57,27 @@ index_name = "careerlinkai_main_knowledge"
 [ai]
 binding = "AI"
 
-# Rate-limit counters and staff lockouts (§38, §41). Miniflare emulates KV locally, so
-# `wrangler dev` and the Vitest pool need no real namespace. Replace the placeholder id
-# with a real one (`wrangler kv namespace create CACHE`) before the first remote deploy.
+# v1.5: **caching only.** The rate-limit counters and staff lockouts that used to live here
+# moved into AuthGuardDO (Phase 4.5, deviation D19) — KV is eventually consistent, allows
+# 1 write/s/key, and the Free plan caps it at 1,000 writes/day account-wide, which
+# disqualifies it as a security counter (§38, §45). Nothing security-relevant reads or
+# writes this namespace any more; it stays bound for future caching.
 [[kv_namespaces]]
 binding = "KV"
-id = "0000000000000000000000000000ffff"
+id = "2c31fc74fb2b40c59e7c0dda8884a848"
+
+# AuthGuardDO (§38 v1.5, Phase 4.5): password derivation at the full 600,000 iterations —
+# the DO gets a 30 s CPU budget per invocation on every plan, vs the free Worker's 10 ms —
+# plus the strongly-consistent, failures-only lockout and join-throttle counters. One
+# instance per staff email; one per (class_code, IP) pair. SQLite-backed (the only kind the
+# Free plan allows), declared in [[migrations]] at the bottom of this file.
+[[durable_objects.bindings]]
+name = "AUTH_DO"
+class_name = "AuthGuardDO"
 
 # Two logical queues (§42): `default` for notifications/light work, `ai` for anything that
 # calls Workers AI or does heavy text processing, so an AI burst never starves a
-# notification. Neither queue exists in the account yet — create them before deploying:
-#   wrangler queues create careerlinkai-default-queue
-#   wrangler queues create careerlinkai-ai-queue
+# notification. Both exist in the account as of Step 5.
 [[queues.producers]]
 binding = "QUEUE_DEFAULT"
 queue = "careerlinkai-default-queue"
@@ -71,25 +100,81 @@ max_retries = 3
 
 # --- Environments (FULLPLAN §45) -----------------------------------------------------
 # Staging and production are two Wrangler environments of the same Worker. Wrangler
-# environments do not inherit top-level bindings, so each block is self-contained.
+# environments do not inherit top-level bindings, so each block is self-contained — a
+# binding omitted below is simply absent at runtime, and `env.DB` would be `undefined`
+# rather than a deploy-time error.
 #
-# Staging's own Cloudflare resources (D1 database, R2 bucket, Vectorize index, KV
-# namespace, queues) are provisioned in Phase 3.5 Step 5 — the staging deploy — which is
-# why only its vars are declared here. Do not `deploy --env staging` before that step.
+# Staging's resources were provisioned in Phase 3.5 Step 5 and are its *own*: a separate D1
+# database, KV namespace, R2 bucket, Vectorize index and queue pair. Staging must never be
+# able to write to production's data — that is the whole point of having it.
+#
+# `wrangler deploy --env staging` publishes the script as `careerlinkai-staging`, which is a
+# different Worker from `careerlinkai` (production, and the script the careerlinkai.online
+# custom domains are attached to). Deploying staging cannot touch the live site.
 
 [env.staging.vars]
 APP_ENV = "staging"
-FRONTEND_URL = "https://staging.careerlinkai.online"
-WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+# The deployed staging frontend, and the *only* origin CORS admits (§41 — app.ts reads this
+# var; there is no wildcard). A frontend served from anywhere else, including a local Vite on
+# :5173, is refused by the browser. Point this at whatever origin actually serves the app.
+FRONTEND_URL = "https://careerlinkai-staging.pages.dev"
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
 ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
 
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "CareerLinkAI_Staging"
+database_id = "54401a5c-bd05-4d38-973d-26e4b2b38f9f"
+migrations_dir = "migrations"
+
+[[env.staging.r2_buckets]]
+binding = "STORAGE"
+bucket_name = "careerlinkai-docs-staging"
+
+[[env.staging.vectorize]]
+binding = "VECTORIZE"
+index_name = "careerlinkai_staging_knowledge"
+
+[env.staging.ai]
+binding = "AI"
+
+[[env.staging.kv_namespaces]]
+binding = "KV"
+id = "c1b7d6bbe3dc43b68cd3dd28368b5a60"
+
+# Environments inherit no bindings (a missing one is a runtime `undefined`, not a deploy
+# error), so AUTH_DO is declared per environment — the platform gate asserts it.
+[[env.staging.durable_objects.bindings]]
+name = "AUTH_DO"
+class_name = "AuthGuardDO"
+
+[[env.staging.queues.producers]]
+binding = "QUEUE_DEFAULT"
+queue = "careerlinkai-staging-default-queue"
+
+[[env.staging.queues.producers]]
+binding = "QUEUE_AI"
+queue = "careerlinkai-staging-ai-queue"
+
+[[env.staging.queues.consumers]]
+queue = "careerlinkai-staging-default-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+
+[[env.staging.queues.consumers]]
+queue = "careerlinkai-staging-ai-queue"
+max_batch_size = 5
+max_batch_timeout = 30
+max_retries = 3
+
 [env.production.vars]
 APP_ENV = "production"
 FRONTEND_URL = "https://careerlinkai.online"
-WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
@@ -114,7 +199,11 @@ binding = "AI"
 
 [[env.production.kv_namespaces]]
 binding = "KV"
-id = "0000000000000000000000000000ffff"
+id = "2c31fc74fb2b40c59e7c0dda8884a848"
+
+[[env.production.durable_objects.bindings]]
+name = "AUTH_DO"
+class_name = "AuthGuardDO"
 
 [[env.production.queues.producers]]
 binding = "QUEUE_DEFAULT"
@@ -135,3 +224,12 @@ queue = "careerlinkai-ai-queue"
 max_batch_size = 5
 max_batch_timeout = 30
 max_retries = 3
+
+# --- Durable Object migrations --------------------------------------------------------
+# Top-level and shared by every environment (unlike bindings, migrations ARE inherited —
+# they describe the *class*, not a per-environment resource). `new_sqlite_classes`, not
+# `new_classes`: SQLite-backed instances are the only kind the Free plan allows, and the
+# recommended kind anyway.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AuthGuardDO"]

@@ -46,7 +46,7 @@ export function authenticate() {
 
     const user = await db.query.users.findFirst({ where: eq(users.id, token.userId) });
 
-    if (!user || user.deletedAt !== null || user.status !== 'active') {
+    if (user?.status !== 'active' || user.deletedAt !== null) {
       throw ApiError.unauthenticated();
     }
 

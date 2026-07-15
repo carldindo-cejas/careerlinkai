@@ -4,7 +4,7 @@
     "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["@cloudflare/workers-types/2023-07-01", "@cloudflare/vitest-pool-workers"],
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"],
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -22,5 +22,8 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "*.config.ts"]
+  // vitest.config.ts and eslint.config.js are deliberately out of scope: they run in Node,
+  // not in workerd, and pulling @types/node in here to check them would put Node globals in
+  // scope for the Worker source too — where they do not exist.
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }

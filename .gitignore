@@ -18,3 +18,7 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 *.log
+
+.dev.vars*
+!.dev.vars.example
+!.env.example

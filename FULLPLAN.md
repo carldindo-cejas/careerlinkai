@@ -61,6 +61,22 @@ One correction, found during the 13 July 2026 pre-port codebase verification (re
 
 ---
 
+## Revision Notes (v1.4 → v1.5)
+
+**One decision, applied everywhere: the project deploys on the Cloudflare Workers _Free_ plan, permanently, as a product requirement — not as a billing accident awaiting a credit card.** The Phase 3.5/4 staging deploys proved that the Free plan is a different *platform*, not a smaller quota on the same one (PROGRESS.md D14, D17, D18). This revision redesigns the three places where the v1.4 architecture silently assumed Paid-plan capabilities, and documents every Free-plan ceiling in one place (§45). No schema, endpoint, formula, or frontend change — the API contract is untouched.
+
+Every limit cited in this revision was verified against Cloudflare's published documentation on **2026-07-14**; re-verify against the §45 envelope table's sources before relying on a number.
+
+1. **§38 password hashing moves into a Durable Object, and the 600,000-iteration work factor is restored.** A free Worker gets **10 ms of CPU per invocation** and its limit cannot be raised — which is why the deployed system currently runs at 100,000 iterations (PROGRESS.md D14, a real weakening below OWASP guidance). A **Durable Object gets the standard 30-second CPU budget per invocation on every plan, including Free**. A new `AuthGuardDO` (SQLite-backed — the only kind the Free plan allows) performs all PBKDF2 derivation, as a chain of ≤100,000-iteration `deriveBits` calls (the runtime's per-call cap, all plans — ratifies PROGRESS.md D15). This closes D14 **at zero cost and zero security compromise**: OWASP's PBKDF2-SHA256 recommendation is met again.
+2. **The staff lockout and the join throttle move from KV to the same Durable Object.** KV was always the wrong consistency model for a security counter — it is eventually consistent (~60 s to propagate between edge locations, so five rapid failures spread across two locations may never sum to five), allows only **1 write/second per key**, and on the Free plan allows only **1,000 writes per day account-wide**, a quota an attacker can exhaust to disable the counter entirely. `AuthGuardDO` instances (one per staff email; one per `(class_code, IP)` pair) count failures atomically and serialize brute-force attempts per account as a side effect. All §38 semantics (failures-only charging, thresholds, windows) are unchanged. KV remains bound for future caching only — nothing security-relevant reads or writes it any more.
+3. **§42 corrected: on the Free plan, queue consumers do NOT get a larger CPU budget.** v1.4 claimed consumers get "a substantially larger CPU budget than request handlers" — true on Paid (30 s default), **false on Free**, where consumers share the same 10 ms per invocation. Queues remain the transport/retry layer; anything CPU-heavy inside a job runs in a Durable Object call. Free-tier queue facts now stated in §42: 10,000 operations/day (≈3,300 messages), **24-hour retention** — a message not consumed within a day is gone, so every job must be idempotent *and manually re-triggerable* (§43 already requires idempotency).
+4. **§33 knowledge ingestion: text extraction moves to the admin's browser.** PDF/DOCX parsing is the most CPU-hungry stage in the system and no longer has a server-side home: request handlers and queue consumers both get 10 ms, and pure-JS parsers (unpdf, mammoth) would also eat most of the Free plan's **3 MB gzipped Worker bundle cap**. The admin upload screen (a Phase 5a screen that does not exist yet — no frontend invariant is violated) extracts text locally with pdf.js/mammoth and submits `{ file, extracted_text }`; the Worker validates and caps the text server-side and stores the raw file in R2 unchanged, for provenance. Trust is unchanged: the same admin could already type anything into the knowledge base. §31 Mode A shares the same browser-side extraction utility.
+5. **§33 embedding generation is batched, structurally.** A free Worker invocation may make at most **50 subrequests** (every D1 query, KV op, AI call, Vectorize op, and queue send counts). Per-chunk embedding calls — one AI call + one Vectorize upsert + one D1 write per chunk — would exceed that on a 20-chunk document. Embeddings are requested in batches (the embedding model accepts up to 100 texts per call), Vectorize upserts are batched, and D1 chunk inserts already go through ≤100-parameter chunking (D18).
+6. **§45 gains the Free-plan envelope**: every verified ceiling (Workers, D1, KV, Queues, Workers AI, Vectorize, R2, Durable Objects, Cron) with its blast radius and the design answer, plus the three residual compromises the Free plan genuinely imposes (daily-quota exhaustion as a DoS surface; 10,000 Workers-AI neurons/day capping AI explanations at roughly 150–200/day before graceful degradation; 24-hour queue retention). None of the three weakens the security model.
+7. **Roadmap gains Phase 4.5 — Free-Plan Hardening** (§57), scheduled *before* Phase 5a because 5a's pipelines must be designed against these constraints, not retrofitted. The risk register (§59) is updated: the "consumers have a big CPU budget" mitigation was wrong, and quota exhaustion is a named risk.
+
+---
+
 ## How to Read This Document
 
 This is a single, complete project plan. It is organized into 18 parts. Parts I–II establish *why* and *what*. Parts III–XI define *how* — the actual schema, backend, API, and core algorithms. Parts XII–XVII cover everything needed to run this as a real, gradeable, deployable project: security, DevOps, testing, monitoring, standards, timeline, and risk. Part XVIII is reference material (glossary, event catalog, table index).
@@ -292,8 +308,9 @@ The modular boundary is a **discipline enforced by code review and folder struct
 | Object storage | Cloudflare R2 | PDFs, DOCX, generated reports — native binding |
 | Vector search | Cloudflare Vectorize | Knowledge embeddings only — never stored in D1 |
 | AI inference | Cloudflare Workers AI | Sole provider for v1 — native binding |
-| Background jobs | Cloudflare Queues | Producer + consumer in the same Worker |
-| Cache / rate limiting | Cloudflare KV | Rate-limit counters, lockouts; Miniflare emulates locally |
+| Background jobs | Cloudflare Queues | Producer + consumer in the same Worker; Free tier: 10k ops/day, 24 h retention (§42, §45) |
+| CPU-heavy crypto + security counters | Cloudflare Durable Objects (SQLite-backed) | `AuthGuardDO` (v1.5): §38 password derivation — 30 s CPU/invocation on every plan, vs the free Worker's 10 ms — plus atomic failures-only lockout/throttle counters |
+| Cache | Cloudflare KV | v1.5: caching only. No longer on any auth path — eventual consistency, 1 write/s/key, and the Free plan's 1,000 writes/day disqualify it as a security counter (§38, §45) |
 | Auth | First-party token service | Hashed opaque bearer tokens in an `api_tokens` table, for both staff and (passwordless-issued) student sessions — see Part X §38 |
 | CI/CD | GitHub Actions + Wrangler | |
 | Hosting (frontend) | Cloudflare Pages — existing `careerlinkai.online` project | |
@@ -333,6 +350,8 @@ Modules         (Colleges/       Module
                                                        ▼
                                              Cloudflare Workers AI
 ```
+
+Not shown in the diagram but part of the same Worker deployment (v1.5): **`AuthGuardDO`**, a SQLite-backed Durable Object class the Identity module calls for password derivation and failure counting (§38). It is the Free plan's only large-CPU venue (30 s/invocation vs the Worker's 10 ms) and the only strongly consistent counter store; it owns no domain tables and appears in no other module's flow.
 
 ## 10. Domain Module Map
 
@@ -1680,6 +1699,8 @@ Archived documents can never be retrieved — their vectors are removed from Vec
 
 If retrieval returns zero chunks above the similarity threshold, the system does **not** fall back to an ungrounded generic AI answer — it falls back to a deterministic template sentence built from the `reason` field already computed in Part VII, and logs the `ai_requests` row as `status = FAILED` with a note. A grounded number is always better than an ungrounded paragraph.
 
+**The same fallback path handles Workers AI quota exhaustion (v1.5).** The Free plan allows **10,000 neurons/day and hard-fails afterwards** — at ~50–60 neurons per explanation (≈1.5–2k prompt tokens + ~150 output tokens on the 8B model) that is roughly **150–200 explanations per day**. `AiGatewayService` must treat a quota error exactly like any other model failure: log the `ai_requests` row as `FAILED` with the quota reason, serve the deterministic `reason`, never retry into a dead quota. The student always sees *something true*; the AI paragraph is an enhancement, not a dependency — which is the §29 posture anyway. Embedding calls are three orders of magnitude cheaper (≈6,058 neurons per million tokens) and are not a meaningful drain.
+
 ## 31. AI-Assisted Assessment Generation Pipeline
 
 **New in v1.1.** Available to admin and counselor, exclusively for templates with `category = CUSTOM`. The backend rejects any request against a `RIASEC` or `SCCT` template at the Policy layer — this is enforced identically for admin and counselor, with no role-based exception.
@@ -1695,7 +1716,7 @@ Admin/Counselor uploads PDF/DOCX to a DRAFT assessment_version
 GenerateAssessmentDraftJob queued
         │
         ▼
-Extract text (same parser as knowledge ingestion, §33 — reused, not duplicated)
+Text extracted in the creator's browser (same §33 extraction utility — reused, not duplicated; v1.5)
         │
         ▼
 Cloudflare Workers AI: structuring prompt (§32) — parse the document into
@@ -1803,16 +1824,17 @@ Both prompts are versioned as files in the repository (`src/prompts/recommendati
 ## 33. Knowledge Ingestion Pipeline
 
 ```
-Admin uploads PDF/DOCX (multipart, ≤10MB)
+Admin's BROWSER extracts text locally (pdf.js / mammoth — v1.5, see below)
+        │
+        ▼
+Admin uploads PDF/DOCX (multipart, ≤10MB) + the extracted text
         │
         ▼
 Store raw file in Cloudflare R2 → knowledge_documents row (processing_status = UPLOADED)
+Server-side validation of the text: hard length cap, UTF-8, non-empty (§34)
         │
         ▼
 ProcessKnowledgeDocumentJob queued
-        │
-        ▼
-Extract text (PDF/DOCX parser — the same extraction step reused by §31 Mode A)
         │
         ▼
 Clean text (strip headers/footers/page numbers, normalize whitespace)
@@ -1821,24 +1843,28 @@ Clean text (strip headers/footers/page numbers, normalize whitespace)
 Chunk: 300-800 tokens per chunk, 50-100 token overlap between adjacent chunks
         │
         ▼
-For each chunk: knowledge_chunks row created (content stored in D1)
+knowledge_chunks rows created (content stored in D1 — inserts chunked ≤100 bound params, D18)
         │
         ▼
-GenerateEmbeddingJob per chunk: Workers AI embedding model → vector
-        │
-        ▼
-Store vector in Cloudflare Vectorize → vector_id written back onto the knowledge_chunks row
+GenerateEmbeddingJob per BATCH of chunks (≤100 texts per Workers AI call — v1.5):
+  embedding model → vectors, one batched Vectorize upsert, vector_ids written back
         │
         ▼
 knowledge_documents.processing_status = COMPLETED
+  (= "vectors accepted" — Vectorize indexes upserts ASYNCHRONOUSLY; an immediate
+   query legitimately returning zero matches is indexing lag, not a failed write)
         │
         ▼
 KnowledgeDocumentProcessed event → notify uploading admin
 ```
 
+**Why extraction happens in the browser (v1.5, Free-plan forced):** PDF/DOCX parsing is the most CPU-hungry stage in the system, and on the Workers Free plan there is nowhere server-side to put it — request handlers *and* queue consumers get 10 ms of CPU (§42), and a pure-JS parser (unpdf, mammoth) would also consume most of the 3 MB gzipped Worker bundle cap. The admin upload screen extracts locally and submits `{ file, extracted_text }`. This does not move a trust boundary: the uploader is an authenticated admin who could already type arbitrary text into the knowledge base, and the raw file is retained in R2 so any extraction dispute can be settled against the original. The Worker enforces the §34 caps on the submitted text exactly as it would on parser output. Chunking itself (string slicing over ≤500k chars) is comfortably inside a consumer's 10 ms.
+
+**Why embedding is batched (v1.5, Free-plan forced):** a free Worker invocation may make at most **50 subrequests**, and every AI call, Vectorize op, and D1 statement counts. Per-chunk embedding (1 AI + 1 upsert + 1 D1 write × N chunks) breaches that on a 20-chunk document; batching keeps a whole document's embedding pass to a handful of subrequests. The embedding model accepts up to 100 texts per call, so this costs nothing.
+
 Recommended v1 seed content: RIASEC theory overview, SCCT theory overview, 5–10 program/career/college description documents relevant to the seeded catalog. This is enough for the RAG pipeline to produce genuinely grounded (not generic) explanations in the thesis demo.
 
-**Note on shared infrastructure:** the text-extraction step is genuinely shared code between this pipeline and §31 Mode A — both start from "here is a PDF/DOCX, get clean text out of it." What diverges after that point is real: knowledge ingestion chunks-and-embeds for later retrieval; assessment generation structures-and-drafts for immediate human review. They are separate Jobs and separate `ai_requests.request_type` values, sharing one small parsing utility, not one blended pipeline.
+**Note on shared infrastructure:** the text-extraction step is genuinely shared code between this pipeline and §31 Mode A — both start from "here is a PDF/DOCX, get clean text out of it." (v1.5: that shared utility lives in the *frontend*, per the browser-extraction note above; what the two pipelines share server-side is the validation/cap step and everything after it.) What diverges after that point is real: knowledge ingestion chunks-and-embeds for later retrieval; assessment generation structures-and-drafts for immediate human review. They are separate Jobs and separate `ai_requests.request_type` values, sharing one small parsing utility, not one blended pipeline.
 
 ## 34. AI Guardrails & Validation
 
@@ -1917,8 +1943,10 @@ CareerLinkAI runs **two intentionally separate authentication flows** — this s
 
 - **First-party token service** (v1.3): `/auth/login` verifies email + password, generates a 40+ character random opaque token (`crypto.getRandomValues`), stores only its SHA-256 hash in `api_tokens` with an `expires_at`, and returns the plaintext once. The `authenticate` middleware hashes the presented bearer token, looks it up, and rejects expired tokens and non-`active` users. Logout and revocation delete rows — server-side invalidation is always immediate.
 - Passwords: minimum 10 characters, at least 1 uppercase, 1 lowercase, 1 number. Hashed with **PBKDF2-SHA256 via WebCrypto** (≥ 600,000 iterations, per-user random salt, stored as `pbkdf2$iterations$salt$hash` so iterations can be raised later without invalidating old hashes). Chosen because Workers has no native bcrypt/argon2 and WebCrypto's PBKDF2 runs at full native speed — a pure-JS argon2 would be both slower and weaker in practice under Workers CPU limits.
+  - **Where and how the derivation runs (v1.5):** inside **`AuthGuardDO`**, a SQLite-backed Durable Object — the one execution context that gets a 30-second CPU budget per invocation on every plan, including Workers Free, whose 10 ms Worker budget cannot hold 600,000 iterations (PROGRESS.md D14). And it runs as a **chain of ≤100,000-iteration `deriveBits` calls**, each round keyed on the previous round's output, because the Workers runtime refuses more than 100,000 iterations per call on any plan (D15). The chain preserves the work factor exactly — rounds cannot be parallelised or skipped — and a count at or below the cap collapses to one call, so such a hash remains an ordinary PBKDF2 hash. The Worker request handler only forwards `hash`/`verify` calls to the DO stub; the password never leaves the backend and no wire format changes.
+  - *Optional hardening, sanctioned but not required (v1.5):* a **pepper** (`PASSWORD_PEPPER` via `wrangler secret put`, HMAC-SHA256 applied to the password before derivation, hash format `pbkdf2p$…`) would make a D1-only leak uncrackable without also compromising the Worker's secret store. If adopted: `bootstrap-staff.mjs` must keep writing *unpeppered* legacy-format hashes (the pepper must never leave Cloudflare, and every bootstrapped account has `must_change_password = 1`, so the forced first rotation upgrades the hash to the peppered format server-side). Legacy `pbkdf2$` hashes stay verifiable forever.
 - Temporary passwords (admin-issued to a new counselor) must be changed on first login — enforced via `users.must_change_password`, which routes the frontend straight to a forced password-change screen before anything else loads.
-- Account lockout: 5 failed attempts on a given email → 15-minute lock, enforced via the KV-backed rate limiter (ratified v1.2 — the append-only audit table is evidence, not a hot-path auth dependency). Every failure is still written to `audit_logs`.
+- Account lockout: 5 failed attempts on a given email → 15-minute lock, counted **in the same per-email `AuthGuardDO` instance that performs the derivation** (v1.5 — replaces the v1.2 KV-backed limiter). The DO is strongly consistent and single-threaded per instance, so the count is exact and brute-force attempts against one account are serialized by construction; KV could not promise either (it is eventually consistent across edge locations, allows 1 write/second per key, and the Free plan caps it at 1,000 writes/day account-wide — a quota an attacker could exhaust to blind the counter). Charging remains **failures only**, and the append-only audit table remains evidence, not a hot-path auth dependency. Every failure is still written to `audit_logs`.
 
 ### Student access — passwordless, by deliberate decision
 
@@ -1931,7 +1959,7 @@ CareerLinkAI runs **two intentionally separate authentication flows** — this s
 | Control | Mechanism |
 |---|---|
 | Join codes are not permanent | `classes.join_code_expires_at` defaults to a set window (e.g. +90 days) rather than never-expiring. Counselor can regenerate at any time, immediately invalidating the old code |
-| Rate limiting is per `(class code, IP)`, failures only | Since there's no "account" to rate-limit before a successful join, `/student-access/join` throttles **failed** attempts by `(class_code, IP)` — 10 failures within 15 minutes freezes that pair. Ratified v1.2: successes are never charged (a whole class in one computer lab shares a single public IP — charging successful joins would lock the 11th student out of their own class), and the IP in the key stops an outside attacker from freezing a class out of its own code. The counselor alert is a separate, audit-derived signal — N failures against one code across *all* IPs within a window → notify — not the throttle itself |
+| Rate limiting is per `(class code, IP)`, failures only | Since there's no "account" to rate-limit before a successful join, `/student-access/join` throttles **failed** attempts by `(class_code, IP)` — 10 failures within 15 minutes freezes that pair. Ratified v1.2: successes are never charged (a whole class in one computer lab shares a single public IP — charging successful joins would lock the 11th student out of their own class), and the IP in the key stops an outside attacker from freezing a class out of its own code. The counselor alert is a separate, audit-derived signal — N failures against one code across *all* IPs within a window → notify — not the throttle itself. v1.5: the counter is an `AuthGuardDO` instance per `(class_code, IP)` pair, for the same consistency and quota reasons as the staff lockout |
 | Tokens expire and follow enrollment | New in v1.2. Student tokens carry an expiry (hours, not days — `api_tokens.expires_at`, set from the `STUDENT_TOKEN_TTL_HOURS` var); a new join replaces any previous token (one active session, ratified); **removing a student from a class revokes their tokens immediately**; and a non-`active` user is rejected at the middleware layer even holding a live token. Without these, code expiry and rotation would only gate *new* joins while an already-issued token outlived the enrollment it was granted for |
 | Errors never confirm which part was wrong | A wrong username against a valid code, and a wrong code entirely, return the **identical** generic error — this is what actually prevents the endpoint from being used to enumerate a class roster's usernames |
 | Every attempt is audited | `audit_logs` records every join attempt, success and failure, with IP address and timestamp — this table is now the primary place impersonation attempts would surface, and it should be treated as such operationally, not just archivally |
@@ -1976,7 +2004,7 @@ Every route handler touching a specific record calls `authorize(...)` against on
 
 - Every non-public route requires the `authenticate` middleware (bearer token → `api_tokens` lookup) — tokens are issued by either staff login or student-access join, both produce an identical token type downstream.
 - Every write requires a Zod schema validating input before it reaches a Service.
-- Rate limiting: 100 req/min general, 10 req/min on `/ai/*` and the AI-generation endpoint group, 5 attempts/min per email on `/auth/login`, 10 **failed** attempts/15min per `(class code, IP)` on `/student-access/join` (§38).
+- Rate limiting: 100 req/min general, 10 req/min on `/ai/*` and the AI-generation endpoint group, 5 attempts/min per email on `/auth/login`, 10 **failed** attempts/15min per `(class code, IP)` on `/student-access/join` (§38). v1.5: security-relevant counters (lockout, join throttle, the per-user AI limit) are backed by `AuthGuardDO` instances, not KV — see §38 for why KV is disqualified.
 - CORS restricted to the known frontend origin(s) per environment.
 - Standard security headers (CSP, X-Content-Type-Options, X-Frame-Options) set at the Cloudflare edge.
 
@@ -2003,14 +2031,16 @@ explicit retry delays) → Dead Letter Queue
 
 A "job" in this document is a message type plus its consumer handler — Cloudflare Queues carries the message; the handler in `src/jobs/` does the work. Both the producer and consumer are this one Worker (Part II §7) — no separate consumer deployment exists.
 
-Two logical queues in v1: `default` (notifications, light work) and `ai` (document processing, embedding generation, recommendation + explanation generation, and now assessment-draft generation — anything that calls Workers AI or does heavy text processing). Separating these two queues means a burst of AI processing never starves a simple notification from being delivered promptly. Queue consumers also get a substantially larger CPU budget than request handlers, which is exactly where document parsing and chunking belong.
+Two logical queues in v1: `default` (notifications, light work) and `ai` (document processing, embedding generation, recommendation + explanation generation, and now assessment-draft generation — anything that calls Workers AI or does heavy text processing). Separating these two queues means a burst of AI processing never starves a simple notification from being delivered promptly.
+
+**Corrected in v1.5 — on the Workers Free plan, queue consumers get NO extra CPU.** Earlier revisions claimed consumers get "a substantially larger CPU budget than request handlers"; that is true on Paid (30 s default) and **false on Free**, where consumer invocations share the same 10 ms CPU ceiling as request handlers. The division of labour is therefore: **queues are the transport and retry layer; I/O-bound work (Workers AI calls, Vectorize ops, D1 batches — await time costs no CPU) runs fine inside a consumer; anything CPU-bound runs inside `AuthGuardDO` or is redesigned out of the Worker entirely** (§33's browser-side extraction). Free-tier queue facts that shape §43: **10,000 operations/day** (≈3,300 message deliveries at ~3 ops each) and a fixed **24-hour retention** — a message that cannot be consumed within a day is silently lost, which is why every §43 job must be idempotent *and* re-triggerable on demand (an admin re-run path, not just automatic retries).
 
 ## 43. Job Catalog
 
 | Job | Queue | Triggered by | Does |
 |---|---|---|---|
-| `ProcessKnowledgeDocumentJob` | ai | Document upload | Extract text, clean, chunk |
-| `GenerateEmbeddingJob` | ai | Each chunk created | Embed chunk, store vector, write `vector_id` |
+| `ProcessKnowledgeDocumentJob` | ai | Document upload | Validate + cap the browser-extracted text (v1.5, §33), clean, chunk |
+| `GenerateEmbeddingJob` | ai | Chunks created | Embed chunks **in batches** (≤100 texts per AI call, batched Vectorize upserts — v1.5, §33), write `vector_id`s back |
 | `GenerateRecommendationJob` | default | `DispatchRecommendationGeneration` listener — the event itself fires once per scored attempt; the **listener** dispatches this job only when both a RIASEC and an SCCT result exist for the student (v1.2 — see §24, §60) | Runs Part VII matching, persists `recommendations` |
 | `GenerateExplanationJob` | ai | `RecommendationGenerated` event, or student clicks "Explain more" | Runs Part VIII §30 RAG pipeline, persists `recommendation_explanations` |
 | `GenerateAssessmentDraftJob` | ai | Admin/counselor requests AI-assisted generation (document or description) | Runs Part VIII §31 pipeline, persists unconfirmed `assessment_questions` / `question_options` / `question_dimensions` |
@@ -2047,6 +2077,34 @@ Local Development  →  Staging  →  Production
 | Production | Live thesis defense / real pilot use — the existing `careerlinkai.online` Worker + Pages project | Cloudflare D1 (production DB) | Real Workers AI, production Vectorize index |
 
 Staging and production are two Wrangler environments (`[env.staging]` / `[env.production]` in `wrangler.toml`) of the same Worker, each with its own Cloudflare resource IDs (D1 database ID, R2 bucket, Vectorize index name, queue names). The **production environment deploys to the existing `careerlinkai.online` Worker**, replacing the beta deployment; the frontend deploys to the existing `careerlinkai.online` Pages project. Secrets go in via `wrangler secret put` (never committed); non-secret config lives as `[vars]` in `wrangler.toml`, which *is* committed.
+
+### The Workers Free-plan envelope (v1.5)
+
+**The account is on the Workers Free plan, permanently, as a product requirement.** Every ceiling below was verified against Cloudflare's published limits/pricing docs on **2026-07-14** (`developers.cloudflare.com` — workers/platform/limits, d1/platform/pricing, kv/platform/limits, queues/platform/{pricing,limits}, workers-ai/platform/pricing, vectorize/platform/pricing, durable-objects/platform/{pricing,limits}, r2/pricing). Daily quotas reset at 00:00 UTC. **Miniflare enforces none of them** — a limit in this table can only be violated on a real deployment, which is why Phase 4.5 adds tests that assert on what the code *asks* of the platform (PROGRESS.md, "the single most important lesson").
+
+| Service (Free) | Ceiling | What it touches here | Design answer |
+|---|---|---|---|
+| Workers — CPU | **10 ms/invocation**, applies equally to request handlers, queue consumers, and `waitUntil`; `[limits] cpu_ms` is rejected on Free (error 100328) | §38 hashing (the D14 outage); §33 parsing/chunking; inline §27 generation (D17) | Hashing + counters → `AuthGuardDO` (30 s); extraction → browser; §27 stays inline (pure arithmetic, measured trivial) with the queue as the documented escape hatch |
+| Workers — requests | **100,000/day, account-wide** (staging and production share it) | Everything, incl. walkthrough runs (~113 calls each) | Ample at thesis scale (a 40-student class sitting both instruments ≈ 4–5k requests); also a DoS surface — see residual compromises |
+| Workers — subrequests | **50/request** (every D1 stmt, KV op, AI call, Vectorize op, queue send counts) | §33 per-chunk embedding would breach it; §27 inline generation uses <20 | Batched embeddings + upserts (§33); a subrequest-budget test per heavy path |
+| Workers — bundle | **3 MB gzipped** | Server-side PDF/DOCX parsers would eat most of it | Browser-side extraction; CI bundle-size gate |
+| Durable Objects | Free = SQLite-backed classes only; 100k requests/day; 13,000 GB-s/day; 5 GB storage; **30 s CPU/invocation — same as Paid** | `AuthGuardDO` (§38) | The Free plan's large-CPU venue; a 600k-iteration derivation (~tens of ms CPU) uses ~0.1% of one invocation's budget |
+| D1 | 5M rows read/day; 100k rows written/day; 5 GB; **100 bound parameters/query (all plans, the D18 outage)** | All persistence | Thesis-scale traffic is orders of magnitude below the daily caps; `chunkForD1` on every multi-row insert |
+| KV | 100k reads/day; **1,000 writes/day**; 1 write/s/key; **eventually consistent (~60 s)** | Was: lockout + join throttle | Retired from all security paths (§38); binding retained for future caching only |
+| Queues | **10,000 ops/day** (≈3,300 deliveries at ~3 ops/message); **24 h retention, fixed**; 128 KB messages | §43 jobs | Transport/retry only; every job idempotent **and** admin re-triggerable, because a >24 h backlog is silently dropped |
+| Workers AI | **10,000 neurons/day, hard-stop** (llama-3.1-8b: 25,608 in / 75,147 out neurons per Mtok; bge-base: 6,058/Mtok) | §30 explanations (~50–60 neurons each → ~150–200/day); §31 drafts (~300+ each) | Quota failure = model failure: `ai_requests` FAILED + deterministic fallback (§30); AI is an enhancement by design (§29) |
+| Vectorize | 5M stored dims (≈6,500 × 768-dim vectors); 30M queried dims/month; **upserts indexed asynchronously (all plans)** | §33 knowledge base (5–10 docs ≈ ≤1k chunks) | Ample; `COMPLETED` means "accepted", retrieval tolerates indexing lag (§30's fallback), smoke tests poll |
+| R2 | 10 GB; 1M Class A + 10M Class B ops/month | Raw document storage | Ample |
+| Cron Triggers | 5/account | None yet | Available if a sweeper/digest is ever needed |
+| Pages | Free (500 builds/month) | Frontend | Unaffected |
+
+**The three residual compromises the Free plan genuinely imposes — and why none weakens the security model:**
+
+1. **Daily-quota exhaustion is a DoS surface.** Anyone who can reach the API can burn the shared 100k requests/day (or, more cheaply, the 10k neurons/day) with a curl loop, taking the deployment down until 00:00 UTC. No free mitigation closes this fully; Cloudflare's edge (WAF rate rules, Bot Fight Mode — both free) raises the cost. This degrades **availability only** — never confidentiality or integrity — and for a thesis deployment whose audience is a defense panel and a pilot class, the exposure window is acceptable and documented.
+2. **AI explanation volume is capped (~150–200/day)**, then degrades to the deterministic `reason` string every card already carries. Graceful by §29/§30 design; a student is never shown less than the true, hand-verifiable justification.
+3. **Queue messages older than 24 h are lost.** All §43 jobs are idempotent and re-triggerable, so the loss is re-runnable work, never data.
+
+Everything else that looked like a Free-plan compromise turned out to have a clean free answer: the §38 work factor (Durable Objects), the counter store (Durable Objects), extraction CPU (the browser), embedding fan-out (batching). **OWASP compliance is not compromised by the Free plan** once Phase 4.5 lands: password storage returns to the recommended PBKDF2-SHA256 cost, and the lockout becomes *stronger* than the KV version it replaces.
 
 ## 46. Infrastructure Diagram
 
@@ -2115,7 +2173,13 @@ STORAGE         (R2 bucket — private)
 VECTORIZE       (Vectorize index)
 AI              (Workers AI)
 QUEUE_DEFAULT, QUEUE_AI   (Queues producers; consumers declared in [[queues.consumers]])
-KV              (rate-limit counters, lockouts)
+AUTH_DO         (Durable Object namespace — AuthGuardDO: §38 derivation + lockout/throttle
+                 counters. SQLite-backed class (the only kind Free allows), declared via
+                 [[migrations]] new_sqlite_classes. With script_name omitted the binding
+                 targets the class in its own script, so staging/production isolation is
+                 automatic — but the binding must be declared in EVERY [env.*] block, like
+                 all the others, v1.5)
+KV              (caching only, v1.5 — no security counters live here any more)
 ```
 
 **Vars** (`[vars]`, committed, per environment) and **secrets** (`wrangler secret put`, never committed):
@@ -2129,7 +2193,7 @@ STUDENT_TOKEN_TTL_HOURS              (student api_tokens expiry — §38)
 ASSESSMENT_GENERATION_MAX_QUESTIONS  (hard cap referenced in Part VIII §34)
 ```
 
-No secrets exist in v1's steady state — every Cloudflare service is reached through a binding, not a credential. The only secret-class values are transient CI deploy credentials (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`), which live in GitHub Actions secrets, not in the Worker.
+No secrets exist in v1's steady state — every Cloudflare service is reached through a binding, not a credential. The only secret-class values are transient CI deploy credentials (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`), which live in GitHub Actions secrets, not in the Worker. *(v1.5: if the optional §38 pepper is adopted, `PASSWORD_PEPPER` becomes the one steady-state secret — set via `wrangler secret put`, never committed, never exported to any offline script.)*
 
 ---
 
@@ -2308,6 +2372,33 @@ Re-implement everything Phases 0–3 delivered, on the Worker stack, deployed to
 - Student: recommendations screen (ranked career + program cards, derived college, match %, reason)
 - **Demo:** after both RIASEC and SCCT are complete, student sees a ranked recommendation list with the correct college attached via the real FK, and zero AI involvement.
 
+### Phase 4.5 — Free-Plan Hardening (new in v1.5 — must complete before Phase 5a starts)
+
+Remove every Workers-Free-plan blocker and design debt found by the Phase 3.5/4 staging deploys, *before* Phase 5a builds pipelines on the two services that have no local emulation at all. Small, contained churn: no schema migration, no endpoint change, no frontend change.
+
+**Step 1 — `AuthGuardDO` (closes D14, the only open security deviation):**
+- New SQLite-backed Durable Object class (`backend/src/do/auth-guard.ts`), bound as `AUTH_DO` in `wrangler.toml` (top level + both `[env.*]` blocks + `wrangler.test.toml`) with a `[[migrations]] new_sqlite_classes` entry.
+- The class exposes: `hashPassword` / `verifyPassword` (the existing chained `deriveKey` moved behind the DO boundary, `PBKDF2_ITERATIONS` restored to **600,000**) and the failures-only counter API currently in `lib/rate-limit.ts` (same semantics: charge failures, read count, clear on success/reset).
+- `StaffAuthenticationService` verifies/hashes via `AUTH_DO.idFromName(email.toLowerCase())` — one instance per staff account, so lockout counting and derivation are atomic *and* brute force is serialized per account. `StudentAccessService`'s join throttle moves to `idFromName('join:'+code+':'+ip)` instances of the same class.
+- `scripts/bootstrap-staff.mjs` re-implements the same chain at 600k in Node (≈15 lines) and keeps `--verify-url` proof-of-login. Existing 100k hashes stay verifiable (cost is stored in the hash); optional rehash-on-successful-login upgrades them.
+- Tests keep asserting on **what the code asks of the platform**: every `deriveBits` call ≤100,000 iterations, the rounds sum to 600,000, and no non-DO code path ever calls `deriveBits` at all.
+- Exit: staging deploy; the walkthrough's auth leg — *including `/auth/change-password`, the double-derivation CPU canary that produced error 1102* — passes repeatedly.
+
+**Step 2 — CI platform gates (Miniflare-blind limits, asserted before deploy):**
+- Bundle-size gate: `wrangler deploy --dry-run` on every push, fail above ~2.5 MB gzipped (Free cap: 3 MB).
+- Config gate: assert `wrangler.toml` contains no `[limits]` block (rejected on Free, error 100328) and that every `[env.*]` block carries the full binding set including `AUTH_DO` (a missing binding is a runtime `undefined`, not a deploy error).
+- Subrequest-budget tests: count binding calls on the heaviest paths (submit-with-inline-generation now; ingestion batch in 5a) and assert a ≤25 budget against the Free cap of 50.
+
+**Step 3 — Phase 5a pre-work (design constraints locked in before any 5a code):**
+- Browser-side extraction utility (pdf.js + mammoth) specified for the admin upload screen; server-side text caps in the Zod schema (§33, §34).
+- `AiGatewayService` failure taxonomy including **neuron-quota exhaustion** → `ai_requests` FAILED + deterministic fallback, never a retry into a dead quota (§30).
+- Batched embedding + batched Vectorize upsert contract, with a test asserting one AI call per ≤100-chunk batch — never one per chunk (§33).
+- Staging smoke additions: ingestion → poll-until-indexed → retrieval (Vectorize indexes asynchronously); one real explanation asserting the `ai_requests` row carries latency + token counts.
+
+**Step 4 (optional hardening, do only if time allows):** the §38 pepper (`PASSWORD_PEPPER`, format `pbkdf2p$`, bootstrap keeps writing legacy-format + forced rotation upgrades); a dummy derivation on unknown-email logins to close the email-existence timing oracle — affordable now that derivation has a 30 s budget.
+
+- **Demo:** on the live staging deployment, a staff login verifies against a **600,000-iteration** hash (shown via the stored hash prefix and the derivation timing in the health diagnostics), `/auth/change-password` succeeds N times in a row, and six rapid failed logins lock the account on exactly the fifth — counted by the DO, not KV.
+
 ### Phase 5 — AI Layer (Week 10–13, split into two sub-phases sharing the same underlying `AiGatewayService`/`ai_requests` infrastructure)
 
 **5a — Recommendation Explanation (Week 10–11):**
@@ -2315,6 +2406,7 @@ Re-implement everything Phases 0–3 delivered, on the Worker stack, deployed to
 - `AiGatewayService`, `RetrievalService`, ingestion pipeline (Part VIII §33)
 - Admin uploads 3–5 real knowledge documents; admin sets an initial `ai_policies` row
 - `GenerateExplanationJob` wired to `RecommendationGenerated`
+- **Built to the v1.5 Free-plan shape from the first line** (§33, §42, §45): browser-side extraction, batched embeddings/upserts, quota-aware `AiGatewayService` fallback, jobs re-triggerable across the 24 h queue-retention horizon
 - **Measure the two residual unknowns inherited from the retired spike (v1.3):** bare Workers AI generation latency against the §6 under-8-seconds budget, and Vectorize upsert lag (upserts are asynchronous — an immediate query legitimately returning zero matches is not a failed write). Record both in PROGRESS.md
 - **Demo:** a recommendation from Phase 4 now shows a grounded AI paragraph referencing uploaded knowledge content and respecting the configured AI policy.
 
@@ -2340,6 +2432,7 @@ Re-implement everything Phases 0–3 delivered, on the Worker stack, deployed to
 - [ ] Phase 3: `ScoringService` unit tests pass against hand-computed values; publish-gate unit tests pass; a real student can complete both assessments
 - [ ] Phase 3.5 (v1.3): the full Phase 0–3 scope runs on the `careerlinkai.online` Worker on staging — ported Vitest suite green, unchanged frontend works end to end, Laravel backend retired
 - [ ] Phase 4: `RecommendationService` unit tests pass against the worked example; ranked recommendations appear with the correct derived college and zero AI calls
+- [ ] Phase 4.5 (v1.5): staff passwords verify at 600,000 PBKDF2 iterations on the live Free-plan deployment via `AuthGuardDO`; lockout + join throttle counted in the DO (KV retired from auth); CI gates bundle size, config shape, and subrequest budgets
 - [ ] Phase 5a: at least one AI explanation demonstrably references uploaded knowledge content and reflects the configured AI policy
 - [ ] Phase 5b: an AI-generated custom assessment cannot publish with an unconfirmed mapping, and the same generation flow is confirmed rejected against RIASEC/SCCT
 - [ ] Phase 6: full unscripted walkthrough of Part I §6 succeeds live, including the integrity-proof demo
@@ -2351,8 +2444,9 @@ Re-implement everything Phases 0–3 delivered, on the Worker stack, deployed to
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | **The Phase 3.5 port silently drifts from what Phases 0–3 already proved** — a behavior verified by the Laravel suite (identical join errors, failure-only throttling, the publish gate) is re-implemented subtly differently (new in v1.3; replaces the retired "Laravel has no D1 driver" risk, which the platform decision resolved structurally) | Medium | High | The port is contract-driven (§57 Phase 3.5): the old suite's assertions are ported to Vitest module by module and define "done"; the unchanged frontend is the second, independent check — any frontend edit the port "needs" is treated as a port bug |
-| **Workers runtime limits bite heavy work** — CPU-milliseconds per invocation, request body limits, and no native binaries: PDF/DOCX text extraction must use pure-JS/WASM parsers (e.g. unpdf, mammoth) and is the most CPU-hungry thing in the system (new in v1.3) | Medium | Medium | All parsing/chunking/embedding runs in queue consumers, never request handlers — consumers get a much larger CPU budget and retries are free (§42); uploads capped at 10MB (§33); scoring itself is trivially cheap (integer arithmetic over ≤60 answers) and stays synchronous per §24 |
-| Cloudflare D1's join/transaction limits slow down deep queries (e.g., recommendation catalog scan) | Medium | Medium | Recommendation computation runs as a queued job, not inline on the request; catalog scan is over a modest seed catalog for v1 — revisit only if it grows to hundreds of rows |
+| **Workers Free-plan runtime limits bite heavy work** — 10 ms CPU/invocation *including queue consumers* (the v1.3–v1.4 belief that consumers get a larger budget was wrong on Free and produced the D14 login outage), 3 MB gzipped bundle, 50 subrequests/request, no native binaries (rewritten in v1.5) | ~~Medium~~ **Happened** (D14/D15/D17/D18) | High | The full Free-plan envelope is now documented in §45 and designed against: PBKDF2 + security counters run in `AuthGuardDO` (30 s CPU on every plan); PDF/DOCX extraction runs in the admin's browser (§33); embeddings are batched (§33); scoring itself is trivially cheap (integer arithmetic over ≤60 answers) and stays synchronous per §24; CI gates bundle size and subrequest budgets (§57 Phase 4.5) |
+| Cloudflare D1's join/transaction limits slow down deep queries (e.g., recommendation catalog scan) | Medium | Medium | Catalog scan is over a modest seed catalog for v1, runs inline in <20 subrequests with batched reads (D17, ratified) — the queue remains the documented escape hatch if the catalog grows to where ranking no longer fits the 10 ms CPU budget |
+| **A daily Free-plan quota is exhausted mid-demo or by an attacker** — 100k requests/day account-wide (staging shares it), 10k Workers-AI neurons/day, 100k D1 writes/day, 10k queue ops/day; all hard-stop until 00:00 UTC (new in v1.5) | Low (organic) / Medium (adversarial) | Medium — availability only, never confidentiality or integrity | Thesis-scale traffic is orders of magnitude below every cap (§45 envelope); AI quota exhaustion degrades gracefully to the deterministic reason (§30); WAF rate rules + Bot Fight Mode (both free) raise an attacker's cost; check the dashboard's usage meters the morning of the defense — and the residual risk is accepted and documented rather than hidden |
 | RIASEC/SCCT question-bank content entry takes longer than estimated (Phase 3) | High | High | Flagged explicitly as the largest content task in the roadmap (§57); start content drafting in parallel with Phase 0-2 engineering |
 | **Class join code leaks or is shared beyond its intended class** (new, passwordless-specific) | Medium | High | Code expiry (default window, regenerable), rate limiting per code, identical generic errors on any failure mode, full audit trail — see Part X §38. Residual risk: none of these prevent a leaked *valid, unexpired* code from being usable by someone outside the class; this is the accepted tradeoff of the passwordless decision, not a solved problem — if it proves insufficient in real deployment, §63 has the opt-in password upgrade path |
 | **AI-generated assessment content is low-quality even when dimension mappings are correctly confirmed** (new) | Medium | Medium | The confirmation gate (Part VI §25) guarantees a human reviewed *what a question measures* — it does not guarantee the question is *well-written*. This is a real, distinct residual risk: mapping correctness is not content quality. Mitigated by the same UI review step showing full question text (not just mapping metadata) before confirmation, but ultimately depends on the human reviewer actually reading, not just clicking through |

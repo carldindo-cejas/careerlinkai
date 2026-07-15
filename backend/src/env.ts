@@ -1,4 +1,5 @@
 import type { User } from '@/db/schema';
+import type { AuthGuardDO } from '@/do/auth-guard';
 
 /**
  * The Worker's bindings and vars (FULLPLAN §48).
@@ -12,7 +13,15 @@ export interface Env {
   STORAGE: R2Bucket;
   VECTORIZE: VectorizeIndex;
   AI: Ai;
+  /**
+   * v1.5: caching only. **Nothing security-relevant reads or writes KV any more** — the
+   * lockout and join throttle moved into `AUTH_DO` (Phase 4.5, deviation D19), because KV
+   * is eventually consistent, allows 1 write/s/key, and the Free plan caps it at 1,000
+   * writes/day account-wide.
+   */
   KV: KVNamespace;
+  /** §38 v1.5 — password derivation and security counters. See `src/do/auth-guard.ts`. */
+  AUTH_DO: DurableObjectNamespace<AuthGuardDO>;
   QUEUE_DEFAULT: Queue;
   QUEUE_AI: Queue;
 

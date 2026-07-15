@@ -1,0 +1,10 @@
+# Cloudflare Pages SPA fallback.
+#
+# React Router owns every path below the root (/login, /join, /student/assessments, …), but those
+# paths are not files. Without this rule Pages answers a hard refresh — or the walkthrough's very
+# first `goto('/login')` — with its own 404 page, and the app never boots. `200` rather than `301`
+# so the URL the user typed survives into the router.
+#
+# This is a deployment artifact, not a React change: §57 makes the frontend the port's invariant
+# and no component, service or type is touched by it.
+/*    /index.html    200

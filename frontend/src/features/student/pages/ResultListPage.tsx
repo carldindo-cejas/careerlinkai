@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 
+import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useResults } from '@/features/student/hooks/useAssessment';
@@ -13,7 +14,7 @@ import { resultPath } from '@/routes/paths';
  * student can trust: everything on it is a result, and there is exactly one per assessment.
  */
 export function ResultListPage() {
-  const { data: results, isLoading } = useResults();
+  const { data: results, isLoading, isError, error } = useResults();
   const navigate = useNavigate();
 
   if (isLoading) return <p className="text-sm text-slate-500">Loading your results…</p>;
@@ -27,7 +28,10 @@ export function ResultListPage() {
         </p>
       </div>
 
-      {(results ?? []).length === 0 ? (
+      {/* D11 — a failed load must not be reported as "no results". See AssessmentListPage. */}
+      {isError ? <Alert>{error.message}</Alert> : null}
+
+      {results && results.length === 0 ? (
         <Card>
           <CardHeader>
             <CardTitle>No results yet</CardTitle>

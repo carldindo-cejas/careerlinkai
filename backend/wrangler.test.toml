@@ -1,0 +1,76 @@
+# The Worker as the **test suite** runs it (FULLPLAN §49).
+#
+# This is wrangler.toml minus exactly two bindings: `[ai]` and `[[vectorize]]`.
+#
+# Why they are gone, and why this file has to exist at all:
+#
+# Workers AI and Vectorize have **no local emulation**. Miniflare emulates D1, KV, R2 and
+# Queues in-process, but those two always open a real connection to the Cloudflare API — so
+# `cloudflareTest({ wrangler: { configPath: './wrangler.toml' } })` made every test worker
+# perform a network handshake before running a single assertion. The consequences were not
+# theoretical:
+#
+#   * An expired `wrangler login` token took the **entire 141-test suite** from green to
+#     "no tests" — the suite could not run at all, and the failure named an /edge-preview
+#     endpoint rather than anything a reader would connect to authentication.
+#   * CI (§47, deviation D9) would have needed a live CLOUDFLARE_API_TOKEN as a secret just to
+#     run tests that never call Cloudflare. A test suite that cannot run offline is not a
+#     contract; it is a service with an uptime dependency.
+#
+# Nothing in the suite uses AI or Vectorize — the first code that touches either arrives in
+# Phase 5 — so the tests were paying a hard dependency for a capability they never exercise.
+#
+# **When Phase 5a lands**, the AI and RAG pipelines get tested against a *stubbed* gateway, not
+# a live model: an assertion on a real LLM's output is not a test, it is a weather report. If a
+# real-model smoke check is ever wanted, it belongs in its own suite, run deliberately, with
+# its own config — not wired into the gate that has to be green on every push.
+#
+# Keep the `[vars]` below in lockstep with wrangler.toml. Everything else here is deliberately
+# identical, so a test exercises the same router, middleware and SQL dialect as production.
+
+name = "careerlinkai"
+main = "src/index.ts"
+compatibility_date = "2026-07-13"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_ENV = "local"
+FRONTEND_URL = "http://localhost:5173"
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
+WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+STUDENT_JOIN_CODE_TTL_DAYS = "90"
+STUDENT_TOKEN_TTL_HOURS = "12"
+ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "CareerLinkAI_Main"
+database_id = "a3d20b3b-d9dd-435c-b6a7-2eb85e746942"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "careerlinkai-docs"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "0000000000000000000000000000ffff"
+
+# AuthGuardDO runs locally under Miniflare (SQLite-backed DOs are emulated in-process), so
+# every auth test exercises the same DO boundary production does — including the §38
+# lockout counters and the full 600,000-iteration derivation.
+[[durable_objects.bindings]]
+name = "AUTH_DO"
+class_name = "AuthGuardDO"
+
+[[queues.producers]]
+binding = "QUEUE_DEFAULT"
+queue = "careerlinkai-default-queue"
+
+[[queues.producers]]
+binding = "QUEUE_AI"
+queue = "careerlinkai-ai-queue"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AuthGuardDO"]

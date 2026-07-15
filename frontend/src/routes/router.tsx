@@ -1,9 +1,11 @@
 import { Route, Routes } from 'react-router-dom';
 
 import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage';
+import { AiPolicyPage } from '@/features/admin/pages/AiPolicyPage';
 import { CareerListPage } from '@/features/admin/pages/CareerListPage';
 import { CollegeDetailPage } from '@/features/admin/pages/CollegeDetailPage';
 import { CollegeListPage } from '@/features/admin/pages/CollegeListPage';
+import { KnowledgeListPage } from '@/features/admin/pages/KnowledgeListPage';
 import { ChangePasswordPage } from '@/features/auth/pages/ChangePasswordPage';
 import { LoginPage } from '@/features/auth/pages/LoginPage';
 import { ClassDetailPage } from '@/features/counselor/pages/ClassDetailPage';
@@ -11,6 +13,7 @@ import { ClassListPage } from '@/features/counselor/pages/ClassListPage';
 import { CounselorDashboardPage } from '@/features/counselor/pages/CounselorDashboardPage';
 import { AssessmentListPage } from '@/features/student/pages/AssessmentListPage';
 import { AssessmentPlayerPage } from '@/features/student/pages/AssessmentPlayerPage';
+import { RecommendationPage } from '@/features/student/pages/RecommendationPage';
 import { ResultListPage } from '@/features/student/pages/ResultListPage';
 import { ResultPage } from '@/features/student/pages/ResultPage';
 import { StudentAccessPage } from '@/features/student/pages/StudentAccessPage';
@@ -66,6 +69,9 @@ export function AppRoutes() {
           <Route path={paths.adminColleges} element={<CollegeListPage />} />
           <Route path={paths.adminCollegeDetail} element={<CollegeDetailPage />} />
           <Route path={paths.adminCareers} element={<CareerListPage />} />
+          {/* Phase 5a: what the AI may know, and what it may say (§33, §13.7). */}
+          <Route path={paths.adminKnowledge} element={<KnowledgeListPage />} />
+          <Route path={paths.adminAiPolicy} element={<AiPolicyPage />} />
         </Route>
       </Route>
 
@@ -94,6 +100,7 @@ export function AppRoutes() {
           <Route path={paths.studentPlayer} element={<AssessmentPlayerPage />} />
           <Route path={paths.studentResults} element={<ResultListPage />} />
           <Route path={paths.studentResult} element={<ResultPage />} />
+          <Route path={paths.studentRecommendations} element={<RecommendationPage />} />
         </Route>
       </Route>
     </Routes>

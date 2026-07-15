@@ -1,0 +1,101 @@
+# CI (FULLPLAN §47) — the gate that was deviation D9, open from Step 1 to Step 5.
+#
+# It runs with **no Cloudflare credentials at all**, and that is not an accident: the backend suite
+# executes against `wrangler.test.toml`, which is wrangler.toml minus the `[ai]` and `[[vectorize]]`
+# bindings. Those two have no local emulation and always dial out to the Cloudflare API, so with the
+# real config every test worker performed a network handshake before running a single assertion —
+# and an expired `wrangler login` once took the whole suite from green to "no tests". A suite that
+# cannot run offline is not a contract; it is a service with an uptime dependency. Miniflare
+# emulates D1, KV, R2 and Queues in-process, so everything the tests actually touch is local.
+#
+# What this gate does NOT and CANNOT check — read this before trusting a green tick:
+# Miniflare is not Cloudflare. It enforces neither the runtime's 100,000-iteration PBKDF2 ceiling
+# nor any CPU limit, and Step 5 shipped a Worker that was green here 371 times and could not verify
+# a single staff password on the edge. `test/unit/crypto.test.ts` now asserts on what the code
+# *asks of the platform* rather than on what the local runtime hands back, which is the only shape
+# of test that can catch that class of bug from here. Deploy-time verification is still the real
+# check — see `scripts/walkthrough.mjs`.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A force-push while CI is mid-run should cancel the stale run, not race it to the status check.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — type-check · lint · platform gates · tests (workerd)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Lint
+        run: npm run lint
+
+      # Phase 4.5 Step 2 — the Miniflare-blind limits, asserted statically: no [limits] block
+      # (Free rejects it, code 100328), every environment carries the full binding set including
+      # AUTH_DO, and deriveBits is called nowhere outside the Durable Object.
+      - name: Platform gates (config shape, DO boundary)
+        run: npm run gate:platform
+
+      # The gzipped Worker must stay under 2.5 MB against the Free plan's 3 MB cap. This is a
+      # dry-run build — it needs no Cloudflare credentials.
+      - name: Platform gate (bundle size)
+        run: npm run gate:bundle
+
+      # The suite runs in workerd via @cloudflare/vitest-pool-workers. It is slow because §38's
+      # PBKDF2 is *supposed* to be slow — the lockout test alone pays six honest derivations at
+      # the full 600,000 iterations — so do not "fix" a timeout here by weakening the hash. The
+      # budget is the thing that is wrong.
+      - name: Test
+        run: npm test
+
+  frontend:
+    name: Frontend — type-check · build · 35 tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Test
+        run: npm test
+
+      # The build is part of the gate, not a deploy step: `tsc --noEmit` passing does not prove Vite
+      # can actually bundle the thing, and the first place that would surface is a deploy.
+      - name: Build
+        run: npm run build

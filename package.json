@@ -1,5 +1,10 @@
 {
   "devDependencies": {
+    "playwright": "^1.61.1",
     "wrangler": "^4.110.0"
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   }
 }

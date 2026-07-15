@@ -24,7 +24,7 @@ import { StaffAuthenticationService } from '@/modules/identity/staff-authenticat
 export const authRoutes = new Hono<AppEnv>();
 
 function service(c: { env: AppEnv['Bindings'] }): StaffAuthenticationService {
-  return new StaffAuthenticationService(createDatabase(c.env.DB), c.env.KV);
+  return new StaffAuthenticationService(createDatabase(c.env.DB), c.env);
 }
 
 authRoutes.post('/login', async (c) => {
@@ -55,7 +55,8 @@ authRoutes.get('/me', async (c) => {
 
 authRoutes.post('/logout', async (c) => {
   const user = requireUser(c);
-  const tokenId = c.get('tokenId') as string;
+  // Always set by `authenticate()`, which this route is mounted behind.
+  const tokenId = c.get('tokenId')!;
 
   await service(c).logout(user, tokenId, clientIp(c));
 

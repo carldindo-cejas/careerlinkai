@@ -19,7 +19,7 @@ export function StudentDashboardPage() {
   const user = useAuthStore((state) => state.user);
   const classRoom = useStudentClassStore((state) => state.classRoom);
 
-  const { data: assignments } = useAssignments();
+  const { data: assignments, isError: assignmentsFailed, error: assignmentsError } = useAssignments();
   const { data: results } = useResults();
   const { data: profile } = useProfile();
   const navigate = useNavigate();
@@ -49,26 +49,46 @@ export function StudentDashboardPage() {
         </Alert>
       ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{todo.length > 0 ? 'You have work to do' : 'Nothing to do yet'}</CardTitle>
-          <CardDescription>
-            {todo.length > 0
-              ? `${todo.length} ${todo.length === 1 ? 'assessment is' : 'assessments are'} waiting for you.`
-              : 'Your counselor will assign you an assessment. It will show up here.'}
-          </CardDescription>
-        </CardHeader>
+      {/*
+        Deviation D11, and this card is the reason D11 was written down.
 
-        {todo.length > 0 ? (
-          <CardContent>
-            <Button onClick={() => navigate(paths.studentAssessments)}>
-              {todo.some((a) => a.my_attempt?.status === 'IN_PROGRESS')
-                ? 'Continue where I left off'
-                : 'Start'}
-            </Button>
-          </CardContent>
-        ) : null}
-      </Card>
+        During the Steps 1-3 browser pass this dashboard cheerfully rendered "Nothing to do yet —
+        your counselor will assign you an assessment" while `GET /student/assignments` was
+        returning **404**. The screen had no isError branch, so a total failure of the endpoint and
+        a student with an empty list produced pixel-identical output. It was harmless only while
+        the endpoint genuinely did not exist. It became a lie the day Step 4 shipped it.
+
+        So the failure gets its own branch, and the empty state is gated on the data having
+        actually arrived. "We could not load this" is not a synonym for "there is nothing here",
+        and this is the one screen where confusing the two costs a student their assessment.
+      */}
+      {assignmentsFailed ? (
+        <Alert>
+          We could not load your assessments. {assignmentsError.message} Try refreshing — if it
+          keeps happening, tell your counselor.
+        </Alert>
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle>{todo.length > 0 ? 'You have work to do' : 'Nothing to do yet'}</CardTitle>
+            <CardDescription>
+              {todo.length > 0
+                ? `${todo.length} ${todo.length === 1 ? 'assessment is' : 'assessments are'} waiting for you.`
+                : 'Your counselor will assign you an assessment. It will show up here.'}
+            </CardDescription>
+          </CardHeader>
+
+          {todo.length > 0 ? (
+            <CardContent>
+              <Button onClick={() => navigate(paths.studentAssessments)}>
+                {todo.some((a) => a.my_attempt?.status === 'IN_PROGRESS')
+                  ? 'Continue where I left off'
+                  : 'Start'}
+              </Button>
+            </CardContent>
+          ) : null}
+        </Card>
+      )}
 
       {done.length > 0 ? (
         <Card>

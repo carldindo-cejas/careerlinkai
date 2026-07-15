@@ -8,12 +8,21 @@ import type { Env } from '@/env';
  * that never expires because `STUDENT_TOKEN_TTL_HOURS` was typo'd would be a security bug
  * that no test would catch.
  */
-function requireNumber(env: Env, key: keyof Env): number {
+/**
+ * The vars that carry a number. Narrower than `keyof Env` on purpose: that would also admit
+ * the bindings, and `requireNumber(env, 'DB')` is not a thing anyone should be able to write.
+ */
+type NumericVar =
+  | 'STUDENT_JOIN_CODE_TTL_DAYS'
+  | 'STUDENT_TOKEN_TTL_HOURS'
+  | 'ASSESSMENT_GENERATION_MAX_QUESTIONS';
+
+function requireNumber(env: Env, key: NumericVar): number {
   const raw = env[key];
   const value = Number(raw);
 
   if (typeof raw !== 'string' || raw.trim() === '' || !Number.isFinite(value)) {
-    throw new Error(`Environment var ${String(key)} must be a number, got: ${String(raw)}`);
+    throw new Error(`Environment var ${key} must be a number, got: ${raw}`);
   }
 
   return value;

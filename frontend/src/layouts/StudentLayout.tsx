@@ -8,12 +8,19 @@ import { useAuthStore } from '@/stores/authStore';
 import { useStudentClassStore } from '@/stores/studentClassStore';
 
 /**
- * The student's four destinations (§37). Deliberately flat and short — this is a shell a
+ * The student's destinations (§37). Deliberately flat and short — this is a shell a
  * seventeen-year-old uses three times in a year, not a console.
+ *
+ * "My recommendations" sits directly after "My results" because that is the order the student
+ * actually travels: an assessment produces a result, and two results produce a recommendation. It
+ * is a top-level destination rather than a tab inside the results page because a recommendation is
+ * not a property of any single result — it is drawn from RIASEC *and* SCCT together (§27), and
+ * filing it under one of them would misrepresent where the number came from.
  */
 const nav = [
   { to: paths.studentAssessments, label: 'Assessments' },
   { to: paths.studentResults, label: 'My results' },
+  { to: paths.studentRecommendations, label: 'My recommendations' },
   { to: paths.studentProfile, label: 'My profile' },
 ];
 

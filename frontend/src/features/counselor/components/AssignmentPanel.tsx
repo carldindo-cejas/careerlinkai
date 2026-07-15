@@ -29,7 +29,7 @@ import type { AssessmentAssignment } from '@/types/assessment';
  */
 export function AssignmentPanel({ classId }: { classId: string }) {
   const { data: templates } = useAssessmentTemplates();
-  const { data: assignments, isLoading } = useClassAssignments(classId);
+  const { data: assignments, isLoading, isError, error } = useClassAssignments(classId);
   const assign = useAssignAssessment(classId);
   const close = useCloseAssignment(classId);
 
@@ -93,7 +93,15 @@ export function AssignmentPanel({ classId }: { classId: string }) {
 
         {isLoading ? <p className="text-sm text-slate-500">Loading assignments…</p> : null}
 
-        {(assignments ?? []).length === 0 && !isLoading ? (
+        {/*
+          D11. "Nothing assigned yet" on a failed load is the counselor-side version of the same
+          bug: it invites the counselor to assign an assessment that may already be assigned, and
+          the duplicate is then rejected by the server for reasons the screen just told them were
+          impossible.
+        */}
+        {isError ? <Alert tone="danger">{error.message}</Alert> : null}
+
+        {assignments && assignments.length === 0 ? (
           <p className="text-sm text-slate-500">
             Nothing assigned yet. Students see an empty list until you assign something.
           </p>

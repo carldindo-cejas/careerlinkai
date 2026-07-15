@@ -22,7 +22,7 @@ import type { Strand } from '@/types/catalog';
  * student who answers accurately.
  */
 export function StudentProfilePage() {
-  const { data: profile, isLoading } = useProfile();
+  const { data: profile, isLoading, isError, error } = useProfile();
   const update = useUpdateProfile();
 
   const [form, setForm] = useState<UpdateProfilePayload>({});
@@ -42,6 +42,21 @@ export function StudentProfilePage() {
   }, [profile]);
 
   if (isLoading) return <p className="text-sm text-slate-500">Loading your profile…</p>;
+
+  /*
+    D11. Rendering the form with empty fields when the profile failed to load is worse here than on
+    the other screens: the student would not merely be misinformed, they would fill it in again and
+    submit — and a form that silently discards what it could not read is a data-loss bug wearing a
+    UI. Refuse to show the form at all rather than show an empty one.
+  */
+  if (isError) {
+    return (
+      <Alert>
+        We could not load your profile. {error.message} Refresh to try again — do not re-enter it
+        here, in case what you already saved is still there.
+      </Alert>
+    );
+  }
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();

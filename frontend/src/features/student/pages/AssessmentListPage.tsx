@@ -20,7 +20,7 @@ import type { AssessmentAssignment } from '@/types/assessment';
  * have to do".
  */
 export function AssessmentListPage() {
-  const { data: assignments, isLoading } = useAssignments();
+  const { data: assignments, isLoading, isError, error } = useAssignments();
   const { data: profile } = useProfile();
   const start = useStartAttempt();
   const navigate = useNavigate();
@@ -56,7 +56,20 @@ export function AssessmentListPage() {
         </Alert>
       ) : null}
 
-      {(assignments ?? []).length === 0 ? (
+      {/*
+        Deviation D11. Until this branch existed, a student whose assignments failed to load was
+        shown "Nothing to do yet" — the request 404'd and the screen calmly reported that the
+        counselor had not assigned anything. It was harmless only while the endpoint genuinely did
+        not exist; the moment Step 4 landed it, the empty state became a lie told to the one person
+        who cannot check.
+
+        Note the `assignments &&` on the empty state below, not just `(assignments ?? []).length`:
+        an undefined list is *not* an empty list. "We could not load this" and "there is nothing
+        here" are different facts and must look different.
+      */}
+      {isError ? <Alert>{error.message}</Alert> : null}
+
+      {assignments && assignments.length === 0 ? (
         <Card>
           <CardHeader>
             <CardTitle>Nothing to do yet</CardTitle>

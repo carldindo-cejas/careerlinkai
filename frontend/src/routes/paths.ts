@@ -8,6 +8,9 @@ export const paths = {
   adminColleges: '/admin/colleges',
   adminCollegeDetail: '/admin/colleges/:collegeId',
   adminCareers: '/admin/careers',
+  // Phase 5a (§33, §37): the knowledge base and the AI governance text.
+  adminKnowledge: '/admin/knowledge',
+  adminAiPolicy: '/admin/ai-policy',
 
   counselorDashboard: '/counselor',
   counselorClasses: '/counselor/classes',
@@ -23,6 +26,8 @@ export const paths = {
   studentPlayer: '/student/attempts/:attemptId',
   studentResults: '/student/results',
   studentResult: '/student/results/:attemptId',
+  /** Phase 4 (§27). Not per-attempt: a student has one current set, drawn from RIASEC *and* SCCT. */
+  studentRecommendations: '/student/recommendations',
 } as const;
 
 export function classDetailPath(classId: string): string {

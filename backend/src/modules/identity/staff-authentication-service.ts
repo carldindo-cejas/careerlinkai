@@ -8,19 +8,18 @@ import {
   type CounselorProfile,
   type User,
 } from '@/db/schema';
+import type { AuthGuardDO } from '@/do/auth-guard';
+import type { Env } from '@/env';
+import {
+  LOGIN_LOCKOUT_LIMIT,
+  LOGIN_LOCKOUT_WINDOW_SECONDS,
+  staffAuthGuard,
+} from '@/lib/auth-guard';
 import { STAFF_TOKEN_TTL_HOURS } from '@/lib/config';
-import { generateToken, hashPassword, hashToken, verifyPassword } from '@/lib/crypto';
+import { generateToken, hashToken } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
 import { issueToken, revokeAllTokensForUser, revokeToken } from '@/lib/tokens';
-import {
-  checkRateLimit,
-  clearRateLimit,
-  LOGIN_LOCKOUT_LIMIT,
-  LOGIN_LOCKOUT_WINDOW_SECONDS,
-  loginLockoutKey,
-  recordFailure,
-} from '@/middleware/rate-limit';
 import type { ChangePasswordInput, LoginInput, ResetPasswordInput } from '@/modules/identity/schemas';
 import { AuditService } from '@/modules/platform/audit-service';
 
@@ -31,6 +30,11 @@ import { AuditService } from '@/modules/platform/audit-service';
  * code path, only the token *mechanism* they both end at. §38 calls this split
  * architectural, and the surest way to keep it that way is that neither service imports
  * the other.
+ *
+ * v1.5 (Phase 4.5): every password derivation and every lockout count goes through the
+ * per-email `AuthGuardDO` instance — the same object does both, which is what makes the
+ * count exact and brute force per-account serialized (§38). KV is off this path entirely
+ * (deviation D19, closed).
  */
 
 const MODULE = 'Identity';
@@ -49,7 +53,7 @@ export class StaffAuthenticationService {
 
   constructor(
     private readonly db: Database,
-    private readonly kv: KVNamespace,
+    private readonly env: Env,
   ) {
     this.audit = new AuditService(db);
   }
@@ -59,13 +63,14 @@ export class StaffAuthenticationService {
    *
    * Order matters: the lockout is checked *before* the password is verified, so a locked
    * account cannot be probed at all, and only failures are charged (§38) — a user who
-   * mistypes twice then succeeds walks away with a clean counter.
+   * mistypes twice then succeeds walks away with a clean counter. Check, derivation and
+   * charge all land on the same per-email DO instance.
    */
   async login(input: LoginInput, ipAddress: string | null): Promise<LoginResult> {
     const email = input.email.trim().toLowerCase();
-    const lockoutKey = loginLockoutKey(email);
+    const guard = staffAuthGuard(this.env, email);
 
-    const lockout = await checkRateLimit(this.kv, lockoutKey, LOGIN_LOCKOUT_LIMIT);
+    const lockout = await guard.check(LOGIN_LOCKOUT_LIMIT);
 
     if (lockout.locked) {
       throw this.lockoutError(lockout.retryAfterSeconds);
@@ -76,13 +81,13 @@ export class StaffAuthenticationService {
     });
 
     // Students have `password IS NULL` permanently (§38), so they can never satisfy
-    // `verifyPassword` — but the role check makes the intent explicit rather than relying
+    // the verification — but the role check makes the intent explicit rather than relying
     // on that as a happy accident.
     const isStaff = user?.role === 'admin' || user?.role === 'counselor';
-    const passwordMatches = isStaff && (await verifyPassword(input.password, user.password));
+    const passwordMatches = isStaff && (await guard.verify(input.password, user.password));
 
     if (!user || !isStaff || !passwordMatches) {
-      return this.rejectLogin(email, lockoutKey, user?.id ?? null, ipAddress);
+      return this.rejectLogin(email, guard, user?.id ?? null, ipAddress);
     }
 
     // The credentials were right, so saying *why* access is refused leaks nothing the
@@ -92,7 +97,7 @@ export class StaffAuthenticationService {
       throw ApiError.forbidden('Your account is not active. Contact an administrator.');
     }
 
-    await clearRateLimit(this.kv, lockoutKey);
+    await guard.clear();
 
     const timestamp = now();
     await this.db
@@ -150,13 +155,18 @@ export class StaffAuthenticationService {
     input: ChangePasswordInput,
     ipAddress: string | null,
   ): Promise<void> {
-    if (!(await verifyPassword(input.current_password, user.password))) {
+    // The double-derivation endpoint — verify the current password, hash the new one — is
+    // the exact call pattern that died with error 1102 on the free Worker's 10 ms budget
+    // (D14). Both derivations now run on the DO's 30-second budget.
+    const guard = this.guardFor(user);
+
+    if (!(await guard.verify(input.current_password, user.password))) {
       throw ApiError.validation({
         current_password: ['Your current password is incorrect.'],
       });
     }
 
-    await this.setPassword(user.id, input.password);
+    await this.setPassword(guard, user.id, input.password);
     await revokeAllTokensForUser(this.db, user.id);
 
     await this.audit.write({
@@ -226,7 +236,13 @@ export class StaffAuthenticationService {
       token: ['This password reset link is invalid or has expired.'],
     });
 
-    if (!record || record.tokenHash !== (await hashToken(input.token))) {
+    // Hash unconditionally, before the record is known to exist: doing it inside the
+    // comparison would skip the derivation entirely for an unknown email, and the resulting
+    // timing difference is an account-enumeration oracle — the exact thing the generic
+    // acknowledgement in `forgotPassword` exists to prevent.
+    const presentedHash = await hashToken(input.token);
+
+    if (record?.tokenHash !== presentedHash) {
       throw invalid;
     }
 
@@ -246,10 +262,12 @@ export class StaffAuthenticationService {
       throw invalid;
     }
 
-    await this.setPassword(user.id, input.password);
+    const guard = staffAuthGuard(this.env, email);
+
+    await this.setPassword(guard, user.id, input.password);
     await this.db.delete(passwordResetTokens).where(eq(passwordResetTokens.email, email));
     await revokeAllTokensForUser(this.db, user.id);
-    await clearRateLimit(this.kv, loginLockoutKey(email));
+    await guard.clear();
 
     await this.audit.write({
       action: 'STAFF_PASSWORD_RESET_COMPLETED',
@@ -263,11 +281,24 @@ export class StaffAuthenticationService {
 
   // --- internals ---------------------------------------------------------------------
 
-  private async setPassword(userId: string, password: string): Promise<void> {
+  /**
+   * The user's own guard instance. Staff always have an email; the id fallback exists so a
+   * hypothetical email-less row still resolves to *some* stable instance rather than
+   * crashing the derivation.
+   */
+  private guardFor(user: User): DurableObjectStub<AuthGuardDO> {
+    return staffAuthGuard(this.env, user.email ?? user.id);
+  }
+
+  private async setPassword(
+    guard: DurableObjectStub<AuthGuardDO>,
+    userId: string,
+    password: string,
+  ): Promise<void> {
     await this.db
       .update(users)
       .set({
-        password: await hashPassword(password),
+        password: await guard.hash(password),
         mustChangePassword: false,
         updatedAt: now(),
       })
@@ -293,13 +324,11 @@ export class StaffAuthenticationService {
    */
   private async rejectLogin(
     email: string,
-    lockoutKey: string,
+    guard: DurableObjectStub<AuthGuardDO>,
     userId: string | null,
     ipAddress: string | null,
   ): Promise<never> {
-    const failure = await recordFailure(
-      this.kv,
-      lockoutKey,
+    const failure = await guard.recordFailure(
       LOGIN_LOCKOUT_LIMIT,
       LOGIN_LOCKOUT_WINDOW_SECONDS,
     );
