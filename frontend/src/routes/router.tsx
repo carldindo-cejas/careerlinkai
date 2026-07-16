@@ -11,6 +11,8 @@ import { LoginPage } from '@/features/auth/pages/LoginPage';
 import { ClassDetailPage } from '@/features/counselor/pages/ClassDetailPage';
 import { ClassListPage } from '@/features/counselor/pages/ClassListPage';
 import { CounselorDashboardPage } from '@/features/counselor/pages/CounselorDashboardPage';
+import { TemplateBuilderPage } from '@/features/assessment-builder/pages/TemplateBuilderPage';
+import { TemplateListPage } from '@/features/assessment-builder/pages/TemplateListPage';
 import { AssessmentListPage } from '@/features/student/pages/AssessmentListPage';
 import { AssessmentPlayerPage } from '@/features/student/pages/AssessmentPlayerPage';
 import { RecommendationPage } from '@/features/student/pages/RecommendationPage';
@@ -72,6 +74,9 @@ export function AppRoutes() {
           {/* Phase 5a: what the AI may know, and what it may say (§33, §13.7). */}
           <Route path={paths.adminKnowledge} element={<KnowledgeListPage />} />
           <Route path={paths.adminAiPolicy} element={<AiPolicyPage />} />
+          {/* Phase 5b: the builder + AI generator (§31). Same pages as the counselor shell. */}
+          <Route path={paths.adminAssessmentTemplates} element={<TemplateListPage />} />
+          <Route path={paths.adminAssessmentTemplate} element={<TemplateBuilderPage />} />
         </Route>
       </Route>
 
@@ -85,6 +90,9 @@ export function AppRoutes() {
           <Route path={paths.counselorDashboard} element={<CounselorDashboardPage />} />
           <Route path={paths.counselorClasses} element={<ClassListPage />} />
           <Route path={paths.counselorClassDetail} element={<ClassDetailPage />} />
+          {/* Phase 5b: the builder + AI generator (§31) — ownership is enforced server-side. */}
+          <Route path={paths.counselorAssessmentTemplates} element={<TemplateListPage />} />
+          <Route path={paths.counselorAssessmentTemplate} element={<TemplateBuilderPage />} />
         </Route>
       </Route>
 

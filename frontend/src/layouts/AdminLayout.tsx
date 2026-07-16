@@ -21,6 +21,7 @@ export function AdminLayout() {
           </NavItem>
           <NavItem to={paths.adminColleges}>Colleges</NavItem>
           <NavItem to={paths.adminCareers}>Careers</NavItem>
+          <NavItem to={paths.adminAssessmentTemplates}>Assessments</NavItem>
           <NavItem to={paths.adminKnowledge}>Knowledge</NavItem>
           <NavItem to={paths.adminAiPolicy}>AI Policy</NavItem>
         </div>

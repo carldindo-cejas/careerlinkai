@@ -1,6 +1,9 @@
 import { createDatabase } from '@/db/client';
 import type { Env } from '@/env';
+import { dispatch, type AssessmentDraftGeneratedEvent } from '@/events/dispatcher';
+import { assessmentGenerationMaxQuestions } from '@/lib/config';
 import { AiPolicyService } from '@/modules/ai/ai-policy-service';
+import { AssessmentGenerationService } from '@/modules/ai/assessment-generation-service';
 import { ExplanationService } from '@/modules/ai/explanation-service';
 import { aiGatewayFrom, ingestionFrom, retrievalFrom } from '@/modules/ai/factory';
 import { RecommendationService } from '@/modules/recommendation/recommendation-service';
@@ -72,6 +75,44 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
         // it must not fail the message, because a retry into a dead quota cannot succeed.
         await explanations.explain(recommendation, null);
       }
+
+      return true;
+    }
+
+    /**
+     * §43 `GenerateAssessmentDraftJob` (Phase 5b): run the §31 pipeline against a DRAFT
+     * version. Model/quota failure is logged-and-absorbed inside the service (a FAILED
+     * `ai_requests` row the status endpoint reports) — never rethrown, because a retry into
+     * a dead quota cannot succeed (§30 v1.5).
+     */
+    case 'GenerateAssessmentDraft': {
+      const payload = message.payload;
+      const service = new AssessmentGenerationService(
+        db,
+        aiGatewayFrom(db, env),
+        await new AiPolicyService(db).activeGlobal(),
+        assessmentGenerationMaxQuestions(env),
+      );
+
+      await service.generateDraft({
+        aiRequestId: payload.aiRequestId as string,
+        versionId: payload.versionId as string,
+        userId: payload.userId as string,
+        mode: payload.mode as 'DOCUMENT' | 'DESCRIPTION',
+        sourceText: payload.sourceText as string,
+      });
+
+      // §31: "AssessmentDraftGenerated event → notify the creator." The notification
+      // listener is Phase 6; the event fires now, at the seam it will plug into.
+      await dispatch<AssessmentDraftGeneratedEvent>(
+        {
+          type: 'AssessmentDraftGenerated',
+          aiRequestId: payload.aiRequestId as string,
+          versionId: payload.versionId as string,
+          creatorId: payload.userId as string,
+        },
+        [],
+      );
 
       return true;
     }

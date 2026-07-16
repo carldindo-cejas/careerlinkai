@@ -32,7 +32,22 @@ export interface RecommendationGeneratedEvent {
   programs: number;
 }
 
-export type DomainEvent = AssessmentCompletedEvent | RecommendationGeneratedEvent;
+/**
+ * §31 (Phase 5b): fired by `GenerateAssessmentDraftJob` once a draft lands (or fails to).
+ * The listener — "notify the creator: your draft is ready for review" — is Phase 6's
+ * notification system; the event fires now, with no listeners, at the seam it plugs into.
+ */
+export interface AssessmentDraftGeneratedEvent {
+  type: 'AssessmentDraftGenerated';
+  aiRequestId: string;
+  versionId: string;
+  creatorId: string;
+}
+
+export type DomainEvent =
+  | AssessmentCompletedEvent
+  | RecommendationGeneratedEvent
+  | AssessmentDraftGeneratedEvent;
 
 export type Listener<E extends DomainEvent> = (event: E) => Promise<void>;
 

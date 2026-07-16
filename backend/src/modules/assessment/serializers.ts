@@ -258,3 +258,63 @@ export function serializeStudentProfile(profile: StudentProfile) {
 function decimal(value: number | null): string | null {
   return value === null ? null : value.toFixed(2);
 }
+
+// --- The author's view (Phase 5b — builder + §31 review) --------------------------------------
+
+/**
+ * The review payload — and the one place a question crosses the wire **with** its option
+ * scores and its dimension mappings. This is the exact information `serializeQuestion`
+ * exists to withhold from a student, disclosed on purpose to the person §25 asks to confirm
+ * it: a reviewer who cannot see what a question measures and what each answer scores cannot
+ * meaningfully confirm anything. The route group's staff gate is what keeps these two
+ * serializers pointed at different audiences.
+ */
+export function serializeAuthorQuestion(
+  question: AssessmentQuestion,
+  options: QuestionOption[],
+  mappings: {
+    id: string;
+    dimensionCode: string;
+    dimensionName: string;
+    weight: number;
+    confirmedAt: string | null;
+  }[],
+) {
+  return {
+    id: question.id,
+    question_text: question.questionText,
+    question_type: question.questionType,
+    section_label: question.sectionLabel,
+    order_number: question.orderNumber,
+    required: question.required,
+    source: question.source,
+    source_ai_request_id: question.sourceAiRequestId,
+    options: options.map((option) => ({
+      id: option.id,
+      label: option.label,
+      value: option.value,
+      score: option.score,
+      order_number: option.orderNumber,
+    })),
+    dimensions: mappings.map((mapping) => ({
+      mapping_id: mapping.id,
+      code: mapping.dimensionCode,
+      name: mapping.dimensionName,
+      weight: mapping.weight,
+      confirmed: mapping.confirmedAt !== null,
+      confirmed_at: mapping.confirmedAt,
+    })),
+  };
+}
+
+export function serializeVersionSummary(version: AssessmentVersion) {
+  return {
+    id: version.id,
+    version_number: version.versionNumber,
+    status: version.status,
+    instructions: version.instructions,
+    duration_minutes: version.durationMinutes,
+    scoring_algorithm: version.scoringConfig.algorithm,
+    created_at: version.createdAt,
+  };
+}

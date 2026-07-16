@@ -103,6 +103,8 @@ export interface CreateQuestionInput {
   orderNumber: number;
   required?: boolean;
   source?: QuestionSource;
+  /** §13.4 provenance — set only by the §31 generation job, back-pointing into `ai_requests`. */
+  sourceAiRequestId?: string | null;
   options: { label: string; value: string; score: number; orderNumber: number }[];
   /** Keyed by dimension **code**, which is what an instrument author actually thinks in. */
   dimensions: { code: string; weight?: number }[];
@@ -308,6 +310,27 @@ export class AssessmentBuilderService {
     return version;
   }
 
+  /** Every version of one template, newest first — the builder's version list. */
+  async versionsFor(templateId: string): Promise<AssessmentVersion[]> {
+    return this.db
+      .select()
+      .from(assessmentVersions)
+      .where(eq(assessmentVersions.assessmentTemplateId, templateId))
+      .orderBy(sql`${assessmentVersions.versionNumber} DESC`);
+  }
+
+  async findQuestion(
+    questionId: string,
+  ): Promise<(typeof assessmentQuestions.$inferSelect) | undefined> {
+    const [question] = await this.db
+      .select()
+      .from(assessmentQuestions)
+      .where(eq(assessmentQuestions.id, questionId))
+      .limit(1);
+
+    return question;
+  }
+
   /**
    * Invariant 1. Every write path beneath a version goes through this — adding a question,
    * an option, a mapping. A `PUBLISHED` *or* `ARCHIVED` version is closed: archiving is how an
@@ -403,7 +426,7 @@ export class AssessmentBuilderService {
         orderNumber: input.orderNumber,
         required: input.required ?? true,
         source,
-        sourceAiRequestId: null,
+        sourceAiRequestId: input.sourceAiRequestId ?? null,
         createdAt: timestamp,
       });
 
@@ -572,5 +595,198 @@ export class AssessmentBuilderService {
       .where(eq(assessmentQuestions.assessmentVersionId, versionId));
 
     return row?.total ?? 0;
+  }
+
+  // --- The author's view (Phase 5b — the §31 review step) -----------------------------------
+
+  /**
+   * Everything the review screen needs about one version, in three queries: the questions in
+   * order, every option **with its score**, and every mapping with its dimension and its
+   * confirmation state.
+   *
+   * This is the *author's* payload, deliberately unlike the player's (`serializeQuestion`
+   * omits scores and dimensions so a student cannot answer the Holland Code they want). The
+   * §31 review step is the exact opposite situation: a human being asked to confirm what a
+   * question measures **must** see the mapping and the scores, or the confirmation is
+   * theater.
+   */
+  async versionContent(versionId: string): Promise<{
+    questions: (typeof assessmentQuestions.$inferSelect)[];
+    optionsByQuestion: Map<string, (typeof questionOptions.$inferSelect)[]>;
+    mappingsByQuestion: Map<
+      string,
+      ((typeof questionDimensions.$inferSelect) & { dimensionCode: string; dimensionName: string })[]
+    >;
+  }> {
+    const questions = await this.db
+      .select()
+      .from(assessmentQuestions)
+      .where(eq(assessmentQuestions.assessmentVersionId, versionId))
+      .orderBy(asc(assessmentQuestions.orderNumber));
+
+    const options = await this.db
+      .select({ option: questionOptions })
+      .from(questionOptions)
+      .innerJoin(assessmentQuestions, eq(questionOptions.questionId, assessmentQuestions.id))
+      .where(eq(assessmentQuestions.assessmentVersionId, versionId))
+      .orderBy(asc(questionOptions.orderNumber));
+
+    const mappings = await this.db
+      .select({
+        mapping: questionDimensions,
+        dimensionCode: assessmentDimensions.code,
+        dimensionName: assessmentDimensions.name,
+      })
+      .from(questionDimensions)
+      .innerJoin(assessmentQuestions, eq(questionDimensions.questionId, assessmentQuestions.id))
+      .innerJoin(assessmentDimensions, eq(questionDimensions.dimensionId, assessmentDimensions.id))
+      .where(eq(assessmentQuestions.assessmentVersionId, versionId));
+
+    const optionsByQuestion = new Map<string, (typeof questionOptions.$inferSelect)[]>();
+
+    for (const { option } of options) {
+      const list = optionsByQuestion.get(option.questionId) ?? [];
+      list.push(option);
+      optionsByQuestion.set(option.questionId, list);
+    }
+
+    const mappingsByQuestion = new Map<
+      string,
+      ((typeof questionDimensions.$inferSelect) & { dimensionCode: string; dimensionName: string })[]
+    >();
+
+    for (const { mapping, dimensionCode, dimensionName } of mappings) {
+      const list = mappingsByQuestion.get(mapping.questionId) ?? [];
+      list.push({ ...mapping, dimensionCode, dimensionName });
+      mappingsByQuestion.set(mapping.questionId, list);
+    }
+
+    return { questions, optionsByQuestion, mappingsByQuestion };
+  }
+
+  /**
+   * Edit one question's text/required flag during review (§31: "review/edit text and
+   * options"). DRAFT versions only — invariant 1 reaches every row beneath a published
+   * version, this one included.
+   *
+   * Editing deliberately does **not** clear the mappings' `confirmed_at`: the mapping is a
+   * claim about *what the question measures*, and rewording the question is exactly what the
+   * reviewer is expected to do while confirming that claim. A reword so radical it changes
+   * the construct is the reviewer's own act, made while looking straight at the mapping.
+   */
+  async updateQuestion(
+    questionId: string,
+    changes: { questionText?: string; required?: boolean },
+  ): Promise<typeof assessmentQuestions.$inferSelect> {
+    const [question] = await this.db
+      .select()
+      .from(assessmentQuestions)
+      .where(eq(assessmentQuestions.id, questionId))
+      .limit(1);
+
+    if (question === undefined) {
+      throw ApiError.notFound('Question not found.');
+    }
+
+    const version = await this.findVersion(question.assessmentVersionId);
+
+    if (version === undefined) {
+      throw ApiError.notFound('Assessment version not found.');
+    }
+
+    this.assertVersionEditable(version);
+
+    const updated = {
+      ...question,
+      questionText: changes.questionText ?? question.questionText,
+      required: changes.required ?? question.required,
+    };
+
+    await this.db
+      .update(assessmentQuestions)
+      .set({ questionText: updated.questionText, required: updated.required })
+      .where(eq(assessmentQuestions.id, questionId));
+
+    return updated;
+  }
+
+  /** The mapping row + its version/template ids, for authorization before a confirm. */
+  async findMapping(mappingId: string): Promise<
+    | {
+        mapping: typeof questionDimensions.$inferSelect;
+        versionId: string;
+        templateId: string;
+      }
+    | undefined
+  > {
+    const [row] = await this.db
+      .select({
+        mapping: questionDimensions,
+        versionId: assessmentQuestions.assessmentVersionId,
+        templateId: assessmentVersions.assessmentTemplateId,
+      })
+      .from(questionDimensions)
+      .innerJoin(assessmentQuestions, eq(questionDimensions.questionId, assessmentQuestions.id))
+      .innerJoin(
+        assessmentVersions,
+        eq(assessmentQuestions.assessmentVersionId, assessmentVersions.id),
+      )
+      .where(eq(questionDimensions.id, mappingId))
+      .limit(1);
+
+    return row;
+  }
+
+  /**
+   * **The §25 confirmation, one mapping at a time.** Sets `confirmed_at` + `confirmed_by` —
+   * the pair the publish gate counts. Idempotent: confirming a confirmed mapping keeps the
+   * original reviewer, because "who looked at this" is provenance and the first look is the
+   * one that admitted it past the gate.
+   *
+   * There is deliberately **no bulk form** (§31: "no 'approve all' shortcut … the entire
+   * point of the gate is that a human actually looked at each dimension assignment"). §20's
+   * endpoint list sketches a `confirm-all-mappings` helper; §31 forbids exactly that, and the
+   * contradiction is resolved toward §31 — deviation recorded in PROGRESS.md.
+   */
+  async confirmMapping(
+    user: User,
+    mappingId: string,
+  ): Promise<typeof questionDimensions.$inferSelect> {
+    const found = await this.findMapping(mappingId);
+
+    if (found === undefined) {
+      throw ApiError.notFound('Question-dimension mapping not found.');
+    }
+
+    const version = await this.findVersion(found.versionId);
+
+    if (version === undefined) {
+      throw ApiError.notFound('Assessment version not found.');
+    }
+
+    // A published version's mappings are frozen — and necessarily all confirmed already.
+    this.assertVersionEditable(version);
+
+    if (found.mapping.confirmedAt !== null) {
+      return found.mapping;
+    }
+
+    const confirmed = { ...found.mapping, confirmedAt: now(), confirmedBy: user.id };
+
+    await this.db
+      .update(questionDimensions)
+      .set({ confirmedAt: confirmed.confirmedAt, confirmedBy: confirmed.confirmedBy })
+      .where(eq(questionDimensions.id, mappingId));
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'QUESTION_DIMENSION_CONFIRMED',
+      module: MODULE,
+      targetType: 'question_dimension',
+      targetId: mappingId,
+      newValues: { question_id: found.mapping.questionId, dimension_id: found.mapping.dimensionId },
+    });
+
+    return confirmed;
   }
 }

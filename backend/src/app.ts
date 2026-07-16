@@ -12,7 +12,9 @@ import {
   counselorAssessmentRoutes,
   studentRoutes,
 } from '@/modules/assessment/routes';
+import { generationRoutes } from '@/modules/ai/generation-routes';
 import { adminAiRoutes } from '@/modules/ai/routes';
+import { builderRoutes } from '@/modules/assessment/builder-routes';
 import { adminRoutes } from '@/modules/catalog/routes';
 import { counselorRoutes } from '@/modules/classes/routes';
 import { authRoutes } from '@/modules/identity/routes';
@@ -79,6 +81,11 @@ export function createApp() {
   api.route('/admin', adminAssessmentRoutes);
   // Phase 5a: the AI/Knowledge module's own /admin router — same one-module-one-router rule.
   api.route('/admin', adminAiRoutes);
+  // Phase 5b: the builder + generation group mounts at the API root — §20 lists it under both
+  // /admin and /counselor with identical shapes, so it is shared surface with a per-record
+  // ownership policy, not two prefixed copies of one resource.
+  api.route('/', builderRoutes);
+  api.route('/', generationRoutes);
 
   app.route('/api/v1', api);
 

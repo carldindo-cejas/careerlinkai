@@ -51,6 +51,13 @@ export interface GenerateOptions {
   /** Retrieved chunk ids + prompt variables — persisted for §13.7 provenance. */
   inputContext: Record<string, unknown>;
   maxTokens?: number;
+  /**
+   * Pre-allocated `ai_requests.id` (Phase 5b). The generation endpoints answer 202 with an
+   * id and enqueue the job; the job passes that id here so the row the gateway writes is the
+   * row the client is already polling (`GET /ai/requests/{id}/status`). Callers that pass
+   * this must call `generate` at most once per id — the id is a primary key.
+   */
+  id?: string;
 }
 
 export type GenerateResult =
@@ -208,7 +215,7 @@ export class AiGatewayService {
     },
   ): Promise<AiRequest> {
     const row = {
-      id: uuid(),
+      id: options.id ?? uuid(),
       userId: options.userId,
       requestType: options.requestType,
       inputContext: {

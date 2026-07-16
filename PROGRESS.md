@@ -1,10 +1,10 @@
 # CareerLinkAI Progress
 
-**Tracks:** FULLPLAN.md v1.5 · **Last full audit of this file:** 2026-07-15 (**Phases 4.5 and 5a are
-CODE-COMPLETE** — `AuthGuardDO` restores the §38 600,000 iterations and retires KV from every auth
-path, the CI platform gates are live, and the whole §30 RAG stack is built and tested against
-stubs; **the staging deploy and its measurements are the one remaining step of both phases** —
-`wrangler` is logged in, the checklist is under "Next Incremental Phase", it just needs to be run)
+**Tracks:** FULLPLAN.md v1.5 · **Last full audit of this file:** 2026-07-15 (**Phases 4.5, 5a and
+5b are COMPLETE — deployed, exit-demoed and measured on staging.** The full Phase 0–5a walkthrough
+passes **66/66** against the live deployment; the 5b exit demo passed **11/11** the same day —
+generate → per-mapping confirm → publish, and the §6 RIASEC-as-admin 403 — see "The deploy
+session, executed". **Only Phase 6 remains.**)
 **Rule:** FULLPLAN.md is the single source of truth. Where this file and the plan disagree, the plan
 wins and this file is a bug — unless the entry is explicitly marked as a ratified/proposed deviation
 in the "Deviations From Master Plan" section below.
@@ -22,16 +22,16 @@ Production (`careerlinkai`, the script the `careerlinkai.online` custom domains 
 index and queue pair — it cannot reach production's data, which is the entire point of it existing.
 
 > ⚠️ **The Cloudflare account is on the Workers _Free_ plan — permanently, as a ratified product
-> requirement (FULLPLAN v1.5).** Phase 4.5 Step 1 is built: **`AuthGuardDO` derives every password
-> at the full §38 600,000 iterations** (the DO gets a 30-second CPU budget on every plan, vs the
-> Worker's 10 ms) and the lockout/join-throttle counters moved into the same object, retiring KV
-> from every auth path (D14 and D19, closed in code). **The deployed staging Worker still runs the
-> pre-4.5 build** — its hashes verify at their stored 100k cost either way, but D14 is only fully
-> closed once the 4.5 exit demo (repeated `/auth/change-password`, the error-1102 canary) passes on
-> a live deploy. The checklist is under "Next Incremental Phase" — remote writes are left to the
-> operator, deliberately. The full Free-plan envelope — every verified ceiling and the three residual
-> compromises (quota-exhaustion DoS, ~150–200 AI explanations/day, 24 h queue retention) — is
-> documented in **FULLPLAN §45**.
+> requirement (FULLPLAN v1.5).** Phase 4.5 is now proven on the edge, not just in code:
+> **`AuthGuardDO` derives every password at the full §38 600,000 iterations** (the DO gets a
+> 30-second CPU budget on every plan, vs the Worker's 10 ms), the lockout/join-throttle counters
+> live in the same object (KV retired from every auth path — D14 and D19, **both fully closed**),
+> and the 2026-07-15 staging exit demo ran the error-1102 canary — **four consecutive
+> `/auth/change-password` calls, each verifying and hashing at full cost, all 200s (~2 s each)** —
+> confirmed the rotated hash is stored as `pbkdf2$600000$`, and watched the lockout trip on the
+> fifth failure and refuse even the correct password while locked. The full Free-plan envelope —
+> every verified ceiling and the three residual compromises (quota-exhaustion DoS, ~150–200 AI
+> explanations/day, 24 h queue retention) — is documented in **FULLPLAN §45**.
 
 > **History note:** a previous PROGRESS.md tracked the Laravel-era build (Phases 0–3, referenced by
 > `docs/audit/2026-07-13-architecture-audit.md`). That file left the tree together with the retired
@@ -42,18 +42,16 @@ index and queue pair — it cannot reach production's data, which is the entire 
 
 ## Overall Progress
 
-**Estimated completion: ~85% of total v1 scope.**
+**Estimated completion: ~95% of total v1 scope.**
 
-Basis for the estimate: the React frontend for Phases 0–3 is built, type-checks clean, and passes
-its full test suite (7 files, 35 tests). The Worker backend now runs the **complete Phase 0–3
-scope** — the app shell, staff auth, class CRUD + join-code lifecycle, bulk roster provisioning,
-passwordless student access, the full academic catalog with the program↔career mapping, and **the
-entire assessment engine** (authoring, versioning, the publish gate, assignment, the attempt
-lifecycle, and §24's scoring) — at **371 passing tests in workerd**. Phase 4's §27 formula core is
-built and tested; the rest of Phase 4 and Phases 5–6 have no backend code. Roughly: frontend ≈ 55%
-of its total screens done × ~35% of project effort, backend ≈ 65% × ~65% of project effort.
+Basis for the estimate: everything through **Phase 5b is built, deployed to staging, exit-demoed
+and measured** — the Phase 0–5a walkthrough passes 66/66 and the 5b demo 11/11 against the live
+deployment, behind a green gate of **477 backend tests in workerd + 35 frontend tests**. What
+remains is Phase 6 alone: notifications (the one missing table), the audit-log viewer, real
+dashboard data, counselor management, the small D7/D8 debts, and defense prep.
 
-**Every screen the React app has now has a backend behind it** — the first time that has been true.
+**Every screen the React app has now has a backend behind it, and every backend feature now has a
+screen.**
 
 | Phase (FULLPLAN §57) | Status |
 |---|---|
@@ -63,13 +61,13 @@ of its total screens done × ~35% of project effort, backend ≈ 65% × ~65% of 
 | Phase 3 — Assessment Engine | ✅ **Re-delivered on the Worker** (Step 4) + ✅ frontend |
 | Phase 3.5 — Platform Port | ✅ **COMPLETE.** Steps 1–5. The whole Phase 0–3 surface runs on a live Cloudflare deployment and the §57 walkthrough passes against it, through the unchanged frontend |
 | Phase 4 — Recommendation Engine | ✅ **COMPLETE.** Migration 0007, `RecommendationService`, the `AssessmentCompleted` listener, the policy, both endpoints, the student screens, **and D11 fixed**. The full Phase 0–**4** walkthrough passes **61/61 on staging** — a student completes RIASEC *and* SCCT and is handed 10 ranked careers and 10 ranked programs, each with a college and a deterministic reason |
-| **Phase 4.5 — Free-Plan Hardening (new in FULLPLAN v1.5)** | ✅ **Code-complete, staging exit demo pending.** `AuthGuardDO` at 600k iterations (D14 closed in code); lockout + join throttle in the DO, KV retired from auth (D19 closed); CI platform gates (config shape, DO boundary, bundle size) live; the submit path's subrequest budget measured and trimmed 35 → ≤25. Remaining: deploy + the `/auth/change-password` canary on staging |
-| **Phase 5a — AI Explanation / RAG** | ✅ **Code-complete, staging measurements pending.** Migration 0008 (all four §13.7 tables); `AiGatewayService` with the quota taxonomy; §33 ingestion (browser extraction, batched embeddings, R2 sidecar); §30 retrieval + explanation with the §34 guardrails; `POST /student/recommendations/{id}/explain`; the queue's first real jobs; admin Knowledge + AI Policy screens; "Explain more" on every card. Remaining: deploy, then measure generation latency vs the §6 8 s budget and Vectorize upsert lag |
-| Phase 5b — AI-Assisted Generation | 🚧 Not started |
+| **Phase 4.5 — Free-Plan Hardening (new in FULLPLAN v1.5)** | ✅ **COMPLETE — exit demo passed on staging 2026-07-15.** `AuthGuardDO` at 600k iterations; lockout + join throttle in the DO, KV retired from auth; CI platform gates live; submit-path subrequest budget ≤25. The live canary: 4 consecutive `/auth/change-password` calls all 200'd (~2 s each, where the pre-4.5 Worker died with error 1102), the new hash is stored `pbkdf2$600000$`, a pre-4.5 100k hash still opens, and the lockout tripped on the 5th failure (D14 + D19 **fully closed**) |
+| **Phase 5a — AI Explanation / RAG** | ✅ **COMPLETE — exit demo passed on staging 2026-07-15.** The full §30/§33 stack live: PDF upload → UPLOADED → PROCESSING → COMPLETED (~72 s, queue batching dominates) → vectors queryable ≤10 s later → a **grounded explanation in 5.7 s generation latency (§6 budget: 8 s), 780 tokens**, served from the stored row on every later request. §30's refuse-ungrounded and §29's worst-day posture were both **proven live** — see "The deploy session, executed". Found + fixed live: Cloudflare had deprecated the §29 text model (platform fact #4) |
+| **Phase 5b — AI-Assisted Generation** | ✅ **COMPLETE — exit demo passed on staging 2026-07-15, 11/11.** The §32 generation prompt; `AssessmentGenerationService` (§34 validator, unconfirmed-draft persistence); `GenerateAssessmentDraftJob` on the `ai` queue; the §20 generation endpoint group (both §31 modes + the status poll, `authorizeGenerateWithAi` category-first); the builder endpoint group (templates, dimensions, versions, the author's review payload, per-mapping confirm, publish); the `assessment-builder` frontend feature. **Live:** a 12-question Mode B draft landed DRAFTED in ~130 s, publish refused with "12 of 12 … unconfirmed", 12 individual confirms opened the gate, publish succeeded — and RIASEC-as-admin answered **403**. 477 backend + 35 frontend tests green |
 | Phase 6 — Polish & Defense Prep | 🚧 Not started |
 
-**Current phase:** **the staging deploy of Phases 4.5 + 5a** (the checklist is under "Next
-Incremental Phase"), then **Phase 5b**.
+**Current phase:** **Phase 6** — notifications (the one missing table), the audit-log viewer,
+real dashboard data, counselor management, the D7/D8 debts, defense prep.
 
 ### ⚠️ The single most important lesson in this document
 
@@ -108,6 +106,7 @@ with its designated guard:
 | Workers AI: 10,000 neurons/day, hard-stop | The demo's Nth explanation 500ing | ✅ `AiGatewayService` types the failure (`QUOTA_EXHAUSTED`), logs the FAILED `ai_requests` row, never retries, and every caller serves the deterministic §27 reason (§30) |
 | Vectorize: upserts indexed **asynchronously** | Ingest-then-query flakes, "failed" writes that succeeded | ✅ `COMPLETED` = accepted, stated at every seam; retrieval tolerates absent matches; the staging smoke poll is on the deploy checklist |
 | Daily quotas generally (100k requests, 5M D1 reads, 100k D1 writes — all account-wide, staging included) | A load test or attacker exhausting the day | §45 envelope math + dashboard check before the defense; availability-only risk, accepted |
+| **Workers AI models are deprecated server-side, with no deploy on our end** — `@cf/meta/llama-3.1-8b-instruct` was retired 2026-05-30 and every call to it fails with error **5028** | **It did bite — platform fact #4, found live on the 5a exit demo.** Every explanation failed `MODEL_ERROR` while all 477 local tests were green (the suite stubs the gateway, as it must) | ✅ The §29 posture held on a real outage: every student got a 200 + the deterministic reason, and the FAILED `ai_requests` rows named the exact cause in `failure_reason`. Fixed by switching `WORKERS_AI_TEXT_MODEL` to `@cf/meta/llama-3.1-8b-instruct-fp8` (same model, fp8-quantized, current) — a one-var change precisely because §29 made the model name config, not code. If explanations ever degrade to MODEL_ERROR again, check the model's lifecycle page before the code |
 
 > **Toolchain fact found in Phase 5a (good news for once):** the current
 > `@cloudflare/vitest-pool-workers` D1 emulation **now enforces the 100-bound-parameter cap**
@@ -137,7 +136,8 @@ were invisible to every test on both sides of the stack:
 Both are now regression-tested by asserting on **what the code asks of the platform** rather than on
 what the local runtime hands back — the only shape of test that can catch this class of bug offline.
 
-**Remaining phases:** 4.5, 5a, 5b, 6 — plus the frontend screens those phases add.
+**Remaining phases:** 6 only — plus the frontend screens it adds (notifications, audit-log
+viewer, real dashboards, counselor management).
 
 ### ⚠️ Critical context for the port (read before writing code)
 
@@ -356,11 +356,15 @@ modules are still unbuilt; **Identity & Access is now built for the staff half.*
   `backend/test/catalog/`, `backend/test/unit/holland.test.ts`.
 
 ### Assessment (`assessment_templates` … `assessment_assignments`, 7 tables)
-- **Status:** ✅ **Complete** (Phase 3.5 Step 4). Frontend complete for the Phase 3 slice
-  (counselor AssignmentPanel, template list). **No manual assessment-builder UI exists yet**
-  (§35 `assessment-builder` feature — RIASEC/SCCT are seeded, so the builder UI is genuinely
-  post-Phase-3 scope, needed by Phase 5b at the latest). The *service* is fully built and tested;
-  only its CRUD **endpoints** are unbuilt, and no UI consumes them.
+- **Status:** ✅ **Complete** (Phase 3.5 Step 4) — **and, since Phase 5b, the builder has its
+  endpoints and its UI.** The §20 template/version group is mounted at the API root (shared by
+  admin and counselor, ownership per record): create CUSTOM template, add dimensions, create
+  version, the author's review payload (`GET /assessment-versions/{id}` — questions **with**
+  scores and mappings, the exact disclosure the player payload withholds), manual question add
+  (confirmed at insert), question edit (DRAFT only), `POST /question-dimensions/{id}/confirm`
+  (the §25 act, one at a time — no bulk form, deviation D24), publish-readiness, publish. The
+  `assessment-builder` frontend feature (TemplateListPage + TemplateBuilderPage) serves both
+  roles from both shells.
 - **Implemented:** migration `0005_assessment.sql`; `AssessmentBuilderService` (templates,
   versions, dimensions, questions, publish, publish-readiness); `policies/assessment.ts`;
   `instruments.ts` (the RIASEC/SCCT content + seeder); the `/student` route group — its first mount.
@@ -511,10 +515,29 @@ modules are still unbuilt; **Identity & Access is now built for the staff half.*
 </details>
 
 ### AI / Knowledge (`knowledge_documents`, `knowledge_chunks`, `ai_requests`, `ai_policies`)
-- **Status:** ✅ **The 5a half is complete** (gateway, ingestion, retrieval, explanation, policy —
-  33 tests, all against stubs). Frontend complete for 5a (Knowledge upload/list with browser-side
-  extraction, AI-policy editor, "Explain more"). 🚧 The 5b half (`AssessmentGenerationService`,
-  the §31 pipeline, the generator UI) is not started.
+- **Status:** ✅ **Both halves built.** The 5a half (gateway, ingestion, retrieval, explanation,
+  policy) is complete **and proven on staging** (see "The deploy session, executed"). The 5b half
+  is code-complete: `AssessmentGenerationService` (the §31 pipeline + the §34 output validator,
+  `parseGenerationOutput` — pure and unit-tested against hand-written malformed payloads),
+  `src/prompts/assessment-generation.v1.ts` (§32 verbatim, `{max_questions}` interpolated but
+  enforced by the validator regardless), `GenerateAssessmentDraftJob` on the `ai` queue, and the
+  generation endpoint group. Frontend complete for both (Knowledge/AI-policy/Explain-more from 5a;
+  the generator panels in the builder from 5b).
+- **The 5b async contract:** the generate endpoints answer **202 with a pre-allocated
+  `ai_requests` id** and enqueue; the job hands that id to the gateway, so the row it writes is
+  the row the client polls (`GET /ai/requests/{id}/status`). The draft's outcome is **derived,
+  never stored twice**: no row → `PENDING`; row FAILED → `FAILED` (+ the §30 taxonomy reason);
+  row SUCCESS with no questions referencing it → `VALIDATION_FAILED` (§34 rejected the output);
+  row SUCCESS with questions → `DRAFTED` (+ count + Mode A's inert `suggested_dimensions`,
+  re-parsed from the stored response text). A job lost to the 24 h queue retention polls PENDING
+  forever, and the honest remedy is the same button as a validation failure: request a fresh
+  generation.
+- **What the 5b pipeline must never do** is produce anything a student can be measured by without
+  a human in between — enforced not here but by §25's gate, which this service *feeds*: every
+  mapping it writes has `confirmed_at = NULL`, every question `source = 'AI_GENERATED'` +
+  `source_ai_request_id`. The job also **re-checks the category** (CUSTOM only) even though the
+  endpoint's policy already refused RIASEC/SCCT — §32's own rule ("you must never assume that
+  check happened correctly"), tested by forging the queue message the endpoint could never send.
 - **Implemented:** migration `0008`; `AiGatewayService` (the single adapter — one `ai_requests`
   row per generation call, the §30 v1.5 failure taxonomy with `QUOTA_EXHAUSTED` never retried,
   batched `embed()` pinned to one call per ≤100 texts); `KnowledgeIngestionService` (§33 —
@@ -535,14 +558,15 @@ modules are still unbuilt; **Identity & Access is now built for the staff half.*
   the quota taxonomy, `ai_requests` rows — and the HTTP tests run with the bindings genuinely
   absent, which proves the §29 posture end to end: the student gets a 200 and the deterministic
   reason on the platform's worst day.
-- **Missing (Phase 5b):** `AssessmentGenerationService`, the §31 generation pipeline + prompt
-  file, the generation endpoint group, the confirmation-gate review UI. **Missing (deploy):** the
-  two residual measurements — generation latency vs the §6 8 s budget, Vectorize upsert lag —
-  which need the live bindings.
-- **Files:** `backend/src/modules/ai/`, `backend/src/lib/chunker.ts`,
-  `backend/src/prompts/recommendation-explanation.v1.ts`, `backend/src/jobs/ai-jobs.ts`,
+- **Missing:** nothing — both halves are deployed and exit-demoed on staging (2026-07-15; the
+  measurements are recorded under "The deploy session, executed").
+- **Files:** `backend/src/modules/ai/` (now incl. `assessment-generation-service.ts`,
+  `generation-routes.ts`), `backend/src/lib/chunker.ts`,
+  `backend/src/prompts/recommendation-explanation.v1.ts`,
+  `backend/src/prompts/assessment-generation.v1.ts`, `backend/src/jobs/ai-jobs.ts`,
   `backend/migrations/0008_ai_knowledge.sql`, `backend/seeds/0003_ai_policy.sql`,
-  `backend/test/ai/`, `backend/test/unit/chunker.test.ts`.
+  `backend/test/ai/`, `backend/test/unit/chunker.test.ts`,
+  `backend/test/unit/generation-output.test.ts`, `backend/test/assessment/builder.test.ts`.
 
 ### Platform (`notifications`, `audit_logs`)
 - **Status:** 🟡 **Partially built.** `audit_logs` + `AuditService` exist (migration `0002`);
@@ -606,6 +630,19 @@ modules are still unbuilt; **Identity & Access is now built for the staff half.*
 | GET | `/api/v1/admin/ai-policies` | The single seeded GLOBAL row; no create/delete endpoint, by design (v1.2) |
 | PATCH | `/api/v1/admin/ai-policies/{id}` | `instructions`/`restrictions`/`is_active` only; `scope` is refused (`.strict()`); audited with old+new values |
 | POST | `/api/v1/student/recommendations/{id}/explain` | §30 inline. **Always 200**: an existing explanation, a fresh one, or `explanation: null` + the deterministic reason with a typed `failure`. 429 past 10 AI req/min (DO-counted); 404 for a recommendation that is not yours |
+| POST | `/api/v1/assessment-templates` | **Phase 5b, shared staff surface** (this and everything below: `ensureRole('counselor','admin')` + per-record ownership — admin any, counselor their own, foreign ids 404). `category` is a schema literal `'CUSTOM'` — a second RIASEC is not a request this API can mean |
+| GET | `/api/v1/assessment-templates/{id}` | Template + dimensions + all versions (the builder's working view) |
+| POST | `/api/v1/assessment-templates/{id}/dimensions` | §31 Mode B's prerequisite; refused once any version has published (invariant 2) |
+| POST | `/api/v1/assessment-templates/{id}/versions` | A new DRAFT version; `scoring_algorithm` defaults to `WEIGHTED_COMPOSITE` |
+| GET | `/api/v1/assessment-versions/{id}` | **The author's review payload** — questions WITH option scores and dimension mappings (+ per-mapping confirmed state, + readiness). The exact disclosure the player payload exists to withhold, shown to the person §25 asks to confirm it |
+| POST | `/api/v1/assessment-versions/{id}/questions` | The manual editor; MANUAL mappings are confirmed at insert (§25 — a human typed them) |
+| PATCH | `/api/v1/assessment-questions/{id}` | Edit text/required during review; DRAFT versions only (invariant 1) |
+| POST | `/api/v1/question-dimensions/{id}/confirm` | **The §25 act, one mapping at a time** — sets `confirmed_at`/`confirmed_by`, audited, idempotent; answers with the updated readiness. No bulk form exists (D24) |
+| GET | `/api/v1/assessment-versions/{id}/publish-readiness` | `{total, confirmed, remaining}` |
+| POST | `/api/v1/assessment-versions/{id}/publish` | The §25 gate: 422 **with the outstanding count** while any mapping is unconfirmed or the version has zero questions |
+| POST | `/api/v1/assessment-versions/{id}/ai-generate/document` | §31 Mode A — body `{extracted_text}` (the browser extracted, same §33 utility). **202** + a pre-allocated `ai_request_id`; `authorizeGenerateWithAi` first (RIASEC/SCCT → 403 for every principal incl. admin), DRAFT-only 422, 10 AI req/min 429 |
+| POST | `/api/v1/assessment-versions/{id}/ai-generate/description` | §31 Mode B — the template's own dimensions are the target set; none defined = an ungraded draft. Same guards |
+| GET | `/api/v1/ai/requests/{id}/status` | The poll: `PENDING` → `DRAFTED` (+count, +inert `suggested_dimensions`) / `FAILED` / `VALIDATION_FAILED`. Someone else's id reports `PENDING`, indistinguishable from one that never existed |
 
 All `/student/*` routes sit behind `authenticate` → `ensureRole('student')`. **`ensurePasswordChanged`
 is deliberately absent** — students have no password (§38), so the flag it guards can never be set for
@@ -635,12 +672,14 @@ Additional Phase 0–3 contract endpoints documented in `docs/api/` but not yet 
 `POST /counselor/attempts/{attempt}/reset` (the §21 retake), `GET /admin/colleges/{id}/programs`.
 
 ### Missing endpoints (beyond the port, from the §20 catalog of ~92)
-- Admin: counselor management (4), assessment templates/versions/publish/archive (6),
-  `GET /audit-logs`, `GET /dashboard`
-- Counselor: private assessment templates/versions/publish (4), `GET /students/{id}/results`,
-  `GET /dashboard`
+- Admin: counselor management (4), `PATCH /assessment-templates/{id}`,
+  `POST /assessment-versions/{id}/archive`, `GET /audit-logs`, `GET /dashboard`
+- Counselor: `GET /students/{id}/results`, `GET /dashboard`
 - Student: `GET /dashboard`
-- AI generation group (6, Phase 5b), `GET /ai/requests/{id}/status`
+- ~~AI generation group, `GET /ai/requests/{id}/status`~~ ✅ built in Phase 5b — minus
+  `confirm-all-mappings`, deliberately (D24)
+- ~~Assessment templates/versions/publish~~ ✅ built in Phase 5b (shared surface at the API root
+  rather than duplicated under `/admin` and `/counselor` — D24)
 - Notifications (3)
 - `GET /programs/public`
 
@@ -660,9 +699,9 @@ None — there is nothing to be incorrect yet. See Deviations for the pagination
   **+ the 4 from Phase 5a** (`knowledge_documents`, `knowledge_chunks`, `ai_requests`,
   `ai_policies`) — **27 of 28 domain tables** + infrastructure `api_tokens`,
   `password_reset_tokens`. Migrations `0001`–`0008`.
-- **Staging D1 carries migrations 0001–0007** (applied in Phase 3.5 Step 5 / Phase 4).
-  **`0008_ai_knowledge.sql` has NOT been applied remotely** — it is on the deploy checklist,
-  together with `seeds/0003_ai_policy.sql`. Production D1 is provisioned and still untouched.
+- **Staging D1 carries all migrations 0001–0008** and the `seeds/0003` AI-policy row (verified
+  2026-07-15 — both had already been applied in a prior session; `db:migrate:staging` reports
+  "No migrations to apply"). Production D1 is provisioned and still untouched.
 - **Missing tables:** **1** — `notifications` (Phase 6).
 - **`assessment_attempts` uses a PARTIAL unique index**
   (`(assignment_id, student_id) WHERE status <> 'EXPIRED'`), not the plain `UNIQUE` §13.5's prose
@@ -764,8 +803,16 @@ Type-checks clean (`tsc --noEmit`) · 35/35 tests passing (Vitest + RTL) · buil
   ever downloads them — plus list/archive/reprocess, polling while anything is in flight),
   `AiPolicyPage` (the two-field editor), and `ExplainMore` on every recommendation card
   (the fallback is a stated non-error: the deterministic reason stands when the AI cannot answer).
-- **Phase 5b:** `assessment-builder` feature (shared manual builder), `assessment-generator`
-  feature (AI drafting + per-mapping confirmation review UI, publish-readiness display).
+- **Phase 5b:** ✅ done — the `assessment-builder` feature (TemplateListPage +
+  TemplateBuilderPage under `features/assessment-builder/`, mounted in **both** the admin and
+  counselor shells with an "Assessments" nav item; ownership is server-side, so the pages are
+  shared rather than duplicated). One page carries the whole §31 flow — dimensions → DRAFT
+  version → questions (typed, or drafted from a description / an extracted document, reusing the
+  §33 `extractText` utility) → the review list (option scores + mapping chips, **one Confirm
+  button per mapping, no bulk approve**) → publish-readiness → publish. Generation status polls
+  every 4 s while PENDING and invalidates the review on DRAFTED. The builder/generator split of
+  §35 is folded into one feature folder — recorded under D4's reasoning (file organization, zero
+  behavior).
 - **Phase 6:** notifications feature (list, read/unread), audit-log viewer, real dashboard data
   (all three dashboards are currently shells), admin counselor-management screens.
 - **Unassigned (small):** forgot/reset-password screens; counselor attempt-reset button (§21 —
@@ -779,10 +826,11 @@ None found. Two structural notes tracked under Deviations (feature-folder layout
 
 ## Backend Status
 
-Gate as of Phase 5a: **`tsc --noEmit` clean · ESLint clean · platform gates green (config shape ·
-DO boundary · bundle 178 KiB/2.5 MB) · 446/446 Vitest tests passing in workerd**
+Gate as of Phase 5b: **`tsc --noEmit` clean · ESLint clean · platform gates green (config shape ·
+DO boundary · bundle 198 KiB/2.5 MB) · 477/477 Vitest tests passing in workerd**
 (270 at the end of Step 3 → 307 with the §27 formula core → 371 with Step 4 → 375 with Step 5's
-PBKDF2 platform-cap guards → 394 with Phase 4 → 404 with Phase 4.5 → **446** with Phase 5a).
+PBKDF2 platform-cap guards → 394 with Phase 4 → 404 with Phase 4.5 → 446 with Phase 5a → **477**
+with Phase 5b).
 **Enforced by CI on every push** (D9 resolved), and the CI backend job now also runs
 `gate:platform` + `gate:bundle` (Phase 4.5 Step 2).
 
@@ -797,8 +845,9 @@ no wrong answer to catch.
   `ClassEnrollmentService`, `AcademicCatalogService`, `AuditService`, `AssessmentBuilderService`,
   `AssessmentAttemptService`, `ScoringService`, `StudentProfileService`, `RecommendationService`,
   **`AiGatewayService`, `RetrievalService`, `KnowledgeIngestionService`, `ExplanationService`,
-  `AiPolicyService`** — plus the `AuthGuardDO` Durable Object (Phase 4.5).
-- **Missing services:** `AssessmentGenerationService` (Phase 5b), `NotificationService` (Phase 6).
+  `AiPolicyService`, `AssessmentGenerationService`** (Phase 5b) — plus the `AuthGuardDO`
+  Durable Object (Phase 4.5).
+- **Missing services:** `NotificationService` (Phase 6).
 - **Completed middleware:** `correlation-id`, `authenticate` (token-hash lookup, expiry,
   active-status), `ensure-role`, `ensure-password-changed`. **`middleware/rate-limit.ts` is gone**
   (Phase 4.5): the failures-only counters live in `AuthGuardDO`, addressed through the helpers in
@@ -806,9 +855,11 @@ no wrong answer to catch.
   "count a failure" and "read the count" remain separate operations.
 - **Completed policies:** `class.ts` (ownership; 404 rather than 403 so "not yours" and "not real"
   are indistinguishable); **`assessment.ts`** — incl. the `generateWithAi` first-check category
-  exclusion and the no-admin-branch `answerAttempt` rule. **The catalog has none, deliberately** —
-  §39 names three policies and no catalog one; see the Academic Catalog module note.
-- **Missing policies:** `recommendation.ts`.
+  exclusion, its throwing form `authorizeGenerateWithAi` (Phase 5b: category → **403** with the
+  permanent-rule message, ownership → 404), `authorizeManageTemplate` (the builder's ordinary
+  role-plus-ownership), and the no-admin-branch `answerAttempt` rule; **`recommendation.ts`**
+  (Phase 4). **The catalog has none, deliberately** — §39 names three policies and no catalog
+  one; see the Academic Catalog module note.
 - **Events/jobs:** the dispatcher carries **two of the four §60 events** — `AssessmentCompleted`
   (fires from submit; `DispatchRecommendationGeneration` listens) and, since 5a,
   `RecommendationGenerated` (fired by that listener after a successful generation;
@@ -816,9 +867,13 @@ no wrong answer to catch.
   `queue()` consumer dispatches three jobs (`src/jobs/ai-jobs.ts`): `ProcessKnowledgeDocument`,
   `GenerateEmbeddingBatch`, `GenerateStudentExplanations` — ack on success, mark-FAILED + retry on
   error, warn-and-ack for unknown types.
-- **Missing events/jobs:** `KnowledgeDocumentProcessed` and `AssessmentDraftGenerated` (both exist
-  only to notify — Phase 6/5b); `GenerateAssessmentDraftJob` (Phase 5b).
-- **Missing AI features:** the §31 generation pipeline and its prompt file (Phase 5b).
+- **Since Phase 5b:** the dispatcher carries a third event, `AssessmentDraftGenerated` (fired by
+  the job, zero listeners — the "notify the creator" listener is Phase 6's, and this is its
+  seam), and the consumer dispatches a fourth job, `GenerateAssessmentDraft`. **A generation
+  failure inside the job is absorbed, never rethrown** — the FAILED `ai_requests` row *is* the
+  outcome, and a queue retry into a dead quota cannot succeed (§30 v1.5).
+- **Missing events/jobs:** `KnowledgeDocumentProcessed` (exists only to notify — Phase 6).
+- **Missing AI features:** none — both §30 and §31 pipelines are built.
 - **Project plumbing:** ✅ done — `package.json`, `tsconfig.json`, `vitest.config.ts` (workerd pool),
   `eslint.config.js` + `.prettierrc.json`, `migrations/`, `seeds/`, `test/`, and a `wrangler.toml`
   that matches §48 (deviation D2 resolved). **Still missing: CI (§47) — no `.github/workflows/`
@@ -850,7 +905,7 @@ no wrong answer to catch.
 | D7 | Forgot/reset-password **endpoints exist**; no UI, and **no email channel exists** to deliver a reset link (§5 defers email entirely) | §20 lists the endpoints; §37 implies the screens for staff | 🟡 **Partially resolved.** The endpoints are ported and tested. Because v1 has no mail provider, `/auth/forgot-password` returns the token in the response body **only when `APP_ENV=local`**; in staging/production the reset is completed out of band by an admin. Add the UI — and a real delivery channel, or an explicit admin-driven reset flow — in Phase 6. **This is the honest shape of the feature, not a finished one.** |
 | D8 | No counselor attempt-reset UI | §21 retake = counselor-initiated reset; contract endpoint documented | Port the endpoint in Step 4 (it is Phase 3 scope); add the button to ClassDetailPage results in Phase 4/6 polish. |
 | D9 | **No CI pipeline.** §47 assumes GitHub Actions running the test suite + `tsc` + ESLint on every push | §47 | ✅ **Resolved in Step 5.** `.github/workflows/ci.yml` runs both gates on every push and PR: backend (`type-check` · `lint` · 375 tests in workerd) and frontend (`type-check` · 35 tests · `build`). It needs **no Cloudflare credentials** — that is what `wrangler.test.toml` bought. **Read the header comment before trusting a green tick:** Miniflare is not Cloudflare, and this gate was green 371 times over a Worker that could not verify a password on the edge (D14, D15). |
-| **D14** | ~~Password hashing runs at 100,000 PBKDF2 iterations~~ **Derivation runs at the full 600,000, inside `AuthGuardDO`** (`src/do/auth-guard.ts`) | §38 pins **600,000** | ✅ **Closed in code by Phase 4.5 Step 1** — at zero cost and zero security compromise: the DO gets a 30-second CPU budget per invocation on every plan including Free, vs the Worker's unraisable 10 ms that forced the 100k concession. No stored password broke: the cost is recorded inside every hash, so D14-era 100k hashes keep verifying at their own cost (a test pins this) while every new hash is written at 600k. The platform gate asserts `deriveBits` is called nowhere outside the DO, so the derivation cannot silently migrate back onto the 10 ms budget. **One step remains before calling this fully closed: the staging exit demo** — repeated `/auth/change-password` (the double-derivation canary that died with error 1102) on a live deploy, since Miniflare enforces no CPU limit and never could prove this. |
+| **D14** | ~~Password hashing runs at 100,000 PBKDF2 iterations~~ **Derivation runs at the full 600,000, inside `AuthGuardDO`** (`src/do/auth-guard.ts`) | §38 pins **600,000** | ✅ **Closed in code by Phase 4.5 Step 1** — at zero cost and zero security compromise: the DO gets a 30-second CPU budget per invocation on every plan including Free, vs the Worker's unraisable 10 ms that forced the 100k concession. No stored password broke: the cost is recorded inside every hash, so D14-era 100k hashes keep verifying at their own cost (a test pins this) while every new hash is written at 600k. The platform gate asserts `deriveBits` is called nowhere outside the DO, so the derivation cannot silently migrate back onto the 10 ms budget. **Fully closed 2026-07-15 by the staging exit demo:** four consecutive `/auth/change-password` calls (the double-derivation canary that died with error 1102 pre-4.5) all answered 200 in ~2 s each on the live deploy; the rotated hash reads `pbkdf2$600000$` in staging D1; a pre-4.5 100k hash still opened through the DO. |
 | **D19** | ~~The staff lockout and join throttle are KV-backed~~ **All three security counters (lockout, join throttle, the §41 AI request limit) are `AuthGuardDO` instances** | FULLPLAN **v1.5** §38/§41: security counters live in `AuthGuardDO` — KV is caching-only | ✅ **Closed by Phase 4.5 Step 1**, in the same change as D14 — the DO that derives a staff account's hash is the DO that counts its failures, so the count is exact and brute force per account is serialized (`blockConcurrencyWhile`). `middleware/rate-limit.ts` is deleted; KV stays bound for future caching and nothing security-relevant touches it. Semantics unchanged: failures-only charging, same thresholds, same windows, fixed (not sliding) windows. |
 | **D15** | **PBKDF2 is derived as a *chain* of ≤100,000-iteration rounds**, each keyed on the previous round's output, rather than one call | §38 implies a single PBKDF2 invocation | **Ratified — forced by the platform, and it costs nothing.** The Workers runtime *refuses* PBKDF2 above 100,000 iterations per `deriveBits()` call (`NotSupportedError: iteration counts above 100000 are not supported`). Miniflare does not enforce this, so a single 600,000-iteration call passed 371 tests and 500'd on the edge. The chain performs the full requested work — a round cannot be parallelised or skipped, because it is keyed on the one before it — so the work factor is preserved exactly; only the syscall count changes. At or below the cap it collapses to a single call, so such a hash is an ordinary PBKDF2 hash and stays verifiable as one. |
 | **D16** | **`frontend/public/_redirects`** — a new file in `frontend/` | §57 makes the frontend the port's invariant: no changes beyond `VITE_API_BASE_URL` | **Accept.** Cloudflare Pages answers `/login` with its own 404 without an SPA fallback rule, so the deployed app never boots — the walkthrough cannot even reach the first screen. It is a **deployment artifact**, not a React change: no component, service, hook or type is touched, and the invariant's purpose (the port must satisfy the frontend, not the other way round) is untouched by it. |
@@ -863,6 +918,8 @@ no wrong answer to catch.
 | **D20** | **`POST /admin/knowledge-documents/{id}/reprocess`** — an endpoint not in §20's catalog | §20 lists three knowledge endpoints (GET/POST/DELETE) | **Accept, same shape as D13.** §42 v1.5 *requires* every job to be "idempotent **and manually re-triggerable**" because Free-plan queues retain messages for only 24 hours — a processing job that was never consumed is simply gone, and an admin cannot act on "wait for the retry". A requirement without an endpoint is a requirement without an implementation; this is that endpoint. Admin-authenticated, audited, refuses archived documents (they must never re-enter the index). |
 | **D21** | **The §32 prompt is a `.ts` module** (`src/prompts/recommendation-explanation.v1.ts`), not a `.md` file | §32: prompts are "versioned as files in the repository (`src/prompts/recommendation_explanation.v1.md`…)" | **Accept (mechanical).** The substance of §32 — the prompt text verbatim, versioned in Git, a new version being a new file, `ai_policies` as the sole runtime injection — is all kept. A `.md` *asset* import would need a `[[rules]]` text-module entry in every wrangler config plus matching handling in the Vitest pool; a template-literal module buys the identical artifact with none of that. Rename to `.md` if the rules plumbing is ever added for other reasons. |
 | **D22** | **The queued explanation job pre-explains only the two rank-1 matches** (one career, one program) per generation; the message carries the student id and the consumer resolves the current rank-1 rows at run time | §43's `GenerateExplanationJob` is per-recommendation and §30's diagram implies explaining what was generated | **Accept, with the arithmetic stated.** The Free plan's neuron quota funds ~150–200 explanations/day (§45). A full §27 set is 20 cards; pre-explaining all of them caps the system at ~10 students/day and burns quota on cards most students never scroll to. Two proactive + on-demand for the rest ("Explain more", already built) keeps the demo grounded and the quota alive. Resolving rank-1 at *consume* time (not enqueue time) is what makes the job meaningful whenever it runs within the 24 h retention window, and redelivery free — an explained recommendation is skipped by §20's "if not already generated". |
+| **D23** | **`WORKERS_AI_TEXT_MODEL` is `@cf/meta/llama-3.1-8b-instruct-fp8`** | §29/§45 name `llama-3.1-8b-instruct` (the base model) | **Forced by the platform, found live on the 5a exit demo (platform fact #4).** Cloudflare deprecated the base model on **2026-05-30**; every call fails server-side with error 5028, with no deploy on our end and nothing a local test could see (the suite stubs the gateway, as §49 requires). The §29 posture held through the outage — every student got a 200 + the deterministic reason, and the FAILED `ai_requests` rows named the cause. The fp8 variant is the same 8B model quantized to fp8, currently in the catalog; the fix was a one-var edit precisely because §29 made the model a config value. Watch the lifecycle page before the defense demo. |
+| **D24** | **The Phase 5b endpoint group differs from §20's sketch in three ways:** (1) there is **no `confirm-all-mappings`** endpoint; (2) the builder/generation group mounts **once at the API root** (shared, per-record ownership) rather than appearing under both `/admin` and `/counselor`; (3) it adds endpoints §20 never listed — `GET /assessment-templates/{id}`, `POST …/dimensions`, `GET /assessment-versions/{id}` (the author's review payload), `POST …/questions`, `PATCH /assessment-questions/{id}` — and Mode A's body is `{extracted_text}` JSON rather than a multipart upload | §20 lists `confirm-all-mappings` ("bulk-confirm convenience helper"), sketches the group under `/api/v1/assessment-templates/{id}`, and says "multipart upload — PDF/DOCX" for Mode A | **(1) is a genuine FULLPLAN self-contradiction, resolved toward §31**, which forbids exactly that helper in so many words ("no 'approve all' shortcut … the entire point of the gate is that a human actually looked at each dimension assignment") — the specific rule with its rationale beats the endpoint list's sketch. **(2) follows §20's own flattening style** (`/assessment-versions/{id}/publish` is already flat in §20) and avoids two URLs for one resource; role gate + per-record 404 policy carry the whole rule, and the authorization test hits it from both roles. **(3) is the §31 review step made real** — a review UI cannot review what no endpoint serves; the additions are the minimum surface the flow §31 *does* specify requires. Mode A's JSON body follows §33 v1.5's own logic: extraction already happened in the browser, and unlike knowledge ingestion there is no provenance requirement on the generation source (§31 stores provenance as `source_ai_request_id` on every question instead); the raw file adds R2 writes for a document that is never re-read. |
 
 ---
 
@@ -1150,58 +1207,92 @@ tests run with the AI/Vectorize bindings genuinely absent, proving the student g
 deterministic reason on the platform's worst day. An assertion on a live LLM's output remains a
 weather report; none exist in the gate.
 
-**Exit demo — PENDING THE DEPLOY.** §57's 5a demo (a recommendation showing a grounded AI
-paragraph that reflects the configured policy) and the two residual measurements (generation
-latency vs the §6 8 s budget; Vectorize upsert lag) require the real bindings.
+**Exit demo — ✅ PASSED on staging, 2026-07-15.** See "The deploy session, executed" below.
+
+---
+
+## The deploy session, executed (2026-07-15)
+
+The "Next Incremental Phase" checklist was run end to end against staging. Results, in the
+checklist's own order:
+
+1. **Migrate + seed:** both were already applied (a prior session had run them) —
+   `db:migrate:staging` answered "No migrations to apply", all four §13.7 tables and the GLOBAL
+   `ai_policies` row verified present by direct D1 query.
+2. **Deploy:** `careerlinkai-staging` uploaded with `AUTH_DO` bound and the `[[migrations]]`
+   `new_sqlite_classes` entry (gzip 190 KiB, startup 33 ms). The **frontend was rebuilt and
+   redeployed to Pages** in the same session — the deployed build predated 5a, so the Knowledge /
+   AI-policy screens and "Explain more" had never been live before.
+3. **Phase 4.5 exit demo — PASSED.** The stored pre-4.5 `pbkdf2$100000$` hash opened through the
+   DO (the cost is stored in the hash); **four consecutive `/auth/change-password` rounds — the
+   error-1102 canary — all 200'd at ~2.0 s each**; the rotated hash reads `pbkdf2$600000$` in
+   staging D1; five rapid failed logins locked the account on the fifth and the **correct**
+   password was refused with 429 while locked. One anomaly for the record: a single login 500'd
+   once mid-demo and never reproduced across 10+ identical cycles afterwards; nothing in
+   `ai_requests`/audit correlates, treated as transient, watch for recurrence.
+4. **Phase 5a exit demo — PASSED, with a real platform find.** First attempt: every explanation
+   failed `MODEL_ERROR` — **Cloudflare had deprecated `@cf/meta/llama-3.1-8b-instruct` on
+   2026-05-30 (error 5028), platform fact #4**, invisible to the (correctly) stubbed local suite.
+   The §29 posture held through the outage: every request still answered 200 with the
+   deterministic reason, and the FAILED `ai_requests` rows named the exact cause. Fixed by
+   switching `WORKERS_AI_TEXT_MODEL` to `…-fp8` (D23) and redeploying. Also proven live, before
+   the fix: **§30's refuse-to-generate-ungrounded** — a software-engineering guide against an
+   "Architect career…" retrieval query stayed under the 0.75 similarity floor and produced
+   `NO_GROUNDING` + the deterministic reason, exactly as designed (the demo then uploaded a
+   guide that actually covers the student's rank-1 career).
+5. **The measurements (checklist step 7):**
+   - **Generation latency: 5,685 ms** against the §6 8 s budget (first generation; the model was
+     cold). The stored-row path answers in ~1.5–2 s round trip and never touches the model.
+   - **Tokens per explanation: 780 total** (`ai_requests.tokens_used`). At §45's neuron rates
+     that is consistent with the ~50–60 neurons/explanation estimate (~150–200/day within the
+     10k quota).
+   - **Ingestion: upload → PROCESSING at +40 s → COMPLETED at +72 s** — queue `max_batch_timeout`
+     (30 s per hop, two hops) dominates; the work itself is milliseconds.
+   - **Vectorize queryability lag after COMPLETED: ≤ ~10 s observed** (first explain attempt
+     NO_GROUNDING, grounded on the next poll).
+6. **The walkthrough (checklist step 8):** `scripts/walkthrough.mjs` now carries **leg E** —
+   the admin uploads a generated PDF *about the student's actual rank-1 career* through the real
+   Knowledge screen (pdf.js extraction in the browser), waits for "Ready", and the student
+   presses "Explain more" through the async-indexing window until the grounded paragraph
+   renders, then proves a repeat press returns the stored row byte-identically. **The full
+   Phase 0–5a walkthrough passes 66/66 against staging** (0 5xx; the only 4xx are its own
+   deliberate wrong-credential probes). Re-running still requires `bootstrap-staff.mjs` first —
+   legs A/B rotate passwords.
 
 ---
 
 ## Next Incremental Phase
 
-> **Phases 4.5 and 5a are code-complete** behind a green gate (tsc · ESLint · platform gates ·
-> 446/446 backend tests · 35/35 frontend tests · build). What remains for both is one deploy
-> session, then Phase 5b.
+> **Phases 0–5b are all deployed and proven on staging.** The gate stands at tsc · ESLint ·
+> platform gates · bundle 198 KiB · **477/477** backend tests · 35/35 frontend tests, and the
+> live deployment passes the Phase 0–5a walkthrough (66/66) plus the 5b exit demo (11/11).
+> **Phase 6 is the whole of what remains.**
 
-### The deploy checklist (run by the operator — remote writes are deliberately not automated)
+### The 5b deploy + exit demo — ✅ EXECUTED 2026-07-15, same session as 4.5/5a
 
-1. `cd backend` — `npx wrangler whoami` already shows a live login.
-2. `npm run db:migrate:staging` — applies `0008_ai_knowledge.sql` to `CareerLinkAI_Staging`.
-3. `npm run db:seed:ai-policy:staging` — the single GLOBAL `ai_policies` row (fixed admin UUID
-   matches `bootstrap-staff.mjs`).
-4. `npm run deploy:staging` — first deploy carrying `AUTH_DO`; the `[[migrations]]`
-   `new_sqlite_classes` entry ships with it.
-5. **Phase 4.5 exit demo:** log in as staff (their 100k hash must open — the cost is stored in the
-   hash); run `/auth/change-password` several times in a row (the 1102 canary); rotate back;
-   verify the new hash is written at 600k (`SELECT substr(password, 1, 14)` → `pbkdf2$600000$`);
-   six rapid failed logins → locked on the fifth.
-6. **Phase 5a exit demo:** upload a real PDF through the Knowledge screen (extraction runs in the
-   browser); watch UPLOADED → PROCESSING → COMPLETED; **poll retrieval until the vectors are
-   queryable** (async indexing — an immediate empty result is lag, not failure); press
-   "Explain more" on a rank-1 card; verify the paragraph references the uploaded content and
-   respects the policy text; check the `ai_requests` row carries latency + token counts.
-7. **Record here:** generation latency vs the 8 s budget, observed Vectorize indexing lag, and
-   neurons consumed per explanation (the §45 estimate says ~50–60).
-8. Extend `scripts/walkthrough.mjs` with the 5a leg (upload → poll → explain) so the §57
-   walkthrough keeps proving any environment end to end.
+Worker + Pages redeployed (no new migration, no new bindings — the 5b surface is code only).
+The demo, over the live API as the counselor: CUSTOM template (`COUNSELOR_PRIVATE`) → two
+dimensions → DRAFT version → Mode B generation queued (202) → **DRAFTED ~130 s later, 12
+questions** (queue batch timing dominates, same as ingestion; the §34 validator dropped
+nothing — the model respected the provided dimension codes) → the review payload carried all
+12 mappings unconfirmed → **publish refused 422: "12 of 12 dimension mappings are still
+unconfirmed"** → 12 individual confirms → **publish 200, version PUBLISHED**. Then the §6
+criterion: the same generation against RIASEC **as the admin** → **403** ("RIASEC and SCCT are
+curated instruments and can never be AI-generated or AI-edited"). 11/11 checks.
 
-### Phase 5b — AI-Assisted Assessment Generation (after the deploy)
+### Phase 6 — Polish & Defense Prep (all that remains)
 
-The §31 generation pipeline, on infrastructure 5a already built and proved:
-
-1. **`AssessmentGenerationService`** + the §32 generation prompt (a sibling of
-   `src/prompts/recommendation-explanation.v1.ts`) + `GenerateAssessmentDraftJob` on the `ai`
-   queue. `AiGatewayService` is already the adapter (`request_type = 'ASSESSMENT_GENERATION'` is
-   in the enum and the CHECK); the §34 caps (50 questions/run, ≥2 options, strict JSON) are the
-   new validators.
-2. **Both entry modes** (§31): Mode A reuses `features/admin/utils/extractText.ts` — the browser
-   extraction was built shared on purpose; Mode B is a typed description with creator-named
-   dimensions.
-3. **The generation endpoint group** (§20), each guarded by `AssessmentPolicy.generateWithAi` —
-   the category-before-ownership check and its test have existed since Step 4; the endpoints
-   finally mount it.
-4. **The confirmation-gate review UI** (per-question, per-mapping — no bulk approve) and the
-   `assessment-builder` feature it needs. The backend's publish gate has been enforcing this
-   since Phase 3; 5b gives it a screen.
+1. **`NotificationService`** + migration `0009_notifications.sql` (the last missing table) + the
+   three §20 endpoints + the frontend notifications feature. The three waiting listeners plug in:
+   `KnowledgeDocumentProcessed`, `AssessmentDraftGenerated`, and assignment events.
+2. **Audit-log viewer** (`GET /audit-logs` + admin screen) — where the swallowed-exception
+   pattern (D18's lesson) finally gets its surface.
+3. **Real dashboard data** (`GET /dashboard` × 3 roles) + admin counselor-management screens.
+4. **Small debts:** forgot/reset-password UI (D7's honest shape), counselor attempt-reset button
+   (D8), `GET /programs/public` if wanted.
+5. **Defense prep:** the §45 quota dashboard check, a seeded knowledge corpus covering the demo
+   catalog (the 5a lesson: retrieval grounds only what the corpus covers), and a full
+   walkthrough run against a fresh database.
 
 ### Historical — the Phase 4 plan, now delivered
 

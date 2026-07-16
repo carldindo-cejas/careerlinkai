@@ -907,17 +907,43 @@ check(
 );
 await shot(student, 'student-explain-more');
 
-// A reload must show the same paragraph from the stored row, with no "Explain more" button
-// and no new generation call — a student mashing refresh costs zero model calls (§20).
-const explainsBefore = apiCalls.filter((c) => c.path.includes('/explain')).length;
+// Press the button again after a reload: the endpoint must hand back the STORED row —
+// "if not already generated" (§20) — so a student mashing the button costs zero model
+// calls. The paragraph must be byte-identical to the one generated above.
+const paragraphBefore = explained
+  ? (await student.locator('body').innerText()).match(/([^\n]+)\n+AI-generated from the school/i)?.[1]
+  : null;
+
 await student.goto(`${APP}/student/recommendations`);
-await student.waitForTimeout(3000);
+await student.waitForTimeout(2500);
+
+const explainCallsBefore = apiCalls.filter((c) => c.path.includes('/explain')).length;
+await student.getByRole('button', { name: /Explain more/i }).first().click();
+
+// Wait for the NEW call (waitForCall would return the one already in the array), then for
+// its paragraph to actually paint.
+const repeatDeadline = Date.now() + 30_000;
+while (
+  apiCalls.filter((c) => c.path.includes('/explain')).length === explainCallsBefore &&
+  Date.now() < repeatDeadline
+) {
+  await student.waitForTimeout(200);
+}
+
+let paragraphAfter;
+const paintDeadline = Date.now() + 15_000;
+while (paragraphAfter === undefined && Date.now() < paintDeadline) {
+  paragraphAfter = (await student.locator('body').innerText()).match(
+    /([^\n]+)\n+AI-generated from the school/i,
+  )?.[1];
+  if (paragraphAfter === undefined) await student.waitForTimeout(500);
+}
+
+const repeatCall = lastCall('/explain', 'POST');
 check(
-  '[student] the stored explanation survives a reload without regenerating',
-  explained
-    ? /AI-generated from the school/i.test(await student.locator('body').innerText())
-    : false,
-  `${apiCalls.filter((c) => c.path.includes('/explain')).length - explainsBefore} new explain call(s)`,
+  '[student] a second "Explain more" returns the stored explanation, not a regeneration (§20)',
+  explained && Boolean(paragraphAfter) && paragraphAfter === paragraphBefore,
+  repeatCall ? `${repeatCall.status} — identical paragraph: ${paragraphAfter === paragraphBefore}` : 'no repeat call recorded',
 );
 
 // ══════════════════════════════════════════════════════════════════════════════════════

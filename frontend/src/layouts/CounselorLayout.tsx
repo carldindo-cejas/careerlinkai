@@ -19,6 +19,7 @@ export function CounselorLayout() {
             Dashboard
           </NavItem>
           <NavItem to={paths.counselorClasses}>Classes</NavItem>
+          <NavItem to={paths.counselorAssessmentTemplates}>Assessments</NavItem>
         </div>
       }
     />

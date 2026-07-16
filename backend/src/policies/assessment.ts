@@ -138,3 +138,54 @@ export function authorizeAnswerAttempt(user: User, attempt: AssessmentAttempt): 
     throw ApiError.forbidden('Only the student who owns this attempt may answer it.');
   }
 }
+
+/**
+ * Authoring a template (Phase 5b — the builder endpoints): an admin manages any template, a
+ * counselor manages their own. Ordinary role-plus-ownership, unlike `canGenerateWithAi`.
+ */
+export function canManageTemplate(user: User, template: AssessmentTemplate): boolean {
+  return user.role === 'admin' || (user.role === 'counselor' && template.creatorId === user.id);
+}
+
+/**
+ * **404, not 403**, for the ownership failure — the standing rule: a counselor probing another
+ * counselor's private template ids must not learn which ids exist.
+ */
+export function authorizeManageTemplate(
+  user: User,
+  template: AssessmentTemplate | undefined,
+): asserts template is AssessmentTemplate {
+  if (template === undefined || !canManageTemplate(user, template)) {
+    throw ApiError.notFound('Assessment template not found.');
+  }
+}
+
+/**
+ * The throwing form of `canGenerateWithAi`, keeping its category-before-ownership order and
+ * splitting the two refusals by their honest status code:
+ *
+ *   - **Category (RIASEC/SCCT) → 403.** §6: "rejected by the backend, not just hidden by the
+ *     UI." The caller may well be allowed to see this template; what is refused is the act,
+ *     permanently and for every principal — hiding the template's existence would protect
+ *     nothing and disguise a permanent rule as a lookup failure.
+ *   - **Ownership → 404**, same as everywhere else.
+ */
+export function authorizeGenerateWithAi(
+  user: User,
+  template: AssessmentTemplate | undefined,
+): asserts template is AssessmentTemplate {
+  if (template === undefined) {
+    throw ApiError.notFound('Assessment template not found.');
+  }
+
+  if (template.category !== 'CUSTOM') {
+    // First. Before ownership. Even for an admin (§5).
+    throw ApiError.forbidden(
+      'RIASEC and SCCT are curated instruments and can never be AI-generated or AI-edited.',
+    );
+  }
+
+  if (!canGenerateWithAi(user, template)) {
+    throw ApiError.notFound('Assessment template not found.');
+  }
+}

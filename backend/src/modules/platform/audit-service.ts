@@ -51,6 +51,10 @@ export type AuditAction =
   // The audit row records how many mappings had been confirmed, so "who let this through the
   // gate" has an answer.
   | 'ASSESSMENT_TEMPLATE_CREATED'
+  // The §25 act itself (Phase 5b): a human confirming what a question measures. Recorded
+  // per mapping because the gate's promise is that *someone looked at each one* — this row
+  // is who, and when.
+  | 'QUESTION_DIMENSION_CONFIRMED'
   | 'ASSESSMENT_PUBLISHED'
   | 'ASSESSMENT_ASSIGNED'
   | 'ASSESSMENT_ASSIGNMENT_CLOSED'

@@ -11,10 +11,16 @@ export const paths = {
   // Phase 5a (§33, §37): the knowledge base and the AI governance text.
   adminKnowledge: '/admin/knowledge',
   adminAiPolicy: '/admin/ai-policy',
+  // Phase 5b (§31, §35): the builder + AI generator, in the admin shell.
+  adminAssessmentTemplates: '/admin/assessment-templates',
+  adminAssessmentTemplate: '/admin/assessment-templates/:templateId',
 
   counselorDashboard: '/counselor',
   counselorClasses: '/counselor/classes',
   counselorClassDetail: '/counselor/classes/:classId',
+  // Phase 5b: the same builder pages, in the counselor shell — ownership is server-side.
+  counselorAssessmentTemplates: '/counselor/assessment-templates',
+  counselorAssessmentTemplate: '/counselor/assessment-templates/:templateId',
 
   /** The student's own way in — no password anywhere in this flow (§38). */
   studentAccess: '/join',
