@@ -1,8 +1,14 @@
 import type { UserRole } from '@/types/user';
 
 export const paths = {
+  /** The public landing page (post-Phase-6 design pass) — the only unauthenticated screen beyond the two sign-ins. */
+  landing: '/',
   login: '/login',
   changePassword: '/change-password',
+  // Phase 6 (D7, in its honest shape): no email channel exists, so the reset code is
+  // handed over out of band — these screens are where it gets used.
+  forgotPassword: '/forgot-password',
+  resetPassword: '/reset-password',
 
   adminDashboard: '/admin',
   adminColleges: '/admin/colleges',
@@ -11,6 +17,9 @@ export const paths = {
   // Phase 5a (§33, §37): the knowledge base and the AI governance text.
   adminKnowledge: '/admin/knowledge',
   adminAiPolicy: '/admin/ai-policy',
+  // Phase 6 (§20, §37): counselor management and the audit-log viewer.
+  adminCounselors: '/admin/counselors',
+  adminAuditLog: '/admin/audit-log',
   // Phase 5b (§31, §35): the builder + AI generator, in the admin shell.
   adminAssessmentTemplates: '/admin/assessment-templates',
   adminAssessmentTemplate: '/admin/assessment-templates/:templateId',
@@ -38,6 +47,11 @@ export const paths = {
 
 export function classDetailPath(classId: string): string {
   return `/counselor/classes/${classId}`;
+}
+
+/** The local-dev reset flow carries the email + token straight into the form (D7). */
+export function resetPasswordPath(email: string, token: string): string {
+  return `${paths.resetPassword}?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
 }
 
 /** The assessment player, for one attempt (§37). */

@@ -7,7 +7,7 @@ export type LabelProps = LabelHTMLAttributes<HTMLLabelElement>;
 export function Label({ className, ...props }: LabelProps) {
   return (
     <label
-      className={cn('text-sm font-medium leading-none text-slate-800', className)}
+      className={cn('text-sm font-medium leading-none text-foreground/90', className)}
       {...props}
     />
   );

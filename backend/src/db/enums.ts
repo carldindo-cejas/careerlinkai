@@ -126,6 +126,18 @@ export type ProcessingStatus = (typeof PROCESSING_STATUSES)[number];
 export const KNOWLEDGE_VISIBILITIES = ['GLOBAL', 'COUNSELOR_PRIVATE'] as const;
 export type KnowledgeVisibility = (typeof KNOWLEDGE_VISIBILITIES)[number];
 
+// --- Platform (§13.8) ------------------------------------------------------------------
+
+/**
+ * §13.8 — the four notification categories. §44's five notification kinds map onto them:
+ * results-ready and draft-ready are ASSESSMENT, recommendations-ready is RECOMMENDATION,
+ * assignment-created is CLASS (it reaches a student *because of* a class they are in), and
+ * knowledge-document-processed is ACCOUNT — §44 addresses it to the uploading admin about
+ * their own action, and §13.8 offers no closer value (a resolved silence, not an invention).
+ */
+export const NOTIFICATION_CATEGORIES = ['ASSESSMENT', 'RECOMMENDATION', 'CLASS', 'ACCOUNT'] as const;
+export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
+
 export const AI_REQUEST_TYPES = [
   'RECOMMENDATION_EXPLANATION',
   'ASSESSMENT_GENERATION',

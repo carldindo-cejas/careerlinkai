@@ -1,6 +1,7 @@
 import { createDatabase } from '@/db/client';
 import type { Env } from '@/env';
 import { dispatch, type AssessmentDraftGeneratedEvent } from '@/events/dispatcher';
+import { notifyAssessmentDraftGenerated } from '@/events/send-notifications';
 import { assessmentGenerationMaxQuestions } from '@/lib/config';
 import { AiPolicyService } from '@/modules/ai/ai-policy-service';
 import { AssessmentGenerationService } from '@/modules/ai/assessment-generation-service';
@@ -102,8 +103,8 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
         sourceText: payload.sourceText as string,
       });
 
-      // §31: "AssessmentDraftGenerated event → notify the creator." The notification
-      // listener is Phase 6; the event fires now, at the seam it will plug into.
+      // §31: "AssessmentDraftGenerated event → notify the creator." Phase 6 plugged the §44
+      // listener into the seam this event fired at empty since 5b.
       await dispatch<AssessmentDraftGeneratedEvent>(
         {
           type: 'AssessmentDraftGenerated',
@@ -111,7 +112,7 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
           versionId: payload.versionId as string,
           creatorId: payload.userId as string,
         },
-        [],
+        [notifyAssessmentDraftGenerated(db)],
       );
 
       return true;

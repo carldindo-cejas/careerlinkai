@@ -236,7 +236,8 @@ counselorAssessmentRoutes.get('/classes/:classId/results', async (c) => {
         .from(assessmentDimensions)
         .where(eq(assessmentDimensions.assessmentTemplateId, view.template.id));
 
-      return serializeResult(view, dimensions);
+      // Phase 6: the counselor's table names its rows — see `listResultsForClass`.
+      return { ...serializeResult(view, dimensions), student: view.student };
     }),
   );
 

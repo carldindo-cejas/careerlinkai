@@ -136,4 +136,13 @@ export const counselorAssessmentApi = {
       httpClient.get<ApiSuccess<AssessmentResult[]>>(`/counselor/classes/${classId}/results`),
     );
   },
+
+  /**
+   * The §21 retake — the counselor's act, never the student's. It voids the scored attempt
+   * (EXPIRED, kept as history) so the student can start fresh; the UI confirms before
+   * sending because this destroys a standing result.
+   */
+  async resetAttempt(attemptId: string): Promise<void> {
+    await httpClient.post(`/counselor/attempts/${attemptId}/reset`);
+  },
 };

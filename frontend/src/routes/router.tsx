@@ -2,12 +2,17 @@ import { Route, Routes } from 'react-router-dom';
 
 import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage';
 import { AiPolicyPage } from '@/features/admin/pages/AiPolicyPage';
+import { AuditLogPage } from '@/features/admin/pages/AuditLogPage';
 import { CareerListPage } from '@/features/admin/pages/CareerListPage';
 import { CollegeDetailPage } from '@/features/admin/pages/CollegeDetailPage';
 import { CollegeListPage } from '@/features/admin/pages/CollegeListPage';
+import { CounselorManagementPage } from '@/features/admin/pages/CounselorManagementPage';
 import { KnowledgeListPage } from '@/features/admin/pages/KnowledgeListPage';
 import { ChangePasswordPage } from '@/features/auth/pages/ChangePasswordPage';
+import { ForgotPasswordPage } from '@/features/auth/pages/ForgotPasswordPage';
 import { LoginPage } from '@/features/auth/pages/LoginPage';
+import { LandingPage } from '@/features/landing/LandingPage';
+import { ResetPasswordPage } from '@/features/auth/pages/ResetPasswordPage';
 import { ClassDetailPage } from '@/features/counselor/pages/ClassDetailPage';
 import { ClassListPage } from '@/features/counselor/pages/ClassListPage';
 import { CounselorDashboardPage } from '@/features/counselor/pages/CounselorDashboardPage';
@@ -40,8 +45,14 @@ import { RoleHome } from '@/routes/RoleHome';
 export function AppRoutes() {
   return (
     <Routes>
+      {/* The public landing page (post-Phase-6 design pass) — the two doors, stated plainly. */}
+      <Route path={paths.landing} element={<LandingPage />} />
+
       <Route element={<StaffAuthLayout />}>
         <Route path={paths.login} element={<LoginPage />} />
+        {/* Phase 6 (D7): the reset flow, in its honest no-email shape. */}
+        <Route path={paths.forgotPassword} element={<ForgotPasswordPage />} />
+        <Route path={paths.resetPassword} element={<ResetPasswordPage />} />
       </Route>
 
       {/* Passwordless class access — public, and the only way a student signs in. */}
@@ -56,7 +67,6 @@ export function AppRoutes() {
         </Route>
 
         {/* Unknown paths resolve to the dashboard for whatever role signed in. */}
-        <Route path="/" element={<RoleHome />} />
         <Route path="*" element={<RoleHome />} />
       </Route>
 
@@ -77,6 +87,9 @@ export function AppRoutes() {
           {/* Phase 5b: the builder + AI generator (§31). Same pages as the counselor shell. */}
           <Route path={paths.adminAssessmentTemplates} element={<TemplateListPage />} />
           <Route path={paths.adminAssessmentTemplate} element={<TemplateBuilderPage />} />
+          {/* Phase 6 (§20, §37): counselor accounts and the audit trail. */}
+          <Route path={paths.adminCounselors} element={<CounselorManagementPage />} />
+          <Route path={paths.adminAuditLog} element={<AuditLogPage />} />
         </Route>
       </Route>
 

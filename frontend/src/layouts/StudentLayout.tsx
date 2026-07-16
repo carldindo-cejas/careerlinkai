@@ -1,8 +1,11 @@
 import { LogOut } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 
+import { Logo } from '@/components/brand/Logo';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/components/ui/cn';
 import { useLogout } from '@/features/auth/hooks/useAuth';
+import { NotificationBell } from '@/features/notifications/components/NotificationBell';
 import { paths } from '@/routes/paths';
 import { useAuthStore } from '@/stores/authStore';
 import { useStudentClassStore } from '@/stores/studentClassStore';
@@ -30,7 +33,8 @@ const nav = [
  * Not a StaffLayout with a different title: the student chrome shows the class they joined
  * rather than a role badge, and signing out has to clear the class context too — otherwise
  * the next student on a shared lab machine would see the last one's class named on the
- * access screen.
+ * access screen. The student keeps a top bar rather than the staff sidebar: four
+ * destinations do not need a rail.
  */
 export function StudentLayout() {
   const user = useAuthStore((state) => state.user);
@@ -40,16 +44,25 @@ export function StudentLayout() {
   const logout = useLogout();
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
-          <div className="flex items-baseline gap-3">
-            <span className="text-base font-semibold text-slate-900">CareerLinkAI</span>
-            {classRoom ? <span className="text-sm text-slate-500">{classRoom.name}</span> : null}
+    <div className="min-h-screen bg-background">
+      <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <Logo />
+            {classRoom ? (
+              <span className="hidden truncate rounded-full bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground/80 sm:block">
+                {classRoom.name}
+              </span>
+            ) : null}
           </div>
 
-          <div className="flex items-center gap-4">
-            {user ? <span className="text-sm text-slate-600">{user.name}</span> : null}
+          <div className="flex items-center gap-2 sm:gap-4">
+            {/* Phase 6 (§44): "Notifications" is a named student destination in §37. */}
+            <NotificationBell />
+
+            {user ? (
+              <span className="hidden text-sm text-foreground/80 md:block">{user.name}</span>
+            ) : null}
 
             <Button
               variant="ghost"
@@ -58,23 +71,23 @@ export function StudentLayout() {
               loading={logout.isPending}
             >
               <LogOut className="size-4" aria-hidden="true" />
-              Sign out
+              <span className="hidden sm:inline">Sign out</span>
             </Button>
           </div>
         </div>
 
-        <nav className="mx-auto flex max-w-6xl gap-1 px-6">
+        <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 sm:px-6">
           {nav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                [
-                  '-mb-px border-b-2 px-3 py-2.5 text-sm font-medium transition',
+                cn(
+                  '-mb-px whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors',
                   isActive
-                    ? 'border-slate-900 text-slate-900'
-                    : 'border-transparent text-slate-500 hover:text-slate-800',
-                ].join(' ')
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground',
+                )
               }
             >
               {item.label}
@@ -83,7 +96,7 @@ export function StudentLayout() {
         </nav>
       </header>
 
-      <main className="mx-auto max-w-6xl p-6">
+      <main className="mx-auto max-w-6xl p-4 sm:p-6">
         <Outlet />
       </main>
     </div>

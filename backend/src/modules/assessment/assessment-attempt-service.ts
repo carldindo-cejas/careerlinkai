@@ -10,7 +10,9 @@ import {
   assessmentResults,
   assessmentTemplates,
   assessmentVersions,
+  classStudents,
   questionOptions,
+  users,
   type AssessmentAssignment,
   type AssessmentAttempt,
   type AssessmentQuestion,
@@ -24,6 +26,7 @@ import {
 import type { Env } from '@/env';
 import { dispatchRecommendationGeneration } from '@/events/dispatch-recommendation-generation';
 import { dispatch, type AssessmentCompletedEvent } from '@/events/dispatcher';
+import { notifyAssessmentCompleted } from '@/events/send-notifications';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
@@ -32,6 +35,7 @@ import { ScoringService } from '@/modules/assessment/scoring-service';
 import { ClassEnrollmentService } from '@/modules/classes/class-enrollment-service';
 import { ClassService } from '@/modules/classes/class-service';
 import { AuditService } from '@/modules/platform/audit-service';
+import { NotificationService } from '@/modules/platform/notification-service';
 import {
   authorizeAnswerAttempt,
   authorizeViewAttempt,
@@ -353,9 +357,9 @@ export class AssessmentAttemptService {
      * one. Whether recommendation generation actually runs is the *listener's* decision (it checks
      * that both a RIASEC and an SCCT result exist — §11, v1.2), and this service never makes it.
      *
-     * Phase 4 plugged `dispatchRecommendationGeneration` into the seam Step 4 left empty. The
-     * notification listener is still Phase 6. A listener that throws cannot fail this request (see
-     * `dispatch`): the scoring is committed and the student is waiting on the screen for it.
+     * Phase 4 plugged `dispatchRecommendationGeneration` into the seam Step 4 left empty; Phase 6
+     * added the §44 notification listener beside it. A listener that throws cannot fail this
+     * request (see `dispatch`): the scoring is committed and the student is waiting on the screen.
      */
     const event: AssessmentCompletedEvent = {
       type: 'AssessmentCompleted',
@@ -363,9 +367,14 @@ export class AssessmentAttemptService {
       studentId: student.id,
       assessmentVersionId: attempt.assessmentVersionId,
       category: view.template.category,
+      assessmentTitle: view.template.title,
     };
 
-    await dispatch(event, [dispatchRecommendationGeneration(this.db, this.env)]);
+    // Phase 6 plugged the §44 notification listener into the seam this comment promised it to.
+    await dispatch(event, [
+      notifyAssessmentCompleted(this.db),
+      dispatchRecommendationGeneration(this.db, this.env),
+    ]);
 
     return view;
   }
@@ -481,9 +490,44 @@ export class AssessmentAttemptService {
       ipAddress,
     });
 
-    const [view] = await this.decorateAssignments([
-      { assignment, version, template: await this.templateFor(version.assessmentTemplateId) },
-    ]);
+    const template = await this.templateFor(version.assessmentTemplateId);
+
+    /**
+     * §44: "New assessment assigned: {title}, due {deadline}." — to every *active* enrollment.
+     * The one §44 notification that is a direct call rather than a listener, because §60
+     * catalogs exactly four events and assignment creation is not one of them. Absorbed on
+     * failure for the same reason `dispatch()` absorbs a listener: the assignment is already
+     * committed, and a notification hiccup must not turn it into a 500.
+     */
+    try {
+      const roster = await this.db
+        .select({ studentId: classStudents.studentId })
+        .from(classStudents)
+        .where(and(eq(classStudents.classId, classRoom.id), eq(classStudents.status, 'active')));
+
+      await new NotificationService(this.db).sendToMany(
+        roster.map((row) => row.studentId),
+        {
+          title: 'New assessment assigned',
+          message:
+            deadline === null
+              ? `New assessment assigned: ${template.title}.`
+              : `New assessment assigned: ${template.title}, due ${deadline.slice(0, 10)}.`,
+          category: 'CLASS',
+        },
+      );
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          message: 'Assignment notification fan-out failed.',
+          assignment_id: assignment.id,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+
+    const [view] = await this.decorateAssignments([{ assignment, version, template }]);
 
     if (view === undefined) {
       throw ApiError.notFound('Assignment not found.');
@@ -571,16 +615,36 @@ export class AssessmentAttemptService {
     return view;
   }
 
-  /** Every scored attempt across a class (§37 — the counselor's results table). */
-  async listResultsForClass(user: User, classId: string): Promise<ResultView[]> {
+  /**
+   * Every scored attempt across a class (§37 — the counselor's results table), each row
+   * carrying **who** it belongs to. Phase 6 added the student join: a results overview a
+   * counselor cannot put a name to is not an overview, and the §21 reset button needs to
+   * say whose work it is about to void.
+   */
+  async listResultsForClass(
+    user: User,
+    classId: string,
+  ): Promise<(ResultView & { student: { id: string; name: string; username: string | null } })[]> {
     const classRoom = await this.classes.find(user, classId);
 
     const attempts = await this.db
-      .select({ attempt: assessmentAttempts })
+      .select({
+        attempt: assessmentAttempts,
+        studentName: users.name,
+        username: classStudents.username,
+      })
       .from(assessmentAttempts)
       .innerJoin(
         assessmentAssignments,
         eq(assessmentAttempts.assignmentId, assessmentAssignments.id),
+      )
+      .innerJoin(users, eq(assessmentAttempts.studentId, users.id))
+      .leftJoin(
+        classStudents,
+        and(
+          eq(classStudents.classId, classRoom.id),
+          eq(classStudents.studentId, assessmentAttempts.studentId),
+        ),
       )
       .where(
         and(
@@ -590,7 +654,16 @@ export class AssessmentAttemptService {
       )
       .orderBy(desc(assessmentAttempts.submittedAt));
 
-    return Promise.all(attempts.map((row) => this.resultFor(row.attempt.id)));
+    return Promise.all(
+      attempts.map(async (row) => ({
+        ...(await this.resultFor(row.attempt.id)),
+        student: {
+          id: row.attempt.studentId,
+          name: row.studentName,
+          username: row.username,
+        },
+      })),
+    );
   }
 
   /**

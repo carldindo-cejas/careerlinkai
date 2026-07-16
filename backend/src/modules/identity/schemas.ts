@@ -73,8 +73,58 @@ export const joinClassSchema = z.object({
   username: z.string().trim().min(1, 'A username is required.').max(50),
 });
 
+/**
+ * Counselor management (§20, Phase 6).
+ *
+ * No password field on create, deliberately: the service *generates* the temporary password
+ * and returns it once. An admin-chosen password would be a credential two people know with
+ * no record of which of them used it. `.strict()` so a client sending `role` or `password`
+ * is told no rather than silently ignored — both would be requests to make this endpoint
+ * something it must not be.
+ */
+export const createCounselorSchema = z
+  .object({
+    email: z.email('Enter a valid email address.'),
+    first_name: z.string().trim().min(1, 'A first name is required.').max(100),
+    last_name: z.string().trim().min(1, 'A last name is required.').max(100),
+    name: z.string().trim().min(1).max(150).optional(),
+    phone: z.string().trim().max(30).nullable().optional(),
+    employee_number: z.string().trim().max(50).nullable().optional(),
+    specialization: z.string().trim().max(150).nullable().optional(),
+    bio: z.string().trim().max(1000).nullable().optional(),
+  })
+  .strict();
+
+/**
+ * `status` is editable here — suspend/reactivate is the §4 admin act — but `role`, `email`
+ * and `password` are not requests this endpoint can mean: a role change is a different
+ * account, an email change breaks the §38 per-email lockout identity, and passwords rotate
+ * only through the reset flow the counselor themselves completes.
+ */
+export const updateCounselorSchema = z
+  .object({
+    name: z.string().trim().min(1).max(150).optional(),
+    status: z.enum(['active', 'inactive', 'suspended']).optional(),
+    first_name: z.string().trim().min(1).max(100).optional(),
+    last_name: z.string().trim().min(1).max(100).optional(),
+    phone: z.string().trim().max(30).nullable().optional(),
+    employee_number: z.string().trim().max(50).nullable().optional(),
+    specialization: z.string().trim().max(150).nullable().optional(),
+    bio: z.string().trim().max(1000).nullable().optional(),
+  })
+  .strict();
+
+export const listCounselorsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  per_page: z.coerce.number().int().min(1).max(100).default(20),
+  search: z.string().trim().max(100).optional(),
+  status: z.enum(['pending', 'active', 'inactive', 'suspended']).optional(),
+});
+
 export type LoginInput = z.infer<typeof loginSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 export type JoinClassInput = z.infer<typeof joinClassSchema>;
+export type CreateCounselorInput = z.infer<typeof createCounselorSchema>;
+export type UpdateCounselorInput = z.infer<typeof updateCounselorSchema>;

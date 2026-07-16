@@ -64,3 +64,19 @@ export function useClassResults(classId: string) {
     queryFn: () => counselorAssessmentApi.listClassResults(classId),
   });
 }
+
+/**
+ * The §21 retake (deviation D8, closed in Phase 6). Voiding a result changes the results
+ * table and the assignment completion counts — both caches are invalidated.
+ */
+export function useResetAttempt(classId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (attemptId: string) => counselorAssessmentApi.resetAttempt(attemptId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: assignmentKeys.resultsForClass(classId) });
+      void queryClient.invalidateQueries({ queryKey: assignmentKeys.forClass(classId) });
+    },
+  });
+}

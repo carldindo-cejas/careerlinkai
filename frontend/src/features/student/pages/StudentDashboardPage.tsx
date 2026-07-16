@@ -4,6 +4,7 @@ import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAssignments, useProfile, useResults } from '@/features/student/hooks/useAssessment';
+import { useStudentDashboard } from '@/features/student/hooks/useDashboard';
 import { paths } from '@/routes/paths';
 import { useAuthStore } from '@/stores/authStore';
 import { useStudentClassStore } from '@/stores/studentClassStore';
@@ -22,6 +23,9 @@ export function StudentDashboardPage() {
   const { data: assignments, isError: assignmentsFailed, error: assignmentsError } = useAssignments();
   const { data: results } = useResults();
   const { data: profile } = useProfile();
+  // Phase 6: the aggregate view — used for the one fact the other queries cannot answer,
+  // "do I have recommendations waiting?" (§27 needs both RIASEC and SCCT before any exist).
+  const { data: dashboard } = useStudentDashboard();
   const navigate = useNavigate();
 
   const todo = (assignments ?? []).filter((a) => a.my_attempt?.status !== 'SCORED');
@@ -101,6 +105,23 @@ export function StudentDashboardPage() {
           <CardContent>
             <Button variant="secondary" onClick={() => navigate(paths.studentResults)}>
               See my results
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {/* Phase 6: only rendered once recommendations actually exist — never as a teaser. */}
+      {dashboard?.recommendations_ready ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Your recommendations are ready</CardTitle>
+            <CardDescription>
+              Ranked careers and programs, drawn from your RIASEC and SCCT results together.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => navigate(paths.studentRecommendations)}>
+              See my recommendations
             </Button>
           </CardContent>
         </Card>

@@ -15,10 +15,17 @@ import {
 import { generationRoutes } from '@/modules/ai/generation-routes';
 import { adminAiRoutes } from '@/modules/ai/routes';
 import { builderRoutes } from '@/modules/assessment/builder-routes';
-import { adminRoutes } from '@/modules/catalog/routes';
+import { adminRoutes, publicCatalogRoutes } from '@/modules/catalog/routes';
 import { counselorRoutes } from '@/modules/classes/routes';
+import { adminIdentityRoutes } from '@/modules/identity/admin-routes';
 import { authRoutes } from '@/modules/identity/routes';
 import { studentAccessRoutes } from '@/modules/identity/student-access-routes';
+import { notificationRoutes } from '@/modules/platform/notification-routes';
+import {
+  adminPlatformRoutes,
+  counselorPlatformRoutes,
+  studentPlatformRoutes,
+} from '@/modules/platform/routes';
 import {
   counselorRecommendationRoutes,
   studentRecommendationRoutes,
@@ -81,6 +88,15 @@ export function createApp() {
   api.route('/admin', adminAssessmentRoutes);
   // Phase 5a: the AI/Knowledge module's own /admin router — same one-module-one-router rule.
   api.route('/admin', adminAiRoutes);
+  // Phase 6: the Identity module's /admin router (counselor management, §20) and the
+  // Platform module's routers (audit-log viewer + the three role dashboards, notifications).
+  api.route('/admin', adminIdentityRoutes);
+  api.route('/admin', adminPlatformRoutes);
+  api.route('/counselor', counselorPlatformRoutes);
+  api.route('/student', studentPlatformRoutes);
+  api.route('/notifications', notificationRoutes);
+  // §20 "Public / Health": the unauthenticated catalog browse.
+  api.route('/', publicCatalogRoutes);
   // Phase 5b: the builder + generation group mounts at the API root — §20 lists it under both
   // /admin and /counselor with identical shapes, so it is shared surface with a per-record
   // ownership policy, not two prefixed copies of one resource.

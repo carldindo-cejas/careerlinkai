@@ -1,20 +1,69 @@
-import { Outlet } from 'react-router-dom';
+import { Link, Outlet } from 'react-router-dom';
+
+import artUrl from '@/assets/careerlinkai_art.png';
+import { Logo } from '@/components/brand/Logo';
+import { FadeIn } from '@/components/motion/FadeIn';
+import { paths } from '@/routes/paths';
 
 /**
- * Shell for the staff authentication screens (FULLPLAN §35).
+ * Shell for the staff authentication screens (FULLPLAN §35) — post-Phase-6 design pass.
  *
- * Student access has its own layout (StudentAccessLayout), added in Phase 1 — the two
- * flows never share a screen.
+ * The reference composition: a light panel carrying the brand, a one-line promise and the
+ * official artwork, beside a deep-navy panel holding the form. On mobile the art steps
+ * aside and the form takes the screen.
+ *
+ * Student access has its own layout (StudentAccessLayout) — the two flows never share a
+ * screen (§38).
  */
 export function StaffAuthLayout() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-slate-50 p-4">
-      <div className="flex flex-col items-center gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">CareerLinkAI</h1>
-        <p className="text-sm text-slate-500">Career &amp; college guidance</p>
+    <div className="grid min-h-screen lg:grid-cols-[1.15fr_1fr]">
+      {/* Brand + artwork panel (desktop only). */}
+      <div className="hidden flex-col justify-between bg-background p-10 lg:flex">
+        <Link to={paths.landing} className="w-fit focus-visible:outline-none">
+          <Logo />
+        </Link>
+
+        <FadeIn className="mx-auto w-full max-w-xl">
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">
+            Guidance that starts with evidence.
+          </h1>
+          <p className="mt-3 max-w-md text-muted-foreground">
+            RIASEC and SCCT assessments, deterministic career matching, and AI explanations
+            grounded in your school&apos;s own guidance materials.
+          </p>
+          <img
+            src={artUrl}
+            alt="Senior high school students exploring career recommendations together"
+            className="mt-8 w-full rounded-2xl object-contain"
+          />
+        </FadeIn>
+
+        <p className="text-xs text-muted-foreground">
+          CareerLinkAI · Career &amp; college guidance for Senior High School
+        </p>
       </div>
 
-      <Outlet />
+      {/* Form panel: deep navy, the card floats on it. */}
+      <div className="relative flex flex-col items-center justify-center gap-6 overflow-hidden bg-sidebar p-4 sm:p-8">
+        {/* A soft brand glow, echoing the logo's violet→teal. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-40 -top-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(139,92,246,0.28),transparent_65%)]"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-44 -left-48 size-120 rounded-full bg-[radial-gradient(circle,rgba(20,184,166,0.22),transparent_65%)]"
+        />
+
+        <Link to={paths.landing} className="focus-visible:outline-none lg:hidden">
+          <Logo wordmarkClassName="text-white" />
+        </Link>
+
+        <FadeIn delay={0.05} className="relative w-full max-w-md">
+          <Outlet />
+        </FadeIn>
+      </div>
     </div>
   );
 }

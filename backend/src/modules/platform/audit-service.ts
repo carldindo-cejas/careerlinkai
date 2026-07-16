@@ -1,7 +1,10 @@
+import { and, count, desc, eq, gte, lte, like } from 'drizzle-orm';
+
 import type { Database } from '@/db/client';
-import { auditLogs } from '@/db/schema';
+import { auditLogs, users, type AuditLog } from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
+import { paginate, type PaginatedData } from '@/lib/envelope';
 
 /**
  * AuditService (FULLPLAN §13.8, §38).
@@ -74,7 +77,13 @@ export type AuditAction =
   | 'KNOWLEDGE_DOCUMENT_UPLOADED'
   | 'KNOWLEDGE_DOCUMENT_ARCHIVED'
   | 'KNOWLEDGE_DOCUMENT_REPROCESSED'
-  | 'AI_POLICY_UPDATED';
+  | 'AI_POLICY_UPDATED'
+  // Counselor management (§20, Phase 6). Recorded because these are the account-lifecycle
+  // acts on the role that can read every student's results: who was given that access, who
+  // suspended it, and who removed it are questions with exactly one honest source of answers.
+  | 'COUNSELOR_CREATED'
+  | 'COUNSELOR_UPDATED'
+  | 'COUNSELOR_DELETED';
 
 /**
  * Why a join attempt failed. Never sent to the client — the API answers every failure
@@ -101,8 +110,82 @@ export interface AuditEntry {
   ipAddress?: string | null;
 }
 
+export interface AuditLogFilters {
+  page: number;
+  perPage: number;
+  action?: string;
+  module?: string;
+  userId?: string;
+  targetId?: string;
+  /** ISO date bounds — string comparison is correct for ISO-8601 UTC timestamps (§12). */
+  from?: string;
+  to?: string;
+}
+
+export interface AuditLogView {
+  log: AuditLog;
+  /** Resolved for display; NULL for system actions and unresolved join attempts. */
+  userName: string | null;
+}
+
 export class AuditService {
   constructor(private readonly db: Database) {}
+
+  /**
+   * The §20 `GET /admin/audit-logs` read (Phase 6) — the viewer where the swallowed-exception
+   * pattern (D18's lesson) and the §38 join-failure reasons finally become visible to an
+   * operator. Read-only: `write()` below remains the only mutating method this service will
+   * ever have.
+   */
+  async list(filters: AuditLogFilters): Promise<PaginatedData<AuditLogView>> {
+    const conditions = [];
+
+    if (filters.action !== undefined && filters.action !== '') {
+      // Prefix match, so "STUDENT_CLASS_ACCESS" finds all three join outcomes at once.
+      conditions.push(like(auditLogs.action, `${filters.action}%`));
+    }
+
+    if (filters.module !== undefined && filters.module !== '') {
+      conditions.push(eq(auditLogs.module, filters.module));
+    }
+
+    if (filters.userId !== undefined) {
+      conditions.push(eq(auditLogs.userId, filters.userId));
+    }
+
+    if (filters.targetId !== undefined) {
+      conditions.push(eq(auditLogs.targetId, filters.targetId));
+    }
+
+    if (filters.from !== undefined) {
+      conditions.push(gte(auditLogs.createdAt, filters.from));
+    }
+
+    if (filters.to !== undefined) {
+      conditions.push(lte(auditLogs.createdAt, filters.to));
+    }
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [rows, [total]] = await Promise.all([
+      this.db
+        .select({ log: auditLogs, userName: users.name })
+        .from(auditLogs)
+        .leftJoin(users, eq(auditLogs.userId, users.id))
+        .where(where)
+        .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+        .limit(filters.perPage)
+        .offset((filters.page - 1) * filters.perPage),
+      this.db.select({ value: count() }).from(auditLogs).where(where),
+    ]);
+
+    return paginate(
+      rows.map((row) => ({ log: row.log, userName: row.userName })),
+      total?.value ?? 0,
+      filters.page,
+      filters.perPage,
+    );
+  }
 
   async write(entry: AuditEntry): Promise<void> {
     await this.db.insert(auditLogs).values({

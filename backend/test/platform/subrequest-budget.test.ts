@@ -30,9 +30,17 @@ import {
  * So, as with the PBKDF2 cap and the D1 parameter ceiling, the test asserts on **what the
  * code asks of the platform**: it counts every executed D1 statement and every `batch()`
  * call on the heaviest request in the system — a student's submit that scores inline AND
- * runs full recommendation generation inline (deviation D17) — and holds it to **≤ 25**,
- * half the platform's cap. The margin is the point: the gate should fire on the feature
- * that *approaches* the cliff, not the one that falls off it.
+ * runs full recommendation generation inline (deviation D17) — and holds it to **≤ 27**.
+ * The margin is the point: the gate should fire on the feature that *approaches* the
+ * cliff, not the one that falls off it.
+ *
+ * Budget history — every move must be explained here, that is the deal:
+ *   * Phase 4.5: set at 25 (half the cap). First run measured **35** and forced a real
+ *     trim to ~24 (see PROGRESS.md, Phase 4.5 Step 2).
+ *   * Phase 6: raised 25 → 27. The §44 notification listeners put exactly two INSERTs on
+ *     this path — "your results are ready" and "your recommendations are ready" — which
+ *     are required writes, not waste; the measured count moved 24 → 26. Headroom stays
+ *     comfortable (26 of 50) and the gate still fires on the next two-query feature.
  *
  * (Phase 5a's ingestion batch gets its own budget test when it lands — see the batching
  * contract in §33.)
@@ -132,7 +140,7 @@ describe('the Free-plan 50-subrequest ceiling (§45)', () => {
     await answerAll(studentToken, scctAttempt.body.data, () => 3);
   });
 
-  it('submit-with-inline-generation stays within half the platform cap (≤ 25 D1 calls)', async () => {
+  it('submit-with-inline-generation stays well within the platform cap (≤ 27 D1 calls)', async () => {
     const counter: SubrequestCounter = { calls: 0 };
     const db = createDatabase(countingD1(env.DB, counter));
     const student = await findUser(studentId);
@@ -140,12 +148,12 @@ describe('the Free-plan 50-subrequest ceiling (§45)', () => {
     const view = await new AssessmentAttemptService(db, env).submit(student!, scctAttemptId);
 
     // Logged so a budget regression can be seen approaching across runs, not just crossing.
-    console.info(`submit-with-inline-generation: ${counter.calls} D1 calls (budget 25, platform cap 50)`);
+    console.info(`submit-with-inline-generation: ${counter.calls} D1 calls (budget 27, platform cap 50)`);
 
     // The path under measurement must have actually done the work: a scored SCCT attempt,
     // and — both results now existing — a persisted recommendation set behind it.
     expect(view.attempt.status).toBe('SCORED');
     expect(counter.calls).toBeGreaterThan(0);
-    expect(counter.calls).toBeLessThanOrEqual(25);
+    expect(counter.calls).toBeLessThanOrEqual(27);
   });
 });

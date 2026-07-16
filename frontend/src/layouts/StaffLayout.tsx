@@ -1,64 +1,203 @@
-import { LogOut } from 'lucide-react';
-import type { ReactNode } from 'react';
-import { Outlet } from 'react-router-dom';
+import { LogOut, Menu, type LucideIcon } from 'lucide-react';
+import { useState } from 'react';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
-import { Button } from '@/components/ui/button';
+import { Logo } from '@/components/brand/Logo';
+import { cn } from '@/components/ui/cn';
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { useLogout } from '@/features/auth/hooks/useAuth';
+import { NotificationBell } from '@/features/notifications/components/NotificationBell';
 import { useAuthStore } from '@/stores/authStore';
+
+export interface StaffNavItem {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  /** Exact-match only — "Dashboard" needs it, or /admin/colleges lights it up too. */
+  end?: boolean;
+}
 
 export interface StaffLayoutProps {
   title: string;
-  /** Navigation for the role. Empty in Phase 0 — the sections arrive with their phases. */
-  nav?: ReactNode;
+  nav: StaffNavItem[];
 }
 
 /**
- * Shared chrome for the signed-in staff shells (FULLPLAN §35).
- *
- * AdminLayout and CounselorLayout compose this rather than duplicating it; they differ
- * only in title and navigation.
+ * The signed-in staff shell (FULLPLAN §35) — post-Phase-6 design pass: a deep-navy
+ * sidebar (the reference layout), collapsing to a sheet drawer under `lg`. AdminLayout
+ * and CounselorLayout compose this; they differ only in title and navigation.
  */
 export function StaffLayout({ title, nav }: StaffLayoutProps) {
   const user = useAuthStore((state) => state.user);
   const logout = useLogout();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const location = useLocation();
+
+  const sidebar = (
+    <SidebarBody
+      title={title}
+      nav={nav}
+      userName={user?.name ?? null}
+      userRole={user?.role ?? null}
+      signingOut={logout.isPending}
+      onSignOut={() => logout.mutate()}
+    />
+  );
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
-          <div className="flex items-baseline gap-3">
-            <span className="text-base font-semibold text-slate-900">CareerLinkAI</span>
-            <span className="text-sm text-slate-500">{title}</span>
-          </div>
+    <div className="flex min-h-screen bg-background">
+      {/* Desktop sidebar */}
+      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col bg-sidebar lg:flex">
+        {sidebar}
+      </aside>
 
-          <div className="flex items-center gap-4">
-            {user ? (
-              <span className="text-sm text-slate-600">
-                {user.name}
-                <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs capitalize text-slate-600">
-                  {user.role}
-                </span>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Top bar: drawer trigger on mobile, bell + identity everywhere. */}
+        <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur">
+          <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
+            <div className="flex items-center gap-3">
+              <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+                <SheetTrigger
+                  aria-label="Open menu"
+                  className="rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
+                >
+                  <Menu className="size-5" aria-hidden="true" />
+                </SheetTrigger>
+                <SheetContent side="left" title={`${title} navigation`}>
+                  <div onClick={(event) => {
+                    // Close the drawer when a nav link inside it is clicked.
+                    if ((event.target as HTMLElement).closest('a')) {
+                      setDrawerOpen(false);
+                    }
+                  }}>
+                    {sidebar}
+                  </div>
+                </SheetContent>
+              </Sheet>
+
+              <div className="lg:hidden">
+                <Logo />
+              </div>
+
+              {/* Section heading on desktop — the sidebar already carries the brand. */}
+              <span className="hidden text-sm font-medium text-muted-foreground lg:block">
+                {breadcrumbFor(location.pathname, nav) ?? title}
               </span>
-            ) : null}
+            </div>
 
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => logout.mutate()}
-              loading={logout.isPending}
-            >
-              <LogOut className="size-4" aria-hidden="true" />
-              Sign out
-            </Button>
+            <div className="flex items-center gap-3">
+              <NotificationBell />
+              {user ? (
+                <span className="hidden items-center gap-2 sm:flex">
+                  <span className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                    {initials(user.name)}
+                  </span>
+                  <span className="text-sm text-foreground/80">{user.name}</span>
+                </span>
+              ) : null}
+            </div>
           </div>
-        </div>
+        </header>
 
-        {nav ? <nav className="mx-auto max-w-6xl px-6 pb-3">{nav}</nav> : null}
-      </header>
-
-      <main className="mx-auto max-w-6xl p-6">
-        <Outlet />
-      </main>
+        <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
+
+  function breadcrumbFor(pathname: string, items: StaffNavItem[]): string | null {
+    const match = items
+      .filter((item) => (item.end ? pathname === item.to : pathname.startsWith(item.to)))
+      .sort((a, b) => b.to.length - a.to.length)[0];
+
+    return match?.label ?? null;
+  }
+}
+
+function SidebarBody({
+  title,
+  nav,
+  userName,
+  userRole,
+  signingOut,
+  onSignOut,
+}: {
+  title: string;
+  nav: StaffNavItem[];
+  userName: string | null;
+  userRole: string | null;
+  signingOut: boolean;
+  onSignOut: () => void;
+}) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="px-5 pb-5 pt-6">
+        <Logo wordmarkClassName="text-sidebar-active-foreground" />
+        <p className="mt-1.5 pl-[2.9rem] text-xs font-medium uppercase tracking-widest text-sidebar-muted">
+          {title}
+        </p>
+      </div>
+
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3">
+        {nav.map((item) => {
+          const Icon = item.icon;
+
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end ?? false}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-sidebar-active text-sidebar-active-foreground'
+                    : 'text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground',
+                )
+              }
+            >
+              <Icon className="size-4 shrink-0" aria-hidden="true" />
+              {item.label}
+            </NavLink>
+          );
+        })}
+      </nav>
+
+      <div className="border-t border-sidebar-border p-3">
+        {userName ? (
+          <div className="flex items-center gap-3 px-2 pb-3 pt-1">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-sm font-semibold text-sidebar-active-foreground">
+              {initials(userName)}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium text-sidebar-active-foreground">
+                {userName}
+              </span>
+              <span className="block text-xs capitalize text-sidebar-muted">{userRole}</span>
+            </span>
+          </div>
+        ) : null}
+
+        <button
+          type="button"
+          onClick={onSignOut}
+          disabled={signingOut}
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground disabled:opacity-50"
+        >
+          <LogOut className="size-4" aria-hidden="true" />
+          {signingOut ? 'Signing out…' : 'Sign out'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]!.toUpperCase())
+    .join('');
 }

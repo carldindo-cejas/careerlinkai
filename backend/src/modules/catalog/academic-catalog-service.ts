@@ -594,6 +594,37 @@ export class AcademicCatalogService {
   }
 
   /**
+   * The unauthenticated `GET /programs/public` read (§20, Phase 6): the same active-chain
+   * rule as `rankablePrograms` — what the engine would recommend is what the public may
+   * browse — grouped by college for display, both levels alphabetical.
+   */
+  async publicCatalog(): Promise<{ college: College; programs: Program[] }[]> {
+    const rows = await this.db
+      .select({ program: programs, college: colleges })
+      .from(programs)
+      .innerJoin(colleges, eq(programs.collegeId, colleges.id))
+      .where(
+        and(
+          eq(programs.status, 'active'),
+          isNull(programs.deletedAt),
+          eq(colleges.status, 'active'),
+          isNull(colleges.deletedAt),
+        ),
+      )
+      .orderBy(asc(colleges.name), asc(programs.name));
+
+    const grouped = new Map<string, { college: College; programs: Program[] }>();
+
+    for (const row of rows) {
+      const entry = grouped.get(row.college.id) ?? { college: row.college, programs: [] };
+      entry.programs.push(row.program);
+      grouped.set(row.college.id, entry);
+    }
+
+    return [...grouped.values()];
+  }
+
+  /**
    * The careers that count toward a program's §27 RIASEC average: linked, live, and
    * **`active`**.
    *

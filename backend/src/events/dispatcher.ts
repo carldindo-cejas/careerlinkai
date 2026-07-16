@@ -22,6 +22,13 @@ export interface AssessmentCompletedEvent {
   assessmentVersionId: string;
   /** `RIASEC` | `SCCT` | `CUSTOM` — the listener needs it to decide what, if anything, to do. */
   category: string;
+  /**
+   * The template title, for §44's "Your {assessment title} results are ready." The submit
+   * path already holds it, and the notification listener runs inside that request's
+   * subrequest budget (§45) — carrying the title costs nothing; re-fetching it would cost
+   * a query on every submit.
+   */
+  assessmentTitle: string;
 }
 
 /** §60: fired once a student's recommendation set has been generated and persisted. */
@@ -44,10 +51,24 @@ export interface AssessmentDraftGeneratedEvent {
   creatorId: string;
 }
 
+/**
+ * §60's third event (Phase 6): fired by the ingestion pipeline when the last embedding batch
+ * lands and the document flips to COMPLETED. `fileName` rides along for §44's message —
+ * "{file_name} is now available to the AI assistant." — so the listener writes one row and
+ * reads nothing.
+ */
+export interface KnowledgeDocumentProcessedEvent {
+  type: 'KnowledgeDocumentProcessed';
+  documentId: string;
+  uploadedBy: string;
+  fileName: string;
+}
+
 export type DomainEvent =
   | AssessmentCompletedEvent
   | RecommendationGeneratedEvent
-  | AssessmentDraftGeneratedEvent;
+  | AssessmentDraftGeneratedEvent
+  | KnowledgeDocumentProcessedEvent;
 
 export type Listener<E extends DomainEvent> = (event: E) => Promise<void>;
 

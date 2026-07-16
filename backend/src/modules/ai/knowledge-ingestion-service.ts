@@ -6,6 +6,7 @@ import { knowledgeChunks, knowledgeDocuments, type KnowledgeDocument, type User 
 import { chunkText, cleanText } from '@/lib/chunker';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
+import { dispatch, type KnowledgeDocumentProcessedEvent, type Listener } from '@/events/dispatcher';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
 import { EMBEDDING_BATCH_LIMIT, type AiGatewayService } from '@/modules/ai/ai-gateway-service';
 import type { VectorStore } from '@/modules/ai/vector-store';
@@ -82,6 +83,12 @@ export class KnowledgeIngestionService {
     private readonly gateway: AiGatewayService,
     private readonly vectors: VectorStore,
     private readonly aiQueue: Queue | undefined,
+    /**
+     * §60's `KnowledgeDocumentProcessed` subscribers (Phase 6 — the §44 notification). Passed
+     * in rather than imported so the pipeline stays ignorant of who reacts to it, exactly like
+     * every other event seam — and so the stub-driven tests can run with none registered.
+     */
+    private readonly processedListeners: Listener<KnowledgeDocumentProcessedEvent>[] = [],
   ) {
     this.audit = new AuditService(db);
   }
@@ -256,6 +263,20 @@ export class KnowledgeIngestionService {
 
     if ((remaining?.pending ?? 0) === 0) {
       await this.setStatus(documentId, 'COMPLETED');
+
+      // §60: "after all chunks embedded". Fires on a reprocess completion too, deliberately —
+      // the admin asked for the re-run, and "it is available again" is the answer they wanted.
+      const document = await this.find(documentId);
+
+      await dispatch<KnowledgeDocumentProcessedEvent>(
+        {
+          type: 'KnowledgeDocumentProcessed',
+          documentId,
+          uploadedBy: document.uploadedBy,
+          fileName: document.fileName,
+        },
+        this.processedListeners,
+      );
     }
   }
 

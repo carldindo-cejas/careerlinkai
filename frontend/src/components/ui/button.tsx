@@ -5,23 +5,24 @@ import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { cn } from '@/components/ui/cn';
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]',
   {
     variants: {
       variant: {
-        primary: 'bg-slate-900 text-white hover:bg-slate-800',
-        secondary: 'bg-slate-100 text-slate-900 hover:bg-slate-200',
-        ghost: 'text-slate-700 hover:bg-slate-100',
+        primary: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90',
+        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/70',
+        ghost: 'text-foreground/80 hover:bg-secondary hover:text-foreground',
+        outline: 'border border-border bg-card text-foreground shadow-sm hover:bg-secondary',
         // Reserved for the confirming step of an action that destroys something a user cannot get
         // back — closing an assessment expires the attempts still in progress under it (§21). It
         // is deliberately not used for the button that *opens* such a confirmation, only for the
         // one that carries it out.
-        danger: 'bg-red-600 text-white hover:bg-red-700',
+        danger: 'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90',
       },
       size: {
         sm: 'h-8 px-3',
         md: 'h-10 px-4',
-        lg: 'h-11 px-6',
+        lg: 'h-11 px-6 text-base',
       },
     },
     defaultVariants: {

@@ -1,21 +1,61 @@
-import { Outlet } from 'react-router-dom';
+import { Link, Outlet } from 'react-router-dom';
+
+import artUrl from '@/assets/careerlinkai_art.png';
+import { Logo } from '@/components/brand/Logo';
+import { FadeIn } from '@/components/motion/FadeIn';
+import { paths } from '@/routes/paths';
 
 /**
- * Shell for the student class-access screen (FULLPLAN §35, §38).
+ * Shell for the student class-access screen (FULLPLAN §35, §38) — post-Phase-6 design pass.
  *
  * Separate from StaffAuthLayout on purpose. The two sign-in flows never share a screen —
  * a student has no password, and a page that offers both a password field and a class-code
- * field invites exactly the confusion the split was made to avoid.
+ * field invites exactly the confusion the split was made to avoid. The composition mirrors
+ * the staff layout (a student should still feel they are in the same product) but the copy
+ * speaks to the student, and the form sits on the light panel — friendlier at 7:30 AM in a
+ * computer lab.
  */
 export function StudentAccessLayout() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-slate-50 p-4">
-      <div className="flex flex-col items-center gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">CareerLinkAI</h1>
-        <p className="text-sm text-slate-500">Career &amp; college guidance</p>
+    <div className="grid min-h-screen lg:grid-cols-[1fr_1.15fr]">
+      <div className="relative flex flex-col items-center justify-center gap-6 overflow-hidden bg-background p-4 sm:p-8">
+        <Link to={paths.landing} className="focus-visible:outline-none">
+          <Logo />
+        </Link>
+
+        <FadeIn className="w-full max-w-md">
+          <Outlet />
+        </FadeIn>
+
+        <p className="text-center text-xs text-muted-foreground">
+          Staff member?{' '}
+          <Link to={paths.login} className="font-medium text-primary hover:underline">
+            Sign in here
+          </Link>
+        </p>
       </div>
 
-      <Outlet />
+      {/* Artwork panel (desktop only) — navy, with the students illustration. */}
+      <div className="relative hidden flex-col justify-center overflow-hidden bg-sidebar p-10 lg:flex">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -top-40 -right-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(139,92,246,0.28),transparent_65%)]"
+        />
+        <FadeIn delay={0.05} className="mx-auto w-full max-w-xl">
+          <h1 className="text-3xl font-bold tracking-tight text-white">
+            Find where your strengths point.
+          </h1>
+          <p className="mt-3 max-w-md text-sidebar-foreground">
+            Answer two short assessments and get ranked careers, programs and colleges —
+            matched to you, and explained.
+          </p>
+          <img
+            src={artUrl}
+            alt="Senior high school students taking the RIASEC assessment on laptops and tablets"
+            className="mt-8 w-full rounded-2xl bg-white/95 object-contain p-2"
+          />
+        </FadeIn>
+      </div>
     </div>
   );
 }

@@ -245,3 +245,36 @@ adminRoutes.delete('/programs/:id/careers/:careerId', async (c) => {
 
   return c.json(successEnvelope(serializeProgram(program, careers), 'Career unlinked successfully.'));
 });
+
+// --- Public (§20 "Public / Health") ------------------------------------------------------
+
+/**
+ * `GET /programs/public` (§20, Phase 6) — the unauthenticated catalog browse, for the
+ * landing page. Read-only, `active` chains only (the same recommendability rule as §27:
+ * an active program under an archived college is not offered), and deliberately thin:
+ * no descriptions of careers, no pagination, no query surface to abuse. It exposes exactly
+ * what a school's own prospectus would.
+ */
+export const publicCatalogRoutes = new Hono<AppEnv>();
+
+publicCatalogRoutes.get('/programs/public', async (c) => {
+  const collegesWithPrograms = await catalog(c).publicCatalog();
+
+  return c.json(
+    successEnvelope(
+      {
+        colleges: collegesWithPrograms.map(({ college, programs: items }) => ({
+          id: college.id,
+          name: college.name,
+          programs: items.map((program) => ({
+            id: program.id,
+            code: program.code,
+            name: program.name,
+            recommended_strand: program.recommendedStrand,
+          })),
+        })),
+      },
+      'Programs retrieved successfully.',
+    ),
+  );
+});

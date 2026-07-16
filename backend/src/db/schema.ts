@@ -14,6 +14,7 @@ import type {
   EnrollmentStatus,
   KnowledgeVisibility,
   MatchType,
+  NotificationCategory,
   ProcessingStatus,
   ProgramStatus,
   QuestionSource,
@@ -803,6 +804,31 @@ export const aiPolicies = sqliteTable(
 // --- Platform (§13.8) ----------------------------------------------------------------
 
 /**
+ * In-app notifications (§13.8, §44) — Phase 6, the 28th and last domain table. Created by
+ * `NotificationService.send()` at the end of the §44 listeners; `read_at` is the only status
+ * that will ever exist (NULL = unread).
+ */
+export const notifications = sqliteTable(
+  'notifications',
+  {
+    id: text('id').primaryKey().notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    message: text('message').notNull(),
+    category: text('category').$type<NotificationCategory>().notNull(),
+    readAt: timestamp('read_at'),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index('notifications_user_id_index').on(table.userId),
+    index('notifications_user_read_index').on(table.userId, table.readAt),
+    index('notifications_user_created_index').on(table.userId, table.createdAt),
+  ],
+);
+
+/**
  * Append-only (§13.8). `AuditService` is the sole writer and nothing anywhere issues an
  * UPDATE or DELETE against this table — the immutability is a code rule, since SQLite
  * cannot express it.
@@ -857,3 +883,4 @@ export type KnowledgeDocument = typeof knowledgeDocuments.$inferSelect;
 export type KnowledgeChunk = typeof knowledgeChunks.$inferSelect;
 export type AiRequest = typeof aiRequests.$inferSelect;
 export type AiPolicy = typeof aiPolicies.$inferSelect;
+export type Notification = typeof notifications.$inferSelect;

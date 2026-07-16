@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
-import { Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { z } from 'zod';
 
 import { Alert } from '@/components/ui/alert';
@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useLogin } from '@/features/auth/hooks/useAuth';
-import { homePathForRole } from '@/routes/paths';
+import { homePathForRole, paths } from '@/routes/paths';
 import { useAuthStore } from '@/stores/authStore';
 import { ApiRequestError } from '@/types/api';
 
@@ -101,6 +101,13 @@ export function LoginPage() {
           <Button type="submit" loading={login.isPending} className="mt-2">
             {login.isPending ? 'Signing in…' : 'Sign in'}
           </Button>
+
+          <Link
+            to={paths.forgotPassword}
+            className="text-center text-sm text-slate-500 hover:underline"
+          >
+            Forgot your password?
+          </Link>
         </form>
       </CardContent>
     </Card>

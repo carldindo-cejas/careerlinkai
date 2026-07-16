@@ -1,5 +1,6 @@
 import type { Database } from '@/db/client';
 import type { Env } from '@/env';
+import { notifyKnowledgeDocumentProcessed } from '@/events/send-notifications';
 import { AiGatewayService } from '@/modules/ai/ai-gateway-service';
 import { KnowledgeIngestionService } from '@/modules/ai/knowledge-ingestion-service';
 import { RetrievalService } from '@/modules/ai/retrieval-service';
@@ -50,5 +51,7 @@ export function ingestionFrom(db: Database, env: Env): KnowledgeIngestionService
     aiGatewayFrom(db, env),
     vectorStoreFrom(env),
     env.QUEUE_AI,
+    // Phase 6: §44's "{file_name} is now available to the AI assistant." notification.
+    [notifyKnowledgeDocumentProcessed(db)],
   );
 }

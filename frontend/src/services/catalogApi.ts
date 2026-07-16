@@ -104,4 +104,25 @@ export const catalogApi = {
       httpClient.delete<ApiSuccess<Program>>(`/admin/programs/${programId}/careers/${careerId}`),
     );
   },
+
+  /**
+   * §20 "Public / Health" (Phase 6): the unauthenticated catalog browse the landing page
+   * renders. Active chains only, thin shape — a prospectus, not the admin view.
+   */
+  publicPrograms(): Promise<PublicCatalog> {
+    return unwrap(httpClient.get<ApiSuccess<PublicCatalog>>('/programs/public'));
+  },
 };
+
+export interface PublicCatalog {
+  colleges: {
+    id: string;
+    name: string;
+    programs: {
+      id: string;
+      code: string;
+      name: string;
+      recommended_strand: string | null;
+    }[];
+  }[];
+}

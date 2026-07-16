@@ -104,6 +104,8 @@ export interface AssessmentResult {
   attempt_id: string;
   submitted_at: string | null;
   assessment?: { title: string; category: AssessmentCategory };
+  /** Counselor class-results rows only (Phase 6): whose attempt this is. */
+  student?: { id: string; name: string; username: string | null };
   result: {
     /** "IAS" for RIASEC. NULL for SCCT, which produces a composite instead (§23). */
     result_code: string | null;

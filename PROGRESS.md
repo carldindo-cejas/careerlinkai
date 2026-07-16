@@ -1,10 +1,12 @@
 # CareerLinkAI Progress
 
-**Tracks:** FULLPLAN.md v1.5 · **Last full audit of this file:** 2026-07-15 (**Phases 4.5, 5a and
-5b are COMPLETE — deployed, exit-demoed and measured on staging.** The full Phase 0–5a walkthrough
-passes **66/66** against the live deployment; the 5b exit demo passed **11/11** the same day —
-generate → per-mapping confirm → publish, and the §6 RIASEC-as-admin 403 — see "The deploy
-session, executed". **Only Phase 6 remains.**)
+**Tracks:** FULLPLAN.md v1.5 · **Last full audit of this file:** 2026-07-16 (**Phase 6 is
+CODE-COMPLETE and green locally** — notifications end to end, the audit-log viewer, live
+dashboards ×3, counselor management, `GET /programs/public`, and the D7/D8 debts, behind a gate
+of **514 backend + 35 frontend tests**. What remains of Phase 6 is the *deploy half*: apply
+migration 0009 to staging, redeploy Worker + Pages, exit-demo, and the §57 defense-prep items —
+see "Next Incremental Phase". Phases 0–5b remain deployed and proven on staging as of 2026-07-15:
+the Phase 0–5a walkthrough passed 66/66 and the 5b demo 11/11 there.)
 **Rule:** FULLPLAN.md is the single source of truth. Where this file and the plan disagree, the plan
 wins and this file is a bug — unless the entry is explicitly marked as a ratified/proposed deviation
 in the "Deviations From Master Plan" section below.
@@ -42,13 +44,13 @@ index and queue pair — it cannot reach production's data, which is the entire 
 
 ## Overall Progress
 
-**Estimated completion: ~95% of total v1 scope.**
+**Estimated completion: ~98% of total v1 scope.**
 
-Basis for the estimate: everything through **Phase 5b is built, deployed to staging, exit-demoed
-and measured** — the Phase 0–5a walkthrough passes 66/66 and the 5b demo 11/11 against the live
-deployment, behind a green gate of **477 backend tests in workerd + 35 frontend tests**. What
-remains is Phase 6 alone: notifications (the one missing table), the audit-log viewer, real
-dashboard data, counselor management, the small D7/D8 debts, and defense prep.
+Basis for the estimate: everything through **Phase 5b is deployed to staging, exit-demoed and
+measured** (Phase 0–5a walkthrough 66/66, 5b demo 11/11), and **Phase 6 is now code-complete and
+green locally** behind a gate of **514 backend tests in workerd + 35 frontend tests**. What
+remains: the Phase 6 staging deploy (+ migration 0009) and exit demo, §57 defense prep, and the
+post-Phase-6 frontend polish pass.
 
 **Every screen the React app has now has a backend behind it, and every backend feature now has a
 screen.**
@@ -64,10 +66,11 @@ screen.**
 | **Phase 4.5 — Free-Plan Hardening (new in FULLPLAN v1.5)** | ✅ **COMPLETE — exit demo passed on staging 2026-07-15.** `AuthGuardDO` at 600k iterations; lockout + join throttle in the DO, KV retired from auth; CI platform gates live; submit-path subrequest budget ≤25. The live canary: 4 consecutive `/auth/change-password` calls all 200'd (~2 s each, where the pre-4.5 Worker died with error 1102), the new hash is stored `pbkdf2$600000$`, a pre-4.5 100k hash still opens, and the lockout tripped on the 5th failure (D14 + D19 **fully closed**) |
 | **Phase 5a — AI Explanation / RAG** | ✅ **COMPLETE — exit demo passed on staging 2026-07-15.** The full §30/§33 stack live: PDF upload → UPLOADED → PROCESSING → COMPLETED (~72 s, queue batching dominates) → vectors queryable ≤10 s later → a **grounded explanation in 5.7 s generation latency (§6 budget: 8 s), 780 tokens**, served from the stored row on every later request. §30's refuse-ungrounded and §29's worst-day posture were both **proven live** — see "The deploy session, executed". Found + fixed live: Cloudflare had deprecated the §29 text model (platform fact #4) |
 | **Phase 5b — AI-Assisted Generation** | ✅ **COMPLETE — exit demo passed on staging 2026-07-15, 11/11.** The §32 generation prompt; `AssessmentGenerationService` (§34 validator, unconfirmed-draft persistence); `GenerateAssessmentDraftJob` on the `ai` queue; the §20 generation endpoint group (both §31 modes + the status poll, `authorizeGenerateWithAi` category-first); the builder endpoint group (templates, dimensions, versions, the author's review payload, per-mapping confirm, publish); the `assessment-builder` frontend feature. **Live:** a 12-question Mode B draft landed DRAFTED in ~130 s, publish refused with "12 of 12 … unconfirmed", 12 individual confirms opened the gate, publish succeeded — and RIASEC-as-admin answered **403**. 477 backend + 35 frontend tests green |
-| Phase 6 — Polish & Defense Prep | 🚧 Not started |
+| Phase 6 — Polish & Defense Prep | 🟡 **CODE-COMPLETE (2026-07-16) — staging deploy + exit demo pending.** Migration `0009_notifications` (the 28th and last domain table); `NotificationService` + the three §20 endpoints; **all five §44 notifications live** (the three waiting listeners plugged in — `AssessmentCompleted`, `RecommendationGenerated`, `AssessmentDraftGenerated` — plus the new `KnowledgeDocumentProcessed` event at the seam §60 reserved for it, and the assignment fan-out); `GET /admin/audit-logs` + the admin viewer; `GET /dashboard` ×3 roles with live §54 aggregates; the four counselor-management endpoints (generated temp password, shown once, proven by logging in); `GET /programs/public`; forgot/reset-password UI (D7's honest shape); the §21 attempt-reset button (D8). Gate: **514 backend + 35 frontend tests**, tsc/ESLint/platform gates green |
 
-**Current phase:** **Phase 6** — notifications (the one missing table), the audit-log viewer,
-real dashboard data, counselor management, the D7/D8 debts, defense prep.
+**Current phase:** **Phase 6, deploy half** — migrate staging D1 to 0009, redeploy Worker +
+Pages, run the exit demo, then §57 defense prep (quota check, seeded knowledge corpus, fresh-DB
+walkthrough) and the post-Phase-6 frontend polish pass.
 
 ### ⚠️ The single most important lesson in this document
 
@@ -569,16 +572,40 @@ modules are still unbuilt; **Identity & Access is now built for the staff half.*
   `backend/test/unit/generation-output.test.ts`, `backend/test/assessment/builder.test.ts`.
 
 ### Platform (`notifications`, `audit_logs`)
-- **Status:** 🟡 **Partially built.** `audit_logs` + `AuditService` exist (migration `0002`);
-  notifications untouched. No frontend notifications feature.
-- **Implemented:** `AuditService.write()` — the only mutating method the service will ever have
-  (append-only is a code rule; SQLite cannot express it). Wired into all six staff-auth endpoints
-  (including failed logins against unknown emails — NULL `user_id`, IP recorded) and, as of Step 2,
-  into every class/roster mutation and **every student join attempt**:
-  `STUDENT_CLASS_ACCESS_SUCCESS` / `_FAILED` (with the real `reason`) / `_THROTTLED`. Join-attempt
-  auditing is Phase 1 scope in the port (§57 — "not deferred to Phase 6") and is live.
-- **Missing:** `NotificationService`, notification endpoints, audit-log viewer (admin), event
-  listeners.
+- **Status:** ✅ **Complete (Phase 6).** Both tables, both services, all endpoints, all listeners,
+  and the frontend features (bell + panel in every shell, admin audit viewer, live dashboards).
+- **Implemented:** `AuditService.write()` — still the only *mutating* method (append-only is a
+  code rule; SQLite cannot express it) — wired into every module's critical actions since their
+  phases, **plus, since Phase 6, `AuditService.list()`**: the §20 `GET /admin/audit-logs` read
+  (filters: action prefix, module, user, target, ISO date bounds; actor name resolved by a LEFT
+  JOIN — NULL for system actions and unresolved join attempts, exactly the rows where the viewer
+  matters most).
+- **Phase 6 additions:** migration `0009_notifications.sql`; `NotificationService` (`send`,
+  the chunked ≤12-rows-per-insert `sendToMany` fan-out — D18's ceiling respected from birth,
+  `listFor` with the unread count, idempotent `markRead` — first `read_at` wins, `markAllRead`);
+  the three §20 endpoints (`GET /notifications`, `PATCH /notifications/{id}/read`,
+  `PATCH /notifications/read-all`) on the one authenticated router with **no role gate** — every
+  role receives notifications and every query is token-scoped, no user id in any URL;
+  `DashboardService` (the §54 aggregates ×3 roles, pulled live — no cache, no warehouse);
+  **all five §44 notifications**: results-ready (listener on `AssessmentCompleted`, title carried
+  in the event so the submit path pays no extra read), recommendations-ready (listener beside the
+  5a explanation enqueue), draft-ready (listener on `AssessmentDraftGenerated` — resolves the
+  outcome itself and stays silent on a failed/rejected generation, "ready" must never be a lie),
+  document-processed (the new §60 `KnowledgeDocumentProcessed` event, fired by the ingestion
+  pipeline at COMPLETED, listeners injected via the service constructor so stub-driven tests run
+  with none), and assignment-created (a direct fan-out to the active roster at the end of
+  `createAssignment` — §60 catalogs exactly four events and assignment creation is not one).
+- **Notification categories:** §13.8's four. Results/draft → `ASSESSMENT`, recommendations →
+  `RECOMMENDATION`, assignment → `CLASS`, knowledge-processed → `ACCOUNT` (a resolved §13.8/§44
+  silence — no closer value exists; documented in `db/enums.ts`).
+- **Budget note:** the two §44 inserts on the submit path moved the measured subrequest count
+  24 → 26; the gate's budget moved 25 → 27 with the history documented in the test header. The
+  platform cap is 50; the gate still fires on the next two-query feature.
+- **Files:** `backend/src/modules/platform/` (now also `notification-service.ts`,
+  `notification-routes.ts`, `dashboard-service.ts`, `routes.ts`, `serializers.ts`),
+  `backend/src/events/send-notifications.ts`, `backend/migrations/0009_notifications.sql`,
+  `backend/test/platform/notifications.test.ts`, `…/audit-viewer.test.ts`, `…/dashboard.test.ts`,
+  `frontend/src/features/notifications/`, `frontend/src/features/admin/pages/AuditLogPage.tsx`.
 
 ---
 
@@ -671,17 +698,32 @@ note. A counselor gets a flat **403** on every catalog endpoint, not a 404 and n
 Additional Phase 0–3 contract endpoints documented in `docs/api/` but not yet consumed by any UI:
 `POST /counselor/attempts/{attempt}/reset` (the §21 retake), `GET /admin/colleges/{id}/programs`.
 
+### Endpoints added in Phase 6 (all live, all tested)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/notifications` | Any authenticated role; token-scoped; `{ items, pagination, unread_count }` |
+| PATCH | `/api/v1/notifications/{id}/read` | Idempotent — the first `read_at` wins; someone else's id 404s |
+| PATCH | `/api/v1/notifications/read-all` | One statement; answers `{ updated }` |
+| GET | `/api/v1/admin/audit-logs` | Filters: action prefix, module, user_id, target_id, from/to; actor name resolved; 25/page |
+| GET | `/api/v1/admin/dashboard` | The §54 set: totals, completion rate, access-7d (the passwordless health signal), AI-7d, recent activity |
+| GET | `/api/v1/counselor/dashboard` | Scoped like `/counselor/classes` (admin sees all); per-class rows |
+| GET | `/api/v1/student/dashboard` | Assignments pending/completed, results, recommendations_ready, unread badge, profile_complete |
+| GET/POST | `/api/v1/admin/counselors` | POST **generates** the temp password and returns it exactly once (`temporary_password`); `must_change_password` set; duplicate email 422; `role`/`password` in the body refused (`.strict()`) |
+| PATCH/DELETE | `/api/v1/admin/counselors/{id}` | Suspend/reactivate + profile fields; a non-counselor id 404s; DELETE soft-deletes **and revokes every session** |
+| GET | `/api/v1/programs/public` | **Public.** Active chains only (the §27 rule); thin shape: college → `{id, code, name, recommended_strand}` |
+
+Also: `GET /counselor/classes/{id}/results` rows now carry `student: {id, name, username}` —
+a results table a counselor cannot put a name to is not an overview, and the D8 reset button
+needs to say whose work it voids. Additive; the student-facing serializers are untouched.
+
 ### Missing endpoints (beyond the port, from the §20 catalog of ~92)
-- Admin: counselor management (4), `PATCH /assessment-templates/{id}`,
-  `POST /assessment-versions/{id}/archive`, `GET /audit-logs`, `GET /dashboard`
-- Counselor: `GET /students/{id}/results`, `GET /dashboard`
-- Student: `GET /dashboard`
-- ~~AI generation group, `GET /ai/requests/{id}/status`~~ ✅ built in Phase 5b — minus
-  `confirm-all-mappings`, deliberately (D24)
-- ~~Assessment templates/versions/publish~~ ✅ built in Phase 5b (shared surface at the API root
-  rather than duplicated under `/admin` and `/counselor` — D24)
-- Notifications (3)
-- `GET /programs/public`
+- Admin: `PATCH /assessment-templates/{id}`, `POST /assessment-versions/{id}/archive`
+  (both small; nothing in the demo needs them — archive a version by publishing N+1)
+- Counselor: `GET /students/{id}/results` (the per-student view is served today by
+  `GET /students/{id}/recommendations` + the class results table)
+- ~~Counselor management, audit-logs, dashboards ×3, notifications (3), programs/public~~
+  ✅ **all built in Phase 6**
 
 ### Incorrect endpoints
 None — there is nothing to be incorrect yet. See Deviations for the pagination-envelope nuance.
@@ -697,12 +739,12 @@ None — there is nothing to be incorrect yet. See Deviations for the pagination
   `assessment_assignments`, `assessment_attempts`, `assessment_answers`, `dimension_scores`,
   `assessment_results`) **+ the 2 from Phase 4** (`recommendations`, `recommendation_explanations`)
   **+ the 4 from Phase 5a** (`knowledge_documents`, `knowledge_chunks`, `ai_requests`,
-  `ai_policies`) — **27 of 28 domain tables** + infrastructure `api_tokens`,
-  `password_reset_tokens`. Migrations `0001`–`0008`.
-- **Staging D1 carries all migrations 0001–0008** and the `seeds/0003` AI-policy row (verified
-  2026-07-15 — both had already been applied in a prior session; `db:migrate:staging` reports
-  "No migrations to apply"). Production D1 is provisioned and still untouched.
-- **Missing tables:** **1** — `notifications` (Phase 6).
+  `ai_policies`) **+ the 1 from Phase 6** (`notifications`) — **all 28 domain tables** +
+  infrastructure `api_tokens`, `password_reset_tokens`. Migrations `0001`–`0009`.
+- **Staging D1 carries migrations 0001–0008** and the `seeds/0003` AI-policy row (verified
+  2026-07-15). **Migration `0009_notifications` is NOT yet applied to staging** — it is the first
+  step of the Phase 6 deploy checklist. Production D1 is provisioned and still untouched.
+- **Missing tables:** none — the §13 schema is complete.
 - **`assessment_attempts` uses a PARTIAL unique index**
   (`(assignment_id, student_id) WHERE status <> 'EXPIRED'`), not the plain `UNIQUE` §13.5's prose
   suggests. A plain one would make the §21 counselor reset **impossible** — the expired row still
@@ -779,6 +821,43 @@ neutral-50 fallback has a row too.
 
 Type-checks clean (`tsc --noEmit`) · 35/35 tests passing (Vitest + RTL) · builds to `dist/`.
 
+### The post-Phase-6 design pass (2026-07-17) — ✅ done, verified in a real browser
+
+The full visual overhaul the design brief asked for, ratified by four explicit user decisions:
+**staff sidebar layout · light theme only for v1 · framer-motion approved · shadcn/ui adopted**
+(as the token convention + Radix primitives, migrated in place — the existing component APIs
+and their 35 tests were preserved, not rewritten).
+
+- **Design system:** shadcn CSS-variable tokens on Tailwind v4 (`src/index.css`) — the palette
+  is the logo's (violet-700 primary, teal-600 accent, deep-indigo `--sidebar` navy, slate
+  neutrals chosen to equal the previous slate classes, so untouched pages stayed visually
+  consistent by construction). Inter Variable, self-hosted via `@fontsource-variable/inter`
+  (no CDN — the Pages CSP posture is unchanged).
+- **New deps (all user-approved):** `framer-motion` (one `FadeIn` primitive, honors
+  `prefers-reduced-motion`), `@radix-ui/react-dialog` (the Sheet/mobile drawer),
+  `@radix-ui/react-dropdown-menu` (installed for upcoming menus), the Inter package.
+- **Brand:** the official logo everywhere via one `components/brand/Logo.tsx`; the student
+  artwork on both auth layouts and the landing hero; favicon + theme-color in `index.html`.
+- **Shells:** staff get the reference's dark-navy **sidebar** (sticky desktop rail, Sheet
+  drawer under `lg`, breadcrumb top bar, avatar chip, bell) — `AdminLayout`/`CounselorLayout`
+  are now nav-config arrays over one `StaffLayout`. Students keep a deliberately small
+  branded top bar (their four destinations do not need a rail).
+- **Auth:** `StaffAuthLayout` is the reference's split composition — brand + tagline +
+  artwork beside a navy panel with radial brand glows; `StudentAccessLayout` mirrors it with
+  the form on the light side and student-facing copy. The two flows still never share a screen (§38).
+- **Landing page (new, public `/`):** dark hero with gradient headline and the two doors
+  stated plainly (join-with-code primary, staff sign-in secondary), three-step explainer,
+  the three thesis-grade claims (deterministic scoring, grounded-or-silent AI, human
+  confirmation gate), and a **live program browser rendered from `GET /programs/public`** —
+  nothing on the page is marketing that the system doesn't do. Signed-in users get a
+  "Go to my dashboard" door instead.
+- **Verified, not assumed:** the full §57 walkthrough was re-run locally against the
+  redesigned UI — **63/66, with the 3 failures being leg E's known platform-absent cases**
+  (no AI/Vectorize emulation in the hermetic config; the §29 fallback check itself passed) —
+  plus a 13-screenshot Playwright pass (landing/login/join/forgot/change-password/dashboards,
+  desktop **and** 390-px mobile incl. the drawer), zero page errors. Local staff creds were
+  restored to `ChangeMe123` + forced rotation via `bootstrap-staff.mjs` afterwards.
+
 ### Completed pages
 - **Auth:** LoginPage (tested), ChangePasswordPage, ProtectedRoute with `must_change_password`
   gate and role-aware sign-in redirect, RoleHome
@@ -813,10 +892,19 @@ Type-checks clean (`tsc --noEmit`) · 35/35 tests passing (Vitest + RTL) · buil
   every 4 s while PENDING and invalidates the review on DRAFTED. The builder/generator split of
   §35 is folded into one feature folder — recorded under D4's reasoning (file organization, zero
   behavior).
-- **Phase 6:** notifications feature (list, read/unread), audit-log viewer, real dashboard data
-  (all three dashboards are currently shells), admin counselor-management screens.
-- **Unassigned (small):** forgot/reset-password screens; counselor attempt-reset button (§21 —
-  contract endpoint exists, no UI).
+- **Phase 6:** ✅ done — the `notifications` feature (a shared `NotificationBell` in all three
+  shells: unread badge, dropdown panel, mark-read/mark-all, 60 s poll — §44 is in-app only);
+  `AuditLogPage` (filterable table, expandable before/after JSON, actor names, warning tones on
+  `_FAILED`/`_DELETED`); **all three dashboards rewritten over the live endpoints** (admin: §54
+  stat cards + access/AI windows + recent-activity strip; counselor: caseload totals + per-class
+  table; student: kept the D11-hardened what-do-I-do-next flow, plus a recommendations-ready card
+  gated on the aggregate — never a teaser); `CounselorManagementPage` (list/search, create with
+  the one-time temporary-password banner, suspend/reactivate, two-step remove);
+  `ForgotPasswordPage`/`ResetPasswordPage` (D7's honest shape — the local flow carries the token
+  through, staging/production says "an administrator completes this", because that is the truth);
+  `ClassResultsPanel` with the §21 attempt-reset button (D8), two-step with the void-a-result
+  warning spelled out.
+- **Unassigned (small):** none left.
 
 ### Components needing fixes
 None found. Two structural notes tracked under Deviations (feature-folder layout; `hooks/` vs
@@ -826,11 +914,11 @@ None found. Two structural notes tracked under Deviations (feature-folder layout
 
 ## Backend Status
 
-Gate as of Phase 5b: **`tsc --noEmit` clean · ESLint clean · platform gates green (config shape ·
-DO boundary · bundle 198 KiB/2.5 MB) · 477/477 Vitest tests passing in workerd**
+Gate as of Phase 6: **`tsc --noEmit` clean · ESLint clean · platform gates green (config shape ·
+DO boundary · bundle under 2.5 MB) · 514/514 Vitest tests passing in workerd**
 (270 at the end of Step 3 → 307 with the §27 formula core → 371 with Step 4 → 375 with Step 5's
-PBKDF2 platform-cap guards → 394 with Phase 4 → 404 with Phase 4.5 → 446 with Phase 5a → **477**
-with Phase 5b).
+PBKDF2 platform-cap guards → 394 with Phase 4 → 404 with Phase 4.5 → 446 with Phase 5a → 477
+with Phase 5b → **514** with Phase 6).
 **Enforced by CI on every push** (D9 resolved), and the CI backend job now also runs
 `gate:platform` + `gate:bundle` (Phase 4.5 Step 2).
 
@@ -845,9 +933,10 @@ no wrong answer to catch.
   `ClassEnrollmentService`, `AcademicCatalogService`, `AuditService`, `AssessmentBuilderService`,
   `AssessmentAttemptService`, `ScoringService`, `StudentProfileService`, `RecommendationService`,
   **`AiGatewayService`, `RetrievalService`, `KnowledgeIngestionService`, `ExplanationService`,
-  `AiPolicyService`, `AssessmentGenerationService`** (Phase 5b) — plus the `AuthGuardDO`
+  `AiPolicyService`, `AssessmentGenerationService`** (Phase 5b), **`NotificationService`,
+  `DashboardService`, `CounselorManagementService`** (Phase 6) — plus the `AuthGuardDO`
   Durable Object (Phase 4.5).
-- **Missing services:** `NotificationService` (Phase 6).
+- **Missing services:** none — the §16 service catalog is complete.
 - **Completed middleware:** `correlation-id`, `authenticate` (token-hash lookup, expiry,
   active-status), `ensure-role`, `ensure-password-changed`. **`middleware/rate-limit.ts` is gone**
   (Phase 4.5): the failures-only counters live in `AuthGuardDO`, addressed through the helpers in
@@ -867,12 +956,16 @@ no wrong answer to catch.
   `queue()` consumer dispatches three jobs (`src/jobs/ai-jobs.ts`): `ProcessKnowledgeDocument`,
   `GenerateEmbeddingBatch`, `GenerateStudentExplanations` — ack on success, mark-FAILED + retry on
   error, warn-and-ack for unknown types.
-- **Since Phase 5b:** the dispatcher carries a third event, `AssessmentDraftGenerated` (fired by
-  the job, zero listeners — the "notify the creator" listener is Phase 6's, and this is its
-  seam), and the consumer dispatches a fourth job, `GenerateAssessmentDraft`. **A generation
-  failure inside the job is absorbed, never rethrown** — the FAILED `ai_requests` row *is* the
-  outcome, and a queue retry into a dead quota cannot succeed (§30 v1.5).
-- **Missing events/jobs:** `KnowledgeDocumentProcessed` (exists only to notify — Phase 6).
+- **Since Phase 5b:** the dispatcher carries `AssessmentDraftGenerated` (fired by the job), and
+  the consumer dispatches a fourth job, `GenerateAssessmentDraft`. **A generation failure inside
+  the job is absorbed, never rethrown** — the FAILED `ai_requests` row *is* the outcome, and a
+  queue retry into a dead quota cannot succeed (§30 v1.5).
+- **Since Phase 6:** the dispatcher carries **all four §60 events** — `KnowledgeDocumentProcessed`
+  joined, fired by the ingestion pipeline when the last embedding batch flips a document to
+  COMPLETED (subscribers injected through the service constructor, so the stub-driven suites run
+  with none) — and every event has its §44 notification listener plugged in
+  (`src/events/send-notifications.ts`).
+- **Missing events/jobs:** none.
 - **Missing AI features:** none — both §30 and §31 pipelines are built.
 - **Project plumbing:** ✅ done — `package.json`, `tsconfig.json`, `vitest.config.ts` (workerd pool),
   `eslint.config.js` + `.prettierrc.json`, `migrations/`, `seeds/`, `test/`, and a `wrangler.toml`
@@ -902,8 +995,8 @@ no wrong answer to catch.
 | D4 | Student-access page and assessment player live under `features/student/`; no `student-access/` or `assessment-player/` feature folders | §35 lists them as separate features | **Accept for now.** Pure file organization, zero behavior. Split the player into its own feature when Phase 5b's builder/generator make `features/student` crowded. |
 | D5 | TanStack Query hooks live in `features/*/hooks/` | §35 (v1.2, F-L4): feature `api/` folders own the Query hooks | **Accept (cosmetic).** The actual F-L4 rule — components → hooks → `src/services/` clients, one home per concern — is followed everywhere. Folder name differs; ratify or rename opportunistically. |
 | D6 | `frontend/.env`/`.env.example` pointed at the retired Laravel API (`:8000`) | v1.3: the API is the Worker (`wrangler dev`, default `http://localhost:8787`) | ✅ **Resolved in Step 1.** Both files now point at `http://localhost:8787/api/v1`. This was the only frontend change the port permits. |
-| D7 | Forgot/reset-password **endpoints exist**; no UI, and **no email channel exists** to deliver a reset link (§5 defers email entirely) | §20 lists the endpoints; §37 implies the screens for staff | 🟡 **Partially resolved.** The endpoints are ported and tested. Because v1 has no mail provider, `/auth/forgot-password` returns the token in the response body **only when `APP_ENV=local`**; in staging/production the reset is completed out of band by an admin. Add the UI — and a real delivery channel, or an explicit admin-driven reset flow — in Phase 6. **This is the honest shape of the feature, not a finished one.** |
-| D8 | No counselor attempt-reset UI | §21 retake = counselor-initiated reset; contract endpoint documented | Port the endpoint in Step 4 (it is Phase 3 scope); add the button to ClassDetailPage results in Phase 4/6 polish. |
+| D7 | Forgot/reset-password **endpoints exist**; no UI, and **no email channel exists** to deliver a reset link (§5 defers email entirely) | §20 lists the endpoints; §37 implies the screens for staff | ✅ **Resolved in Phase 6, in the feature's honest shape.** `ForgotPasswordPage` + `ResetPasswordPage` (+ the "Forgot your password?" link on LoginPage). Locally the returned `reset_token` links straight into the reset form so the flow is exercisable end to end; in staging/production the screen says an administrator completes the reset and hands over the code — because that is what actually happens. A mail channel remains §63 scope; the UI no longer pretends otherwise. |
+| D8 | No counselor attempt-reset UI | §21 retake = counselor-initiated reset; contract endpoint documented | ✅ **Resolved in Phase 6.** `ClassResultsPanel` on ClassDetailPage lists every scored attempt **with the student named** (the class-results endpoint now joins `student: {id, name, username}` — additive, counselor-facing only) and carries the two-step Reset button, with the void-a-result warning spelled out before the request is sent. |
 | D9 | **No CI pipeline.** §47 assumes GitHub Actions running the test suite + `tsc` + ESLint on every push | §47 | ✅ **Resolved in Step 5.** `.github/workflows/ci.yml` runs both gates on every push and PR: backend (`type-check` · `lint` · 375 tests in workerd) and frontend (`type-check` · 35 tests · `build`). It needs **no Cloudflare credentials** — that is what `wrangler.test.toml` bought. **Read the header comment before trusting a green tick:** Miniflare is not Cloudflare, and this gate was green 371 times over a Worker that could not verify a password on the edge (D14, D15). |
 | **D14** | ~~Password hashing runs at 100,000 PBKDF2 iterations~~ **Derivation runs at the full 600,000, inside `AuthGuardDO`** (`src/do/auth-guard.ts`) | §38 pins **600,000** | ✅ **Closed in code by Phase 4.5 Step 1** — at zero cost and zero security compromise: the DO gets a 30-second CPU budget per invocation on every plan including Free, vs the Worker's unraisable 10 ms that forced the 100k concession. No stored password broke: the cost is recorded inside every hash, so D14-era 100k hashes keep verifying at their own cost (a test pins this) while every new hash is written at 600k. The platform gate asserts `deriveBits` is called nowhere outside the DO, so the derivation cannot silently migrate back onto the 10 ms budget. **Fully closed 2026-07-15 by the staging exit demo:** four consecutive `/auth/change-password` calls (the double-derivation canary that died with error 1102 pre-4.5) all answered 200 in ~2 s each on the live deploy; the rotated hash reads `pbkdf2$600000$` in staging D1; a pre-4.5 100k hash still opened through the DO. |
 | **D19** | ~~The staff lockout and join throttle are KV-backed~~ **All three security counters (lockout, join throttle, the §41 AI request limit) are `AuthGuardDO` instances** | FULLPLAN **v1.5** §38/§41: security counters live in `AuthGuardDO` — KV is caching-only | ✅ **Closed by Phase 4.5 Step 1**, in the same change as D14 — the DO that derives a staff account's hash is the DO that counts its failures, so the count is exact and brute force per account is serialized (`blockConcurrencyWhile`). `middleware/rate-limit.ts` is deleted; KV stays bound for future caching and nothing security-relevant touches it. Semantics unchanged: failures-only charging, same thresholds, same windows, fixed (not sliding) windows. |
@@ -1280,19 +1373,36 @@ unconfirmed"** → 12 individual confirms → **publish 200, version PUBLISHED**
 criterion: the same generation against RIASEC **as the admin** → **403** ("RIASEC and SCCT are
 curated instruments and can never be AI-generated or AI-edited"). 11/11 checks.
 
-### Phase 6 — Polish & Defense Prep (all that remains)
+### Phase 6 — Polish & Defense Prep
 
-1. **`NotificationService`** + migration `0009_notifications.sql` (the last missing table) + the
-   three §20 endpoints + the frontend notifications feature. The three waiting listeners plug in:
-   `KnowledgeDocumentProcessed`, `AssessmentDraftGenerated`, and assignment events.
-2. **Audit-log viewer** (`GET /audit-logs` + admin screen) — where the swallowed-exception
-   pattern (D18's lesson) finally gets its surface.
-3. **Real dashboard data** (`GET /dashboard` × 3 roles) + admin counselor-management screens.
-4. **Small debts:** forgot/reset-password UI (D7's honest shape), counselor attempt-reset button
-   (D8), `GET /programs/public` if wanted.
-5. **Defense prep:** the §45 quota dashboard check, a seeded knowledge corpus covering the demo
-   catalog (the 5a lesson: retrieval grounds only what the corpus covers), and a full
-   walkthrough run against a fresh database.
+**Build half — ✅ CODE-COMPLETE 2026-07-16, all green locally (514 backend + 35 frontend):**
+
+1. ~~`NotificationService` + migration `0009` + the three §20 endpoints + the frontend feature +
+   all five §44 listeners~~ ✅ — see the Platform module section.
+2. ~~Audit-log viewer~~ ✅ — `GET /admin/audit-logs` + `AuditLogPage`.
+3. ~~Real dashboard data ×3 + counselor management~~ ✅ — `DashboardService`,
+   `CounselorManagementService` (generated temp password, proven by a real login in the test),
+   all three dashboard pages rewritten, `CounselorManagementPage`.
+4. ~~Small debts~~ ✅ — D7 UI (honest shape), D8 reset button, `GET /programs/public`.
+
+**Deploy half — THE REMAINING WORK (needs an interactive `wrangler login`):**
+
+1. `npm run db:migrate:staging` — applies `0009_notifications` (the deploy checklist's first
+   step; the Worker must not ship ahead of its table).
+2. Deploy the Worker (`careerlinkai-staging`) and rebuild + redeploy Pages.
+3. **Phase 6 exit demo** on staging: a counselor assigns an assessment → every rostered student
+   has the CLASS notification; a student submits → the ASSESSMENT notification + (after the
+   second instrument) the RECOMMENDATION one; an admin uploads a knowledge doc → the ACCOUNT
+   notification on COMPLETED; the bell badge counts unread and read-all clears it; the admin
+   dashboard's access-7d numbers move when a join fails; counselor create → the temp password
+   opens the account and lands on the rotation gate; the audit viewer shows the join-failure
+   reason the API refused to give.
+4. **Defense prep (§57):** the §45 quota dashboard check the morning of the defense; a seeded
+   knowledge corpus covering the demo catalog (the 5a lesson: retrieval grounds only what the
+   corpus covers); a full walkthrough run against a fresh database (extend
+   `scripts/walkthrough.mjs` with a Phase 6 leg if wanted).
+5. **Frontend polish pass** (the post-Phase-6 design brief): landing page, branded auth screens
+   with the official logo/artwork, unified design system across all shells.
 
 ### Historical — the Phase 4 plan, now delivered
 
@@ -1320,5 +1430,5 @@ something to point at:
    what forbade fixing it during the port; the port's assessment step is done, so that reason is
    spent.
 
-**Remaining after the deploy session:** 5b (AI-assisted generation), 6 (notifications, dashboards,
-audit-log viewer, polish, defense prep).
+**Remaining after the 2026-07-16 session:** the Phase 6 deploy half (staging migrate 0009 +
+redeploy + exit demo), §57 defense prep, and the frontend polish pass.

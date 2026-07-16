@@ -2,6 +2,7 @@ import type { Database } from '@/db/client';
 import type { Env } from '@/env';
 import { dispatch, type AssessmentCompletedEvent, type Listener } from '@/events/dispatcher';
 import { enqueueExplanationGeneration } from '@/events/enqueue-explanation-generation';
+import { notifyRecommendationGenerated } from '@/events/send-notifications';
 import { RecommendationService } from '@/modules/recommendation/recommendation-service';
 
 /**
@@ -62,7 +63,7 @@ export function dispatchRecommendationGeneration(
 
     if (generated !== null) {
       // §60's fourth-to-arrive event. Phase 5a's listener queues the explanation job (§43 —
-      // the queue's first real workload); Phase 6 adds the notification listener beside it.
+      // the queue's first real workload); Phase 6's sends the §44 notification beside it.
       await dispatch(
         {
           type: 'RecommendationGenerated',
@@ -70,7 +71,7 @@ export function dispatchRecommendationGeneration(
           careers: generated.careers,
           programs: generated.programs,
         },
-        [enqueueExplanationGeneration(env)],
+        [enqueueExplanationGeneration(env), notifyRecommendationGenerated(db)],
       );
     }
   };

@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { AssignmentPanel } from '@/features/counselor/components/AssignmentPanel';
+import { ClassResultsPanel } from '@/features/counselor/components/ClassResultsPanel';
 import { JoinCodeCard } from '@/features/counselor/components/JoinCodeCard';
 import { RosterBuilder } from '@/features/counselor/components/RosterBuilder';
 import { RosterTable } from '@/features/counselor/components/RosterTable';
@@ -82,6 +83,9 @@ export function ClassDetailPage() {
           below the roster deliberately — there is no point assigning an assessment to a class
           with nobody in it, and the page reads top to bottom in the order the counselor works. */}
       <AssignmentPanel classId={classRoom.id} />
+
+      {/* Phase 6 (D8): the results overview with the §21 retake button. */}
+      <ClassResultsPanel classId={classRoom.id} />
     </div>
   );
 }
