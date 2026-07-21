@@ -15,6 +15,7 @@ import type { Env } from '@/env';
 type NumericVar =
   | 'STUDENT_JOIN_CODE_TTL_DAYS'
   | 'STUDENT_TOKEN_TTL_HOURS'
+  | 'STAFF_TOKEN_TTL_HOURS'
   | 'ASSESSMENT_GENERATION_MAX_QUESTIONS';
 
 function requireNumber(env: Env, key: NumericVar): number {
@@ -44,8 +45,13 @@ export function assessmentGenerationMaxQuestions(env: Env): number {
 }
 
 /**
- * Staff tokens are long-lived relative to student tokens: a counselor works a full day in
- * the app, and §38 pins expiry only for students. Kept here so both flows read their TTL
- * from one place.
+ * Lifetime of a staff bearer token, in hours (L4).
+ *
+ * Staff tokens are long-lived relative to student tokens: a counselor works a full day in the app,
+ * and §38 pins expiry only for students. This used to be a hardcoded `24 * 7` constant while the
+ * student TTL was a var — an inconsistency that meant changing it needed a code deploy, not a var
+ * edit. Now both flows read their TTL from a `[vars]` entry (default 168 = 7 days).
  */
-export const STAFF_TOKEN_TTL_HOURS = 24 * 7;
+export function staffTokenTtlHours(env: Env): number {
+  return requireNumber(env, 'STAFF_TOKEN_TTL_HOURS');
+}

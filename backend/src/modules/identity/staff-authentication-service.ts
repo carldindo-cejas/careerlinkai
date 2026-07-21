@@ -18,7 +18,7 @@ import {
   LOGIN_LOCKOUT_WINDOW_SECONDS,
   staffAuthGuard,
 } from '@/lib/auth-guard';
-import { STAFF_TOKEN_TTL_HOURS } from '@/lib/config';
+import { staffTokenTtlHours } from '@/lib/config';
 import { generateToken, hashToken, timingSafeEqualString } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
@@ -135,7 +135,7 @@ export class StaffAuthenticationService {
       .set({ lastLoginAt: timestamp, updatedAt: timestamp })
       .where(eq(users.id, user.id));
 
-    const { plaintext } = await issueToken(this.db, user.id, STAFF_TOKEN_TTL_HOURS);
+    const { plaintext } = await issueToken(this.db, user.id, staffTokenTtlHours(this.env));
 
     await this.audit.write({
       action: 'STAFF_LOGIN_SUCCESS',

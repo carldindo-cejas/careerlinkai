@@ -93,4 +93,33 @@ describe('the viewer', () => {
 
     expect(response.status).toBe(422);
   });
+
+  it('accepts a date-only from/to and covers the whole UTC day (M7)', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const counselor = await createStaffUser({ role: 'counselor' });
+    await createClass(await login(counselor)); // a fresh row, timestamped "now"
+    const adminToken = await login(admin);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+
+    // A bare `YYYY-MM-DD` no longer 422s (it used to demand a full `T00:00:00Z`), and `to=<today>`
+    // is normalized to **end** of day — so it includes rows written at any time today, the exact
+    // case a naive start-of-day `to` would silently drop.
+    const withinToday = await api('GET', `/admin/audit-logs?from=${today}&to=${today}`, {
+      token: adminToken,
+    });
+
+    expect(withinToday.status).toBe(200);
+    expect(withinToday.body.data.items.length).toBeGreaterThan(0);
+
+    // `from=<tomorrow>` is normalized to start of tomorrow, excluding everything so far — proving
+    // `from` is the start edge, not the end.
+    const future = await api('GET', `/admin/audit-logs?from=${tomorrow}`, {
+      token: adminToken,
+    });
+
+    expect(future.status).toBe(200);
+    expect(future.body.data.items.length).toBe(0);
+  });
 });

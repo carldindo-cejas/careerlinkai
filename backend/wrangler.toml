@@ -37,6 +37,7 @@ WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
+STAFF_TOKEN_TTL_HOURS = "168"
 ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
 
 # --- Bindings (FULLPLAN §48) ---------------------------------------------------------
@@ -122,6 +123,7 @@ WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
+STAFF_TOKEN_TTL_HOURS = "168"
 ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
 
 [[env.staging.d1_databases]]
@@ -178,6 +180,7 @@ WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
+STAFF_TOKEN_TTL_HOURS = "168"
 ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
 
 [[env.production.d1_databases]]

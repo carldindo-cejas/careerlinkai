@@ -62,7 +62,14 @@ export function createApp() {
 
   const api = new Hono<AppEnv>();
 
-  /** §53 — the CI smoke test and the Cloudflare health check both hit this. */
+  /**
+   * §53 — the CI smoke test and the Cloudflare health check both hit this.
+   *
+   * L3 (decided): `environment` **stays**. It is an unauthenticated field, but an attacker learns
+   * nothing actionable from "staging" vs "production" (the two are different Worker scripts on
+   * different hostnames already), while an operator — and the deploy smoke tests in this repo —
+   * rely on it to confirm which environment a request actually reached. Kept over dropped.
+   */
   api.get('/health', (c) =>
     c.json(
       successEnvelope(

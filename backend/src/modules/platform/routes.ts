@@ -26,6 +26,31 @@ adminPlatformRoutes.use('*', authenticate());
 adminPlatformRoutes.use('*', ensureRole('admin'));
 adminPlatformRoutes.use('*', ensurePasswordChanged());
 
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * M7: accept **either** a full ISO-8601 datetime **or** a date-only `YYYY-MM-DD`, normalizing the
+ * latter to the requested edge of that UTC day. Before this, a date-only `to=2026-07-01` 422'd, so
+ * the frontend had to hand-append `T00:00:00Z` (and a naive `to` of midnight excluded the whole
+ * day anyway). `created_at` is stored as an ISO-8601 UTC string compared lexically, so a `to` of
+ * end-of-day is what actually includes the day's last row. Additive — a full timestamp still works.
+ */
+function isoOrDate(edge: 'start' | 'end') {
+  return z
+    .string()
+    .trim()
+    .refine(
+      (value) => DATE_ONLY_PATTERN.test(value) || z.iso.datetime().safeParse(value).success,
+      { message: 'Use an ISO-8601 date (YYYY-MM-DD) or timestamp.' },
+    )
+    .transform((value) =>
+      DATE_ONLY_PATTERN.test(value)
+        ? `${value}${edge === 'start' ? 'T00:00:00.000Z' : 'T23:59:59.999Z'}`
+        : value,
+    )
+    .optional();
+}
+
 const listAuditLogsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   per_page: z.coerce.number().int().min(1).max(100).default(25),
@@ -33,8 +58,8 @@ const listAuditLogsQuerySchema = z.object({
   module: z.string().trim().max(50).optional(),
   user_id: z.string().trim().max(64).optional(),
   target_id: z.string().trim().max(64).optional(),
-  from: z.iso.datetime({ message: 'Use an ISO-8601 timestamp.' }).optional(),
-  to: z.iso.datetime({ message: 'Use an ISO-8601 timestamp.' }).optional(),
+  from: isoOrDate('start'),
+  to: isoOrDate('end'),
 });
 
 /**
