@@ -258,6 +258,34 @@ describe('idempotence (§26 — the same inputs produce the same ranking)', () =
       second.body.data.careers.map((r: any) => [r.ranking, r.career.id, r.match_score]),
     ).toEqual(first.body.data.careers.map((r: any) => [r.ranking, r.career.id, r.match_score]));
   });
+
+  it('a retake replaces the whole recommendation set rather than accumulating a second one (M4)', async () => {
+    // Its own student: this test regenerates against a *new* RIASEC result, changing state.
+    const { classRoom, student, studentToken } = await classWithStudent(counselorToken);
+    const studentId = student.student_id;
+
+    await completeAssessment(studentToken, classRoom.id, riasecVersionId, investigative);
+    await completeAssessment(studentToken, classRoom.id, scctVersionId, confident);
+
+    const countAll = async () =>
+      (
+        await db()
+          .select()
+          .from(recommendations)
+          .where(eq(recommendations.studentId, studentId))
+      ).length;
+
+    const afterFirst = await countAll();
+    expect(afterFirst).toBeGreaterThan(0);
+
+    // A second RIASEC completion (a retake, through a fresh assignment) regenerates against the
+    // newest RIASEC result. Before M4 the delete was scoped to the *old* result's id, so the
+    // first set was left standing and the student ended up carrying two full sets. The
+    // delete-by-student scope replaces the whole set — the total must not grow.
+    await completeAssessment(studentToken, classRoom.id, riasecVersionId, investigative);
+
+    expect(await countAll()).toBe(afterFirst);
+  }, 240_000);
 });
 
 describe('authorization (§4, §39, §40)', () => {

@@ -204,14 +204,24 @@ export class RecommendationService {
     //
     // The insert is **chunked**, and that is not a performance tweak — it is the difference between
     // this working and silently doing nothing. See `chunkForD1`.
-    if (rows.length > 0) {
-      await this.db.batch([
-        this.db
-          .delete(recommendations)
-          .where(eq(recommendations.assessmentResultId, riasec.resultId)),
-        ...chunkForD1(rows).map((chunk) => this.db.insert(recommendations).values(chunk)),
-      ]);
-    }
+    //
+    // M4: the delete **always runs**, even when the new set is empty, and is scoped to the
+    // *student* rather than to this one RIASEC result. Two bugs closed at once:
+    //   1. If the catalog was emptied or every career archived, ranking produces zero rows — and
+    //      the old `if (rows.length > 0)` guard skipped the delete entirely, so a regeneration
+    //      that should have cleared the student's cards left the stale ones standing.
+    //   2. A retake produces a new RIASEC result; deleting only *this* result's rows left every
+    //      superseded set from older results accumulating forever (only `latestFor` hid them).
+    // A student's recommendations are derived, replaceable data (not §12 historical evidence), so
+    // "regenerate" correctly means "replace everything this student has", not "append".
+    const deleteStatement = this.db
+      .delete(recommendations)
+      .where(eq(recommendations.studentId, studentId));
+
+    await this.db.batch([
+      deleteStatement,
+      ...chunkForD1(rows).map((chunk) => this.db.insert(recommendations).values(chunk)),
+    ]);
 
     await this.audit.write({
       action: 'RECOMMENDATIONS_GENERATED',
@@ -258,7 +268,10 @@ export class RecommendationService {
   }
 
   /** One generated set, hydrated. */
-  async forResult(studentId: string, assessmentResultId: string): Promise<RecommendationSet | null> {
+  async forResult(
+    studentId: string,
+    assessmentResultId: string,
+  ): Promise<RecommendationSet | null> {
     const rows = await this.db
       .select()
       .from(recommendations)
@@ -310,7 +323,10 @@ export class RecommendationService {
    * One recommendation, scoped to its owner. `null` rather than a throw so the route can
    * answer 404 — "not yours" and "not real" must stay indistinguishable (§39).
    */
-  async findForStudent(studentId: string, recommendationId: string): Promise<Recommendation | null> {
+  async findForStudent(
+    studentId: string,
+    recommendationId: string,
+  ): Promise<Recommendation | null> {
     const [row] = await this.db
       .select()
       .from(recommendations)
@@ -520,7 +536,12 @@ export class RecommendationService {
       title: career.title,
     }));
 
-    return rankTop(matches, (m) => m.matchScore, (m) => m.title, TOP_N);
+    return rankTop(
+      matches,
+      (m) => m.matchScore,
+      (m) => m.title,
+      TOP_N,
+    );
   }
 
   /**
@@ -564,7 +585,12 @@ export class RecommendationService {
       };
     });
 
-    return rankTop(matches, (m) => m.matchScore, (m) => m.name, TOP_N);
+    return rankTop(
+      matches,
+      (m) => m.matchScore,
+      (m) => m.name,
+      TOP_N,
+    );
   }
 
   private async careersById(ids: string[]): Promise<Map<string, Career>> {

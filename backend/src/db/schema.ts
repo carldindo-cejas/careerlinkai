@@ -255,7 +255,10 @@ export const colleges = sqliteTable(
     updatedAt: updatedAt(),
     deletedAt: timestamp('deleted_at'),
   },
-  (table) => [index('colleges_status_index').on(table.status), index('colleges_name_index').on(table.name)],
+  (table) => [
+    index('colleges_status_index').on(table.status),
+    index('colleges_name_index').on(table.name),
+  ],
 );
 
 export const programs = sqliteTable(
@@ -298,7 +301,10 @@ export const careers = sqliteTable(
     updatedAt: updatedAt(),
     deletedAt: timestamp('deleted_at'),
   },
-  (table) => [index('careers_status_index').on(table.status), index('careers_title_index').on(table.title)],
+  (table) => [
+    index('careers_status_index').on(table.status),
+    index('careers_title_index').on(table.title),
+  ],
 );
 
 /**
@@ -407,8 +413,9 @@ export const assessmentDimensions = sqliteTable(
     name: text('name').notNull(),
     description: text('description'),
     /** `[{ min, max, label }]` (§22). Frozen after first publish — a slid band rewrites history. */
-    interpretationRanges: text('interpretation_ranges', { mode: 'json' })
-      .$type<InterpretationRange[]>(),
+    interpretationRanges: text('interpretation_ranges', { mode: 'json' }).$type<
+      InterpretationRange[]
+    >(),
     /** **Scoring data, not display order** — §22's Holland-code tie-break reads it (§24). */
     orderNumber: integer('order_number').notNull().default(1),
     createdAt: createdAt(),
@@ -582,7 +589,10 @@ export const assessmentAnswers = sqliteTable(
     answeredAt: text('answered_at').notNull(),
   },
   (table) => [
-    uniqueIndex('assessment_answers_attempt_question_unique').on(table.attemptId, table.questionId),
+    uniqueIndex('assessment_answers_attempt_question_unique').on(
+      table.attemptId,
+      table.questionId,
+    ),
     index('assessment_answers_attempt_id_index').on(table.attemptId),
     index('assessment_answers_question_id_index').on(table.questionId),
   ],
@@ -610,7 +620,10 @@ export const dimensionScores = sqliteTable(
     createdAt: createdAt(),
   },
   (table) => [
-    uniqueIndex('dimension_scores_attempt_dimension_unique').on(table.attemptId, table.dimensionId),
+    uniqueIndex('dimension_scores_attempt_dimension_unique').on(
+      table.attemptId,
+      table.dimensionId,
+    ),
     index('dimension_scores_attempt_id_index').on(table.attemptId),
     index('dimension_scores_dimension_id_index').on(table.dimensionId),
   ],
@@ -651,7 +664,9 @@ export const recommendations = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     matchType: text('match_type').$type<MatchType>().notNull(),
-    targetCareerId: text('target_career_id').references(() => careers.id, { onDelete: 'cascade' }),
+    targetCareerId: text('target_career_id').references(() => careers.id, {
+      onDelete: 'cascade',
+    }),
     targetProgramId: text('target_program_id').references(() => programs.id, {
       onDelete: 'cascade',
     }),
@@ -694,7 +709,9 @@ export const recommendationExplanations = sqliteTable(
     createdAt: createdAt(),
   },
   (table) => [
-    uniqueIndex('recommendation_explanations_recommendation_id_unique').on(table.recommendationId),
+    uniqueIndex('recommendation_explanations_recommendation_id_unique').on(
+      table.recommendationId,
+    ),
   ],
 );
 
@@ -749,7 +766,10 @@ export const knowledgeChunks = sqliteTable(
   },
   (table) => [
     index('knowledge_chunks_document_id_index').on(table.documentId),
-    uniqueIndex('knowledge_chunks_document_number_unique').on(table.documentId, table.chunkNumber),
+    uniqueIndex('knowledge_chunks_document_number_unique').on(
+      table.documentId,
+      table.chunkNumber,
+    ),
   ],
 );
 
@@ -852,6 +872,8 @@ export const auditLogs = sqliteTable(
     index('audit_logs_user_id_index').on(table.userId),
     index('audit_logs_action_index').on(table.action),
     index('audit_logs_created_at_index').on(table.createdAt),
+    // The §54 viewer filters by module and orders by created_at (migration 0010, audit L2).
+    index('audit_logs_module_created_index').on(table.module, table.createdAt),
   ],
 );
 
