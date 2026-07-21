@@ -14,6 +14,7 @@ import {
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { AssessmentAttemptService } from '@/modules/assessment/assessment-attempt-service';
+import { AssessmentBuilderService } from '@/modules/assessment/assessment-builder-service';
 import {
   answerAll,
   api,
@@ -26,7 +27,9 @@ import {
   createProgram,
   createStaffUser,
   db,
+  enrolStudents,
   findUser,
+  joinClass,
   login,
   seedInstruments,
 } from '../helpers';
@@ -367,5 +370,78 @@ describe('the results-listing budget is O(1) in the number of rows (§45, C1/A3)
     expect(page.total).toBe(6);
     expect(counter.calls).toBeGreaterThan(0);
     expect(counter.calls).toBeLessThanOrEqual(12);
+  });
+});
+
+/**
+ * The per-row fans Phase D batched (§45, H5) — the same "N queries per unpaginated list" pattern
+ * as C1, one blast radius down. These pin them at a fixed cost so a future edit cannot quietly
+ * reintroduce the fan-out.
+ */
+describe('the H5 list budgets are O(1) in the number of rows (§45)', () => {
+  it('the student assignments list stays a small constant regardless of how many assignments (H5)', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const counselor = await createStaffUser({ role: 'counselor' });
+    const counselorToken = await login(counselor);
+    const seeded = await seedInstruments(admin);
+
+    const classRoom = await createClass(counselorToken);
+    const [rosterEntry] = await enrolStudents(counselorToken, classRoom.id, ['Budget Student']);
+    await joinClass(classRoom.join_code, rosterEntry.username);
+
+    // Twelve ACTIVE assignments in the student's one class — the old decorateAssignments ran two
+    // queries per assignment (question count + my-attempt), so this would have been ~26 reads.
+    for (let i = 0; i < 12; i += 1) {
+      await assignVersion(counselorToken, classRoom.id, seeded.riasecVersionId!);
+    }
+
+    const counter: SubrequestCounter = { calls: 0 };
+    const countingDb = createDatabase(countingD1(env.DB, counter));
+    const student = await findUser(rosterEntry.student_id);
+
+    const views = await new AssessmentAttemptService(countingDb, env).listAssignmentsForStudent(
+      student!,
+    );
+
+    console.info(
+      `student-assignments @ N=12: ${counter.calls} D1 calls (budget 10, platform cap 50)`,
+    );
+
+    expect(views).toHaveLength(12);
+    expect(counter.calls).toBeGreaterThan(0);
+    expect(counter.calls).toBeLessThanOrEqual(10);
+  });
+
+  it('the counselor template list stays a small constant regardless of how many templates (H5)', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const counselor = await createStaffUser({ role: 'counselor' });
+    const counselorToken = await login(counselor);
+
+    // The two GLOBAL instruments plus several of the counselor's own CUSTOM templates.
+    await seedInstruments(admin);
+    for (let i = 0; i < 6; i += 1) {
+      await api('POST', '/assessment-templates', {
+        token: counselorToken,
+        body: { category: 'CUSTOM', title: `Budget Template ${uuid().slice(0, 8)}` },
+      });
+    }
+
+    const counter: SubrequestCounter = { calls: 0 };
+    const builder = new AssessmentBuilderService(createDatabase(countingD1(env.DB, counter)));
+    const counselorRow = await findUser(counselor.id);
+
+    // Mirrors the route (H5): list, then three grouped lookups — a fixed four reads, not 1 + 3N.
+    const templates = await builder.listTemplatesFor(counselorRow!);
+    const versionByTemplate = await builder.assignableVersionsFor(templates.map((t) => t.id));
+    await builder.questionCountsFor([...versionByTemplate.values()].map((v) => v.id));
+    await builder.dimensionsForTemplates(templates.map((t) => t.id));
+
+    console.info(
+      `counselor-templates @ N=${templates.length}: ${counter.calls} D1 calls (budget 6, platform cap 50)`,
+    );
+
+    expect(templates.length).toBeGreaterThanOrEqual(8);
+    expect(counter.calls).toBeGreaterThan(0);
+    expect(counter.calls).toBeLessThanOrEqual(6);
   });
 });

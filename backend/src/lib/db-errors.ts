@@ -12,12 +12,31 @@ import { ApiError } from '@/lib/envelope';
  */
 
 /**
- * D1 surfaces a constraint violation as a plain `Error` whose message carries SQLite's text —
- * there is no typed error class to `instanceof` against, so the string is the only signal
- * available. Matched narrowly: a broader check would swallow unrelated failures as a 422.
+ * D1 surfaces a constraint violation as an `Error` carrying SQLite's `UNIQUE constraint failed`
+ * text — but **not always on the top-level `.message`.** Drizzle (0.45) wraps a failed statement
+ * in a `DrizzleQueryError` whose own message is `Failed query: insert into …`; the SQLite text
+ * lives on `.cause`. So this walks the `cause` chain rather than reading `error.message` alone.
+ * (The original one-line version only inspected `.message`, which is why every catch-based race
+ * translation silently fell back to a raw 500 whenever the pre-check did not get there first —
+ * caught by the dimension-code race test in the Phase G hardening.)
+ *
+ * Matched narrowly on the specific SQLite phrase: a broader check would swallow unrelated failures
+ * as a 422.
  */
 export function isUniqueViolation(error: unknown): boolean {
-  return error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
+  for (
+    let current: unknown = error, depth = 0;
+    current instanceof Error && depth < 5;
+    depth += 1
+  ) {
+    if (/UNIQUE constraint failed/i.test(current.message)) {
+      return true;
+    }
+
+    current = (current as { cause?: unknown }).cause;
+  }
+
+  return false;
 }
 
 /**

@@ -2,7 +2,12 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { aiRequests, assessmentQuestions, assessmentVersions, questionDimensions } from '@/db/schema';
+import {
+  aiRequests,
+  assessmentQuestions,
+  assessmentVersions,
+  questionDimensions,
+} from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { AiGatewayService, type WorkersAiClient } from '@/modules/ai/ai-gateway-service';
@@ -148,6 +153,44 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
     expect(global.body.data.ownership).toBe('GLOBAL');
   });
 
+  it('refuses a duplicate dimension code with a 422, in the payload and against existing rows (L5)', async () => {
+    const template = await api('POST', '/assessment-templates', {
+      token: counselorToken,
+      body: { category: 'CUSTOM', title: `Dims ${uuid().slice(0, 8)}` },
+    });
+    const templateId = template.body.data.id as string;
+
+    // Duplicated *within one payload* — caught by the in-payload pre-check, field named precisely.
+    const inPayload = await api('POST', `/assessment-templates/${templateId}/dimensions`, {
+      token: counselorToken,
+      body: {
+        dimensions: [
+          { code: 'TM', name: 'Time Management' },
+          { code: 'TM', name: 'Time Mgmt Again' },
+        ],
+      },
+    });
+
+    expect(inPayload.status).toBe(422);
+    expect(inPayload.body.errors.code).toBeDefined();
+
+    // A first, clean add succeeds...
+    const first = await api('POST', `/assessment-templates/${templateId}/dimensions`, {
+      token: counselorToken,
+      body: { dimensions: [{ code: 'FO', name: 'Focus' }] },
+    });
+    expect(first.status).toBe(201);
+
+    // ...then re-adding the same code loses at the (template, code) unique index and must be a
+    // 422, not the raw constraint 500 it used to be.
+    const again = await api('POST', `/assessment-templates/${templateId}/dimensions`, {
+      token: counselorToken,
+      body: { dimensions: [{ code: 'FO', name: 'Focus Duplicate' }] },
+    });
+    expect(again.status).toBe(422);
+    expect(again.body.errors.code).toBeDefined();
+  });
+
   it('creating a RIASEC template is refused by the schema — the instruments are seeded, not created', async () => {
     const response = await api('POST', '/assessment-templates', {
       token: adminToken,
@@ -166,7 +209,9 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
 
     expect(probed.status).toBe(404);
 
-    const asAdmin = await api('GET', `/assessment-templates/${templateId}`, { token: adminToken });
+    const asAdmin = await api('GET', `/assessment-templates/${templateId}`, {
+      token: adminToken,
+    });
 
     expect(asAdmin.status).toBe(200);
   });
@@ -193,13 +238,22 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
 
     expect(added.status).toBe(201);
 
-    const review = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+    const review = await api('GET', `/assessment-versions/${versionId}`, {
+      token: counselorToken,
+    });
 
     expect(review.status).toBe(200);
-    expect(review.body.data.publish_readiness).toEqual({ total: 1, confirmed: 1, remaining: 0 });
+    expect(review.body.data.publish_readiness).toEqual({
+      total: 1,
+      confirmed: 1,
+      remaining: 0,
+    });
     // The author's view carries what the player payload must never carry: scores + mappings.
     expect(review.body.data.questions[0].options[0].score).toBe(3);
-    expect(review.body.data.questions[0].dimensions[0]).toMatchObject({ code: 'TM', confirmed: true });
+    expect(review.body.data.questions[0].dimensions[0]).toMatchObject({
+      code: 'TM',
+      confirmed: true,
+    });
 
     const published = await api('POST', `/assessment-versions/${versionId}/publish`, {
       token: counselorToken,
@@ -252,7 +306,9 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
       },
     });
 
-    const review = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+    const review = await api('GET', `/assessment-versions/${versionId}`, {
+      token: counselorToken,
+    });
     const questionId = review.body.data.questions[0].id as string;
 
     const edited = await api('PATCH', `/assessment-questions/${questionId}`, {
@@ -289,10 +345,14 @@ describe('the generation endpoints (§20 group)', () => {
   it('queues a Mode B generation: 202 with an id, and the id polls as PENDING', async () => {
     const { versionId } = await draftFixture(counselorToken);
 
-    const queued = await api('POST', `/assessment-versions/${versionId}/ai-generate/description`, {
-      token: counselorToken,
-      body: { description: 'A 10-question survey about study habits across TM and FO.' },
-    });
+    const queued = await api(
+      'POST',
+      `/assessment-versions/${versionId}/ai-generate/description`,
+      {
+        token: counselorToken,
+        body: { description: 'A 10-question survey about study habits across TM and FO.' },
+      },
+    );
 
     expect(queued.status).toBe(202);
     expect(queued.body.data.status).toBe('PENDING');
@@ -309,7 +369,10 @@ describe('the generation endpoints (§20 group)', () => {
     const response = await api(
       'POST',
       `/assessment-versions/${riasecVersionId}/ai-generate/description`,
-      { token: adminToken, body: { description: 'Regenerate the interest inventory, please.' } },
+      {
+        token: adminToken,
+        body: { description: 'Regenerate the interest inventory, please.' },
+      },
     );
 
     expect(response.status).toBe(403);
@@ -395,9 +458,15 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
     expect(drafted.every((question) => question.source === 'AI_GENERATED')).toBe(true);
 
     // The mappings landed UNCONFIRMED — the whole point of the pipeline's persistence shape.
-    const review = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+    const review = await api('GET', `/assessment-versions/${versionId}`, {
+      token: counselorToken,
+    });
 
-    expect(review.body.data.publish_readiness).toEqual({ total: 2, confirmed: 0, remaining: 2 });
+    expect(review.body.data.publish_readiness).toEqual({
+      total: 2,
+      confirmed: 0,
+      remaining: 2,
+    });
 
     // §25: publish refuses, and says how many are outstanding.
     const refused = await api('POST', `/assessment-versions/${versionId}/publish`, {
@@ -408,7 +477,9 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
     expect(JSON.stringify(refused.body)).toContain('2 of 2');
 
     // The status endpoint derives DRAFTED from the same facts.
-    const status = await api('GET', `/ai/requests/${aiRequestId}/status`, { token: counselorToken });
+    const status = await api('GET', `/ai/requests/${aiRequestId}/status`, {
+      token: counselorToken,
+    });
 
     expect(status.body.data.status).toBe('DRAFTED');
     expect(status.body.data.question_count).toBe(2);
@@ -416,9 +487,13 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
     // Confirm each mapping through the real endpoint — no bulk form exists (§31).
     for (const question of review.body.data.questions) {
       for (const mapping of question.dimensions) {
-        const confirmed = await api(`POST`, `/question-dimensions/${mapping.mapping_id}/confirm`, {
-          token: counselorToken,
-        });
+        const confirmed = await api(
+          `POST`,
+          `/question-dimensions/${mapping.mapping_id}/confirm`,
+          {
+            token: counselorToken,
+          },
+        );
 
         expect(confirmed.status).toBe(200);
       }
@@ -458,10 +533,16 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
       sourceText: 'A plain reflection survey, no scoring.',
     });
 
-    const review = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+    const review = await api('GET', `/assessment-versions/${versionId}`, {
+      token: counselorToken,
+    });
 
     expect(review.body.data.questions).toHaveLength(2);
-    expect(review.body.data.publish_readiness).toEqual({ total: 0, confirmed: 0, remaining: 0 });
+    expect(review.body.data.publish_readiness).toEqual({
+      total: 0,
+      confirmed: 0,
+      remaining: 0,
+    });
 
     const published = await api('POST', `/assessment-versions/${versionId}/publish`, {
       token: counselorToken,
@@ -482,7 +563,9 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
       sourceText: 'A survey about study habits.',
     });
 
-    const status = await api('GET', `/ai/requests/${aiRequestId}/status`, { token: counselorToken });
+    const status = await api('GET', `/ai/requests/${aiRequestId}/status`, {
+      token: counselorToken,
+    });
 
     expect(status.body.data.status).toBe('VALIDATION_FAILED');
 
@@ -511,7 +594,9 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
     expect(row!.status).toBe('FAILED');
     expect(row!.requestType).toBe('ASSESSMENT_GENERATION');
 
-    const status = await api('GET', `/ai/requests/${aiRequestId}/status`, { token: counselorToken });
+    const status = await api('GET', `/ai/requests/${aiRequestId}/status`, {
+      token: counselorToken,
+    });
 
     expect(status.body.data.status).toBe('FAILED');
     expect(status.body.data.failure_reason).toMatch(/QUOTA_EXHAUSTED/);
@@ -554,7 +639,9 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
       sourceText: 'Extracted text of a study-skills handbook, long enough to mean something.',
     });
 
-    const status = await api('GET', `/ai/requests/${aiRequestId}/status`, { token: counselorToken });
+    const status = await api('GET', `/ai/requests/${aiRequestId}/status`, {
+      token: counselorToken,
+    });
 
     expect(status.body.data.status).toBe('DRAFTED');
     expect(status.body.data.suggested_dimensions).toEqual([
@@ -562,9 +649,15 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
     ]);
 
     // Inert means inert: no assessment_dimensions row appeared.
-    const review = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+    const review = await api('GET', `/assessment-versions/${versionId}`, {
+      token: counselorToken,
+    });
 
-    expect(review.body.data.questions.every((question: { dimensions: unknown[] }) => question.dimensions.length === 0)).toBe(true);
+    expect(
+      review.body.data.questions.every(
+        (question: { dimensions: unknown[] }) => question.dimensions.length === 0,
+      ),
+    ).toBe(true);
   });
 
   it('the job re-checks the category even though the endpoint already did (§32: never assume the check happened)', async () => {
@@ -578,17 +671,19 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
 
     const draftVersionId = uuid();
 
-    await db().insert(assessmentVersions).values({
-      id: draftVersionId,
-      assessmentTemplateId: riasecVersion!.assessmentTemplateId,
-      versionNumber: 900 + Math.floor(Math.random() * 100),
-      instructions: null,
-      durationMinutes: null,
-      scoringConfig: { algorithm: 'HOLLAND_CODE_TOP3' },
-      status: 'DRAFT',
-      createdBy: admin.id,
-      createdAt: now(),
-    });
+    await db()
+      .insert(assessmentVersions)
+      .values({
+        id: draftVersionId,
+        assessmentTemplateId: riasecVersion!.assessmentTemplateId,
+        versionNumber: 900 + Math.floor(Math.random() * 100),
+        instructions: null,
+        durationMinutes: null,
+        scoringConfig: { algorithm: 'HOLLAND_CODE_TOP3' },
+        status: 'DRAFT',
+        createdBy: admin.id,
+        createdAt: now(),
+      });
 
     const aiRequestId = uuid();
 

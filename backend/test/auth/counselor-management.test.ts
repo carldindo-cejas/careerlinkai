@@ -115,6 +115,28 @@ describe('POST /admin/counselors', () => {
     expect(response.body.errors.email).toBeDefined();
   });
 
+  it('answers a *concurrent* duplicate create with 422, not a 500 (H4/M8)', async () => {
+    const adminToken = await login(await createStaffUser({ role: 'admin' }));
+    const email = `race.${Date.now()}@school.test`;
+    const body = { email, first_name: 'Race', last_name: 'Winner' };
+
+    // Both pass the email pre-check before either writes (the hash is derived first — the wide M8
+    // window), so the loser hits `users_email_unique`. That must translate to the same 422 the
+    // pre-check gives, never the raw constraint 500 it used to be.
+    const [a, b] = await Promise.all([
+      api('POST', '/admin/counselors', { token: adminToken, body }),
+      api('POST', '/admin/counselors', { token: adminToken, body }),
+    ]);
+
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([201, 422]);
+    expect([a, b].every((r) => r.status !== 500)).toBe(true);
+
+    // Exactly one account exists for the email.
+    const listed = await api('GET', `/admin/counselors?search=${email}`, { token: adminToken });
+    expect(listed.body.data.items).toHaveLength(1);
+  });
+
   it('rejects a client-supplied role or password outright (.strict())', async () => {
     const adminToken = await login(await createStaffUser({ role: 'admin' }));
 
@@ -218,7 +240,9 @@ describe('DELETE /admin/counselors/{id}', () => {
     expect(listed.body.data.items).toHaveLength(0);
 
     // Gone is gone: a second delete has nothing to find.
-    const again = await api('DELETE', `/admin/counselors/${counselor.id}`, { token: adminToken });
+    const again = await api('DELETE', `/admin/counselors/${counselor.id}`, {
+      token: adminToken,
+    });
 
     expect(again.status).toBe(404);
 
