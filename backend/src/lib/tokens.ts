@@ -63,7 +63,8 @@ export async function revokeAllTokensForUser(db: Database, userId: string): Prom
   await db.delete(apiTokens).where(eq(apiTokens.userId, userId));
 }
 
-/** Record that a token was just used — the only write on the hot auth path. */
-export async function touchToken(db: Database, tokenId: string): Promise<void> {
-  await db.update(apiTokens).set({ lastUsedAt: now() }).where(eq(apiTokens.id, tokenId));
-}
+// H2 (removed): `touchToken` stamped `api_tokens.last_used_at` on every authenticated request —
+// one D1 write per request feeding a column nothing in the system reads. It was the only write on
+// the hot auth path; removing it saves a daily-quota write and a subrequest on every request. The
+// column remains in the schema (dropping it is a table rebuild); a throttled "last seen" write
+// could be reintroduced here if the feature is ever actually wanted.

@@ -7,7 +7,7 @@ import { users, type User } from '@/db/schema';
 import type { AppEnv } from '@/env';
 import { isExpired } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
-import { findTokenByPlaintext, revokeToken, touchToken } from '@/lib/tokens';
+import { findTokenByPlaintext, revokeToken } from '@/lib/tokens';
 
 /**
  * Bearer token → `api_tokens` lookup (FULLPLAN §38).
@@ -25,7 +25,9 @@ import { findTokenByPlaintext, revokeToken, touchToken } from '@/lib/tokens';
 export function authenticate() {
   return createMiddleware<AppEnv>(async (c, next) => {
     const header = c.req.header('Authorization');
-    const plaintext = header?.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : null;
+    const plaintext = header?.startsWith('Bearer ')
+      ? header.slice('Bearer '.length).trim()
+      : null;
 
     if (!plaintext) {
       throw ApiError.unauthenticated();
@@ -50,7 +52,12 @@ export function authenticate() {
       throw ApiError.unauthenticated();
     }
 
-    await touchToken(db, token.id);
+    // H2: no `touchToken` write here. It stamped `last_used_at`, a column nothing in the system
+    // reads (verified by grep) — so every authenticated request paid one D1 **write** (a
+    // daily-quota hit; a lab of 40 taking an assessment burned thousands) and one of the 50
+    // subrequests, for data no code path consumes. Dropping it makes the hot path two reads and
+    // no write. The column stays (a D1 column drop is a table rebuild, not worth it); if a
+    // "last seen" feature is ever wanted, reintroduce the write throttled to ~once/hour per token.
 
     c.set('user', user);
     c.set('tokenId', token.id);

@@ -1,12 +1,21 @@
-import { and, asc, count, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
 
 import type { Database } from '@/db/client';
-import { knowledgeChunks, knowledgeDocuments, type KnowledgeDocument, type User } from '@/db/schema';
+import {
+  knowledgeChunks,
+  knowledgeDocuments,
+  type KnowledgeDocument,
+  type User,
+} from '@/db/schema';
 import { chunkText, cleanText } from '@/lib/chunker';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
-import { dispatch, type KnowledgeDocumentProcessedEvent, type Listener } from '@/events/dispatcher';
+import {
+  dispatch,
+  type KnowledgeDocumentProcessedEvent,
+  type Listener,
+} from '@/events/dispatcher';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
 import { EMBEDDING_BATCH_LIMIT, type AiGatewayService } from '@/modules/ai/ai-gateway-service';
 import type { VectorStore } from '@/modules/ai/vector-store';
@@ -97,7 +106,11 @@ export class KnowledgeIngestionService {
    * Accept an upload: raw file to R2 (provenance), extracted text to an R2 sidecar (the
    * durable input every later step re-reads), one `UPLOADED` row, one queued job.
    */
-  async upload(admin: User, input: UploadInput, ipAddress: string | null): Promise<KnowledgeDocument> {
+  async upload(
+    admin: User,
+    input: UploadInput,
+    ipAddress: string | null,
+  ): Promise<KnowledgeDocument> {
     const id = uuid();
     const timestamp = now();
     const storagePath = `knowledge/${id}/${input.fileName}`;
@@ -245,14 +258,17 @@ export class KnowledgeIngestionService {
         })),
       );
 
-      const updates: BatchItem<'sqlite'>[] = batch.map((chunk) =>
-        this.db
-          .update(knowledgeChunks)
-          .set({ vectorId: chunk.id })
-          .where(eq(knowledgeChunks.id, chunk.id)),
-      );
-
-      await this.db.batch(updates as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+      // One UPDATE for the whole batch — the vector id is the chunk id (the §30 mapping), so
+      // `vector_id = id` sets every row at once instead of one statement per chunk.
+      await this.db
+        .update(knowledgeChunks)
+        .set({ vectorId: sql`${knowledgeChunks.id}` })
+        .where(
+          inArray(
+            knowledgeChunks.id,
+            batch.map((chunk) => chunk.id),
+          ),
+        );
     }
 
     // COMPLETED once no chunk is left unembedded — "vectors accepted", not "queryable yet".
@@ -262,21 +278,37 @@ export class KnowledgeIngestionService {
       .where(and(eq(knowledgeChunks.documentId, documentId), isNull(knowledgeChunks.vectorId)));
 
     if ((remaining?.pending ?? 0) === 0) {
-      await this.setStatus(documentId, 'COMPLETED');
+      // M5: flip to COMPLETED only if it is not already, and let the affected-row count decide
+      // whether **this** invocation is the one that completed the document. Two embedding batches
+      // for the same document can both observe `remaining === 0` and race here; the conditional
+      // update means exactly one of them changes a row, so the §60 event and its notification fire
+      // once, not twice. (`updatedAt` still moves on the winning flip.)
+      const flipped = await this.db
+        .update(knowledgeDocuments)
+        .set({ processingStatus: 'COMPLETED', updatedAt: now() })
+        .where(
+          and(
+            eq(knowledgeDocuments.id, documentId),
+            ne(knowledgeDocuments.processingStatus, 'COMPLETED'),
+          ),
+        )
+        .returning({ id: knowledgeDocuments.id });
 
-      // §60: "after all chunks embedded". Fires on a reprocess completion too, deliberately —
-      // the admin asked for the re-run, and "it is available again" is the answer they wanted.
-      const document = await this.find(documentId);
+      if (flipped.length > 0) {
+        // §60: "after all chunks embedded". Fires on a reprocess completion too, deliberately —
+        // the admin asked for the re-run, and "it is available again" is the answer they wanted.
+        const document = await this.find(documentId);
 
-      await dispatch<KnowledgeDocumentProcessedEvent>(
-        {
-          type: 'KnowledgeDocumentProcessed',
-          documentId,
-          uploadedBy: document.uploadedBy,
-          fileName: document.fileName,
-        },
-        this.processedListeners,
-      );
+        await dispatch<KnowledgeDocumentProcessedEvent>(
+          {
+            type: 'KnowledgeDocumentProcessed',
+            documentId,
+            uploadedBy: document.uploadedBy,
+            fileName: document.fileName,
+          },
+          this.processedListeners,
+        );
+      }
     }
   }
 
@@ -285,7 +317,11 @@ export class KnowledgeIngestionService {
    * is what makes archived content structurally unretrievable (§30) — while the document and
    * chunk rows stay, because `ai_requests.input_context` references chunk ids for provenance.
    */
-  async archive(admin: User, documentId: string, ipAddress: string | null): Promise<KnowledgeDocument> {
+  async archive(
+    admin: User,
+    documentId: string,
+    ipAddress: string | null,
+  ): Promise<KnowledgeDocument> {
     const document = await this.find(documentId);
 
     if (document.archivedAt !== null) {
@@ -329,12 +365,18 @@ export class KnowledgeIngestionService {
    * The §42 v1.5 re-run path: Free-plan queues retain messages for 24 hours, so a job that
    * was never consumed is simply gone — an admin needs a button, not just automatic retries.
    */
-  async reprocess(admin: User, documentId: string, ipAddress: string | null): Promise<KnowledgeDocument> {
+  async reprocess(
+    admin: User,
+    documentId: string,
+    ipAddress: string | null,
+  ): Promise<KnowledgeDocument> {
     const document = await this.find(documentId);
 
     if (document.archivedAt !== null) {
       throw ApiError.validation({
-        document: ['An archived document cannot be reprocessed. It is archived precisely so it cannot re-enter the index.'],
+        document: [
+          'An archived document cannot be reprocessed. It is archived precisely so it cannot re-enter the index.',
+        ],
       });
     }
 
@@ -353,7 +395,10 @@ export class KnowledgeIngestionService {
     return { ...document, processingStatus: 'UPLOADED' };
   }
 
-  async list(page: number, perPage: number): Promise<PaginatedData<KnowledgeDocument & { chunkCount: number }>> {
+  async list(
+    page: number,
+    perPage: number,
+  ): Promise<PaginatedData<KnowledgeDocument & { chunkCount: number }>> {
     const [total] = await this.db.select({ value: count() }).from(knowledgeDocuments);
 
     const rows = await this.db

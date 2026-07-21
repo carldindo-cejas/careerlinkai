@@ -1138,38 +1138,73 @@ export class AssessmentAttemptService {
     }[],
     student?: User,
   ): Promise<AssignmentView[]> {
-    return Promise.all(
-      rows.map(async (row) => {
-        const [questions] = await this.db
-          .select({ total: count() })
-          .from(assessmentQuestions)
-          .where(eq(assessmentQuestions.assessmentVersionId, row.version.id));
+    if (rows.length === 0) {
+      return [];
+    }
 
-        const base: AssignmentView = {
-          assignment: row.assignment,
-          version: row.version,
-          template: row.template,
-          questionCount: questions?.total ?? 0,
-        };
+    // **H5:** two grouped queries for the whole list, not two per row. This runs on every
+    // student assignments screen and every counselor class-assignments screen; the old per-row
+    // fan-out was the same "N queries per unpaginated list" pattern as C1, one blast radius down.
+    const versionIds = [...new Set(rows.map((row) => row.version.id))];
+    const assignmentIds = rows.map((row) => row.assignment.id);
 
-        if (student !== undefined) {
-          const mine = await this.liveAttempt(row.assignment.id, student.id);
+    const questionCounts = await this.db
+      .select({ versionId: assessmentQuestions.assessmentVersionId, total: count() })
+      .from(assessmentQuestions)
+      .where(inArray(assessmentQuestions.assessmentVersionId, versionIds))
+      .groupBy(assessmentQuestions.assessmentVersionId);
 
-          return { ...base, myAttempt: mine ?? null };
-        }
-
-        const [submitted] = await this.db
-          .select({ total: count() })
-          .from(assessmentAttempts)
-          .where(
-            and(
-              eq(assessmentAttempts.assignmentId, row.assignment.id),
-              inArray(assessmentAttempts.status, ['SUBMITTED', 'SCORED']),
-            ),
-          );
-
-        return { ...base, submittedCount: submitted?.total ?? 0 };
-      }),
+    const questionCountByVersion = new Map(
+      questionCounts.map((row) => [row.versionId, row.total]),
     );
+
+    if (student !== undefined) {
+      // The student's own live attempt on each listed assignment, in one read. The partial unique
+      // index guarantees at most one non-EXPIRED attempt per (assignment, student), so keying by
+      // assignment id is unambiguous.
+      const mine = await this.db
+        .select()
+        .from(assessmentAttempts)
+        .where(
+          and(
+            inArray(assessmentAttempts.assignmentId, assignmentIds),
+            eq(assessmentAttempts.studentId, student.id),
+            ne(assessmentAttempts.status, 'EXPIRED'),
+          ),
+        );
+
+      const mineByAssignment = new Map(mine.map((attempt) => [attempt.assignmentId, attempt]));
+
+      return rows.map((row) => ({
+        assignment: row.assignment,
+        version: row.version,
+        template: row.template,
+        questionCount: questionCountByVersion.get(row.version.id) ?? 0,
+        myAttempt: mineByAssignment.get(row.assignment.id) ?? null,
+      }));
+    }
+
+    const submittedCounts = await this.db
+      .select({ assignmentId: assessmentAttempts.assignmentId, total: count() })
+      .from(assessmentAttempts)
+      .where(
+        and(
+          inArray(assessmentAttempts.assignmentId, assignmentIds),
+          inArray(assessmentAttempts.status, ['SUBMITTED', 'SCORED']),
+        ),
+      )
+      .groupBy(assessmentAttempts.assignmentId);
+
+    const submittedByAssignment = new Map(
+      submittedCounts.map((row) => [row.assignmentId, row.total]),
+    );
+
+    return rows.map((row) => ({
+      assignment: row.assignment,
+      version: row.version,
+      template: row.template,
+      questionCount: questionCountByVersion.get(row.version.id) ?? 0,
+      submittedCount: submittedByAssignment.get(row.assignment.id) ?? 0,
+    }));
   }
 }

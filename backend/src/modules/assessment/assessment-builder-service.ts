@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
 
 import type { Database } from '@/db/client';
@@ -207,6 +207,88 @@ export class AssessmentBuilderService {
       .limit(1);
 
     return version;
+  }
+
+  // --- Batched lookups for the template list (H5) ------------------------------------------
+  //
+  // The counselor `GET /assessment-templates` screen used to call `assignableVersion`,
+  // `questionCount` and `dimensionsFor` **once per template** — the same per-row fan-out class as
+  // C1, at a smaller N. These three return the whole list in one query each, so the route costs a
+  // fixed handful of reads regardless of how many instruments the counselor can see.
+
+  /** The newest PUBLISHED version for each template id, keyed by template id. */
+  async assignableVersionsFor(templateIds: string[]): Promise<Map<string, AssessmentVersion>> {
+    const byTemplate = new Map<string, AssessmentVersion>();
+
+    if (templateIds.length === 0) {
+      return byTemplate;
+    }
+
+    const versions = await this.db
+      .select()
+      .from(assessmentVersions)
+      .where(
+        and(
+          inArray(assessmentVersions.assessmentTemplateId, templateIds),
+          eq(assessmentVersions.status, 'PUBLISHED'),
+        ),
+      )
+      .orderBy(sql`${assessmentVersions.versionNumber} DESC`);
+
+    // DESC order means the first version seen for a template is its newest — keep that one.
+    for (const version of versions) {
+      if (!byTemplate.has(version.assessmentTemplateId)) {
+        byTemplate.set(version.assessmentTemplateId, version);
+      }
+    }
+
+    return byTemplate;
+  }
+
+  /** Question counts for many versions at once, keyed by version id. */
+  async questionCountsFor(versionIds: string[]): Promise<Map<string, number>> {
+    const byVersion = new Map<string, number>();
+
+    if (versionIds.length === 0) {
+      return byVersion;
+    }
+
+    const counts = await this.db
+      .select({ versionId: assessmentQuestions.assessmentVersionId, total: count() })
+      .from(assessmentQuestions)
+      .where(inArray(assessmentQuestions.assessmentVersionId, versionIds))
+      .groupBy(assessmentQuestions.assessmentVersionId);
+
+    for (const row of counts) {
+      byVersion.set(row.versionId, row.total);
+    }
+
+    return byVersion;
+  }
+
+  /** Dimensions for many templates at once, keyed by template id, each list in order_number order. */
+  async dimensionsForTemplates(
+    templateIds: string[],
+  ): Promise<Map<string, AssessmentDimension[]>> {
+    const byTemplate = new Map<string, AssessmentDimension[]>();
+
+    if (templateIds.length === 0) {
+      return byTemplate;
+    }
+
+    const dimensions = await this.db
+      .select()
+      .from(assessmentDimensions)
+      .where(inArray(assessmentDimensions.assessmentTemplateId, templateIds))
+      .orderBy(asc(assessmentDimensions.orderNumber));
+
+    for (const dimension of dimensions) {
+      const list = byTemplate.get(dimension.assessmentTemplateId) ?? [];
+      list.push(dimension);
+      byTemplate.set(dimension.assessmentTemplateId, list);
+    }
+
+    return byTemplate;
   }
 
   // --- Dimensions --------------------------------------------------------------------------

@@ -184,15 +184,22 @@ counselorAssessmentRoutes.get('/assessment-templates', async (c) => {
 
   const templates = await builder.listTemplatesFor(user);
 
-  const serialized = await Promise.all(
-    templates.map(async (template) => {
-      const version = await builder.assignableVersion(template.id);
-      const questionCount = version === undefined ? 0 : await builder.questionCount(version.id);
-      const dimensions = await builder.dimensionsFor(template.id);
-
-      return serializeTemplate(template, version, questionCount, dimensions);
-    }),
+  // H5: three grouped lookups for the whole list, not three queries per template.
+  const templateIds = templates.map((template) => template.id);
+  const versionByTemplate = await builder.assignableVersionsFor(templateIds);
+  const questionCountByVersion = await builder.questionCountsFor(
+    [...versionByTemplate.values()].map((version) => version.id),
   );
+  const dimensionsByTemplate = await builder.dimensionsForTemplates(templateIds);
+
+  const serialized = templates.map((template) => {
+    const version = versionByTemplate.get(template.id);
+    const questionCount =
+      version === undefined ? 0 : (questionCountByVersion.get(version.id) ?? 0);
+    const dimensions = dimensionsByTemplate.get(template.id) ?? [];
+
+    return serializeTemplate(template, version, questionCount, dimensions);
+  });
 
   return c.json(successEnvelope(serialized, 'Assessment templates retrieved.'));
 });
