@@ -135,12 +135,20 @@ export type KnowledgeVisibility = (typeof KNOWLEDGE_VISIBILITIES)[number];
  * knowledge-document-processed is ACCOUNT — §44 addresses it to the uploading admin about
  * their own action, and §13.8 offers no closer value (a resolved silence, not an invention).
  */
-export const NOTIFICATION_CATEGORIES = ['ASSESSMENT', 'RECOMMENDATION', 'CLASS', 'ACCOUNT'] as const;
+export const NOTIFICATION_CATEGORIES = [
+  'ASSESSMENT',
+  'RECOMMENDATION',
+  'CLASS',
+  'ACCOUNT',
+] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 
 export const AI_REQUEST_TYPES = [
   'RECOMMENDATION_EXPLANATION',
   'ASSESSMENT_GENERATION',
+  // **Reserved, not used by any v1 code path** (L1). It stays here to mirror the CHECK
+  // constraint in migration 0008 (an immutable, already-applied migration lists it), and to
+  // hold the slot for a future chat feature. Nothing writes an ai_requests row of this type.
   'CHAT',
 ] as const;
 export type AiRequestType = (typeof AI_REQUEST_TYPES)[number];

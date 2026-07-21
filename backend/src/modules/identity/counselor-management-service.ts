@@ -14,12 +14,10 @@ import type { Env } from '@/env';
 import { staffAuthGuard } from '@/lib/auth-guard';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
+import { translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
 import { revokeAllTokensForUser } from '@/lib/tokens';
-import type {
-  CreateCounselorInput,
-  UpdateCounselorInput,
-} from '@/modules/identity/schemas';
+import type { CreateCounselorInput, UpdateCounselorInput } from '@/modules/identity/schemas';
 import { AuditService } from '@/modules/platform/audit-service';
 
 /**
@@ -206,10 +204,18 @@ export class CounselorManagementService {
 
     // One transaction: a user without their profile is a row the rest of the system
     // (login's profile join, the roster views) does not expect to encounter.
-    await this.db.batch([
-      this.db.insert(users).values(user),
-      this.db.insert(counselorProfiles).values(profile),
-    ]);
+    try {
+      await this.db.batch([
+        this.db.insert(users).values(user),
+        this.db.insert(counselorProfiles).values(profile),
+      ]);
+    } catch (error) {
+      // The email pre-check above and the derivation below open a wide race window (M8): the
+      // hash is derived *before* the write, so two admins creating the same email can both pass
+      // the pre-check. `users_email_unique` is what actually holds the invariant; the loser must
+      // get the same 422 the pre-check gives, not a raw 500 (H4).
+      translateUniqueViolation(error, 'email', 'This email address is already in use.');
+    }
 
     await this.audit.write({
       action: 'COUNSELOR_CREATED',
@@ -391,4 +397,3 @@ export class CounselorManagementService {
     return footprints;
   }
 }
-

@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 
 import { hashPassword } from '@/do/auth-guard';
 import {
+  AI_REQUEST_LIMIT,
+  AI_REQUEST_WINDOW_SECONDS,
+  aiRateLimitGuard,
   joinThrottleGuard,
   LOGIN_LOCKOUT_LIMIT,
   LOGIN_LOCKOUT_WINDOW_SECONDS,
@@ -57,7 +60,10 @@ describe('AuthGuardDO failure counter', () => {
     expect(initial).toEqual({ attempts: 0, locked: false, retryAfterSeconds: 0 });
 
     for (let i = 1; i < LOGIN_LOCKOUT_LIMIT; i += 1) {
-      const state = await guard.recordFailure(LOGIN_LOCKOUT_LIMIT, LOGIN_LOCKOUT_WINDOW_SECONDS);
+      const state = await guard.recordFailure(
+        LOGIN_LOCKOUT_LIMIT,
+        LOGIN_LOCKOUT_WINDOW_SECONDS,
+      );
 
       expect(state.attempts).toBe(i);
       expect(state.locked).toBe(false);
@@ -112,5 +118,62 @@ describe('AuthGuardDO failure counter', () => {
 
     expect((await attacker.check(10)).attempts).toBe(1);
     expect((await lab.check(10)).attempts).toBe(0);
+  });
+});
+
+describe('AuthGuardDO usage limiter — charge() (M1)', () => {
+  /** A fresh AI-limiter instance per test — one per user in production (`ai:${userId}`). */
+  function freshAiGuard() {
+    return aiRateLimitGuard(env, uuid());
+  }
+
+  it('admits exactly `limit` requests, then locks — the Nth request is still allowed', async () => {
+    const guard = freshAiGuard();
+
+    // Every attempt is charged (a usage limiter, not a failure counter), and the request that
+    // brings the count *to* the limit is admitted; only the one after it is rejected.
+    for (let i = 1; i <= AI_REQUEST_LIMIT; i += 1) {
+      const state = await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
+
+      expect(state.locked).toBe(false);
+      expect(state.attempts).toBe(i);
+    }
+
+    const overflow = await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
+
+    expect(overflow.locked).toBe(true);
+    expect(overflow.retryAfterSeconds).toBeGreaterThan(0);
+  });
+
+  it('does not charge past the ceiling — a rejected request neither counts nor extends the window', async () => {
+    const guard = freshAiGuard();
+
+    for (let i = 0; i < AI_REQUEST_LIMIT; i += 1) {
+      await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
+    }
+
+    // Two rejected attempts must leave the stored count pinned at the limit, not climbing.
+    await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
+    await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
+
+    expect((await guard.check(AI_REQUEST_LIMIT)).attempts).toBe(AI_REQUEST_LIMIT);
+  });
+
+  it('folds check-and-charge into one round trip, so concurrent requests cannot both slip under the cap (M1 TOCTOU)', async () => {
+    const guard = freshAiGuard();
+
+    // Fire the whole window's worth of charges concurrently. The old check()-then-recordFailure()
+    // pair let two requests both read `attempts < limit` between the calls and overshoot; a single
+    // blockConcurrencyWhile charge serializes them, so exactly `limit` are admitted.
+    const results = await Promise.all(
+      Array.from({ length: AI_REQUEST_LIMIT + 5 }, () =>
+        guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS),
+      ),
+    );
+
+    const admitted = results.filter((state) => !state.locked).length;
+
+    expect(admitted).toBe(AI_REQUEST_LIMIT);
+    expect((await guard.check(AI_REQUEST_LIMIT)).attempts).toBe(AI_REQUEST_LIMIT);
   });
 });

@@ -81,15 +81,15 @@ async function enqueueGeneration(
   // §34/§41: 10 AI requests/minute per user, charged on every attempt, checked before the
   // job is even queued — the limiter guards a hard daily neuron quota (§45).
   const guard = aiRateLimitGuard(c.env, user.id);
-  const state = await guard.check(AI_REQUEST_LIMIT);
+  // One atomic check-and-charge (M1): no window between reading the count and charging it, so
+  // concurrent requests cannot both slip under the cap.
+  const state = await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
 
   if (state.locked) {
     throw ApiError.tooManyRequests({
       generation: [`Too many AI requests. Try again in ${state.retryAfterSeconds} seconds.`],
     });
   }
-
-  await guard.recordFailure(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
 
   /**
    * The id is allocated HERE and travels with the job, so the `ai_requests` row the gateway

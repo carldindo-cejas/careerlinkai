@@ -166,7 +166,10 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
  * `password IS NULL` permanently (§38), so "no password to verify" is an expected state
  * on this path, not an exceptional one.
  */
-export async function verifyPassword(password: string, stored: string | null): Promise<boolean> {
+export async function verifyPassword(
+  password: string,
+  stored: string | null,
+): Promise<boolean> {
   if (!stored) {
     return false;
   }
@@ -206,7 +209,9 @@ function toState(counter: Counter | null, limit: number): RateLimitState {
   return {
     attempts: counter.attempts,
     locked,
-    retryAfterSeconds: locked ? Math.max(1, Math.ceil((counter.expiresAt - Date.now()) / 1000)) : 0,
+    retryAfterSeconds: locked
+      ? Math.max(1, Math.ceil((counter.expiresAt - Date.now()) / 1000))
+      : 0,
   };
 }
 
@@ -253,6 +258,43 @@ export class AuthGuardDO extends DurableObject {
     await this.ctx.storage.put(COUNTER_KEY, counter);
 
     return toState(counter, limit);
+  }
+
+  /**
+   * Atomically **check-and-charge a usage limit** in one round trip (M1).
+   *
+   * The AI endpoints used to call `check()` then `recordFailure()` as two separate DO round
+   * trips, which is a TOCTOU: two concurrent requests both observe `attempts < limit` between the
+   * two calls and both slip through, overshooting the cap. This folds the read and the write into
+   * one `blockConcurrencyWhile` critical section, so the instance decides and charges one request
+   * at a time. It also fixes the semantics trap — this is a *usage* limiter (every attempt is
+   * charged, allowed or not), and calling the failure counter to record success read as a bug.
+   *
+   * Returns the state used for the decision: `locked: true` means "reject this request" (the
+   * counter was already at the ceiling and was **not** charged further); `locked: false` means
+   * "allowed" and this call charged one unit, so the next caller sees the higher count.
+   */
+  async charge(limit: number, windowSeconds: number): Promise<RateLimitState> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const existing = await this.readCounter();
+      const before = toState(existing, limit);
+
+      // Already at the ceiling: reject, and do not charge further (the window is fixed, so a
+      // rejected request must not extend it and there is nothing to gain by counting past it).
+      if (before.locked) {
+        return before;
+      }
+
+      const counter: Counter = existing
+        ? { attempts: existing.attempts + 1, expiresAt: existing.expiresAt }
+        : { attempts: 1, expiresAt: Date.now() + windowSeconds * 1000 };
+
+      await this.ctx.storage.put(COUNTER_KEY, counter);
+
+      // This request was under the limit → allowed. `locked` reflects the *decision for this
+      // request*, not the post-charge count, so the Nth (== limit) request is still admitted.
+      return { attempts: counter.attempts, locked: false, retryAfterSeconds: 0 };
+    });
   }
 
   /** Clear the counter — after a success or a reset, so a lock never outlives the credential. */

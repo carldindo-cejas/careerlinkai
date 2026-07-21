@@ -32,6 +32,7 @@ import { dispatch, type AssessmentCompletedEvent } from '@/events/dispatcher';
 import { notifyAssessmentCompleted } from '@/events/send-notifications';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
+import { isUniqueViolation } from '@/lib/db-errors';
 import { ApiError } from '@/lib/envelope';
 import type { ScoredDimension } from '@/lib/scoring';
 import { ScoringService } from '@/modules/assessment/scoring-service';
@@ -212,7 +213,23 @@ export class AssessmentAttemptService {
       updatedAt: now(),
     };
 
-    await this.db.insert(assessmentAttempts).values(attempt);
+    try {
+      await this.db.insert(assessmentAttempts).values(attempt);
+    } catch (error) {
+      // The `liveAttempt` check above is a race: two truly-concurrent Start taps both find no
+      // live attempt and both insert, and the loser hits the partial unique index
+      // (assignment_id, student_id WHERE status <> 'EXPIRED'). Start is contractually idempotent,
+      // so the loser must land in the attempt that won, not on a 500. Re-read it and return it.
+      if (isUniqueViolation(error)) {
+        const winner = await this.liveAttempt(assignmentId, student.id);
+
+        if (winner !== undefined) {
+          return this.loadAttemptContent(winner);
+        }
+      }
+
+      throw error;
+    }
 
     return this.loadAttemptContent(attempt);
   }
@@ -276,39 +293,30 @@ export class AssessmentAttemptService {
       );
     }
 
-    const [existing] = await this.db
-      .select()
-      .from(assessmentAnswers)
-      .where(
-        and(
-          eq(assessmentAnswers.attemptId, attemptId),
-          eq(assessmentAnswers.questionId, questionId),
-        ),
-      )
-      .limit(1);
-
-    if (existing !== undefined) {
-      await this.db
-        .update(assessmentAnswers)
-        .set({
+    // **Atomic upsert** on the `(attempt_id, question_id)` unique index (H4). The old
+    // select-then-insert-or-update raced itself: two near-simultaneous saves of the same
+    // question (a double-tap, a retried request) both saw "no existing row" and both inserted,
+    // and the loser surfaced as a raw 500 instead of the idempotent save the contract promises.
+    // One `onConflictDoUpdate` closes that window and drops the extra SELECT.
+    await this.db
+      .insert(assessmentAnswers)
+      .values({
+        id: uuid(),
+        attemptId,
+        questionId,
+        selectedOptionId,
+        answerText: null,
+        score: option.option.score,
+        answeredAt: now(),
+      })
+      .onConflictDoUpdate({
+        target: [assessmentAnswers.attemptId, assessmentAnswers.questionId],
+        set: {
           selectedOptionId,
           score: option.option.score,
           answeredAt: now(),
-        })
-        .where(eq(assessmentAnswers.id, existing.id));
-
-      return;
-    }
-
-    await this.db.insert(assessmentAnswers).values({
-      id: uuid(),
-      attemptId,
-      questionId,
-      selectedOptionId,
-      answerText: null,
-      score: option.option.score,
-      answeredAt: now(),
-    });
+        },
+      });
   }
 
   /**

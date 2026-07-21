@@ -1,4 +1,4 @@
-import type { CounselorProfile, StudentProfile, User } from '@/db/schema';
+import type { CounselorProfile, User } from '@/db/schema';
 
 /**
  * Response shaping (FULLPLAN §17). These are the contract: the frontend's `User` type in
@@ -32,7 +32,9 @@ export interface SerializedUser {
   counselor_profile?: SerializedCounselorProfile;
 }
 
-export function serializeCounselorProfile(profile: CounselorProfile): SerializedCounselorProfile {
+export function serializeCounselorProfile(
+  profile: CounselorProfile,
+): SerializedCounselorProfile {
   return {
     id: profile.id,
     first_name: profile.firstName,
@@ -58,40 +60,14 @@ export function serializeUser(
     email_verified_at: user.emailVerifiedAt,
     last_login_at: user.lastLoginAt,
     created_at: user.createdAt,
-    ...(counselorProfile ? { counselor_profile: serializeCounselorProfile(counselorProfile) } : {}),
+    ...(counselorProfile
+      ? { counselor_profile: serializeCounselorProfile(counselorProfile) }
+      : {}),
   };
 }
 
-export interface SerializedStudentProfile {
-  id: string;
-  first_name: string;
-  last_name: string | null;
-  birthdate: string | null;
-  gender: string | null;
-  grade_level: string | null;
-  strand: string | null;
-  gwa: number | null;
-  math_grade: number | null;
-  science_grade: number | null;
-  english_grade: number | null;
-  guardian_name: string | null;
-  guardian_contact: string | null;
-}
-
-export function serializeStudentProfile(profile: StudentProfile): SerializedStudentProfile {
-  return {
-    id: profile.id,
-    first_name: profile.firstName,
-    last_name: profile.lastName,
-    birthdate: profile.birthdate,
-    gender: profile.gender,
-    grade_level: profile.gradeLevel,
-    strand: profile.strand,
-    gwa: profile.gwa,
-    math_grade: profile.mathGrade,
-    science_grade: profile.scienceGrade,
-    english_grade: profile.englishGrade,
-    guardian_name: profile.guardianName,
-    guardian_contact: profile.guardianContact,
-  };
-}
+// L1 (removed): a second `serializeStudentProfile` lived here that returned `gwa`/grades as
+// **numbers**, while the one the API actually uses (`modules/assessment/serializers.ts`) returns
+// them as `"88.00"` **strings** — the DECIMAL(5,2) wire contract the frontend types pin. Nothing
+// imported this one, so it was a contract trap waiting for a future caller to grab the wrong
+// import and silently break the frontend. Deleted so there is a single source of truth.

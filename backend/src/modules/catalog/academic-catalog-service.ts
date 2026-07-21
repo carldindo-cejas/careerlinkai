@@ -13,6 +13,7 @@ import {
 } from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
+import { isUniqueViolation } from '@/lib/db-errors';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
 import type {
   CreateCareerInput,
@@ -105,6 +106,10 @@ export class AcademicCatalogService {
       deletedAt: null,
     };
 
+    // NB: `colleges.name` carries a plain index, not a UNIQUE one (migration 0004), so the
+    // `assertCollegeNameFree` pre-check is the *only* uniqueness guard — a genuinely concurrent
+    // create would produce a duplicate row rather than a constraint 500. Nothing to translate
+    // here (H4 applies only where the DB enforces the invariant); see the audit note.
     await this.db.insert(colleges).values(college);
 
     await this.audit.write({
@@ -253,6 +258,8 @@ export class AcademicCatalogService {
       deletedAt: null,
     };
 
+    // Like `colleges.name`, `programs (college_id, code)` is a plain index, not UNIQUE (migration
+    // 0004): the pre-check is the only guard, and a race yields a duplicate rather than a 500.
     await this.db.insert(programs).values(program);
 
     await this.audit.write({
@@ -490,7 +497,10 @@ export class AcademicCatalogService {
     }
 
     const duplicate = await this.db.query.programCareers.findFirst({
-      where: and(eq(programCareers.programId, program.id), eq(programCareers.careerId, career.id)),
+      where: and(
+        eq(programCareers.programId, program.id),
+        eq(programCareers.careerId, career.id),
+      ),
     });
 
     if (duplicate) {
@@ -543,7 +553,10 @@ export class AcademicCatalogService {
     const program = await this.findProgram(programId);
 
     const link = await this.db.query.programCareers.findFirst({
-      where: and(eq(programCareers.programId, program.id), eq(programCareers.careerId, careerId)),
+      where: and(
+        eq(programCareers.programId, program.id),
+        eq(programCareers.careerId, careerId),
+      ),
     });
 
     if (!link) {
@@ -837,13 +850,4 @@ export class AcademicCatalogService {
       career_id: [`${career.title} is already linked to this program.`],
     });
   }
-}
-
-/**
- * D1 surfaces a constraint violation as a plain `Error` whose message carries SQLite's text —
- * there is no typed error class to instanceof against, so the string is the only signal
- * available. Matched narrowly: a broader check would swallow unrelated failures as a 422.
- */
-function isUniqueViolation(error: unknown): boolean {
-  return error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
 }

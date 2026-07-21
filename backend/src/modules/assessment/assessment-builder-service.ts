@@ -24,6 +24,7 @@ import {
 } from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
+import { translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError } from '@/lib/envelope';
 import { AuditService } from '@/modules/platform/audit-service';
 
@@ -220,6 +221,19 @@ export class AssessmentBuilderService {
   ): Promise<AssessmentDimension[]> {
     await this.assertDimensionsNotFrozen(templateId);
 
+    // L5: a duplicate code *within the payload* would otherwise reach the unique index
+    // (template_id, code) as a raw 500. Catch it here where the field can be named precisely.
+    const seen = new Set<string>();
+    for (const input of inputs) {
+      if (seen.has(input.code)) {
+        throw ApiError.validation(
+          { code: [`Dimension code "${input.code}" appears more than once in this request.`] },
+          'Duplicate dimension code.',
+        );
+      }
+      seen.add(input.code);
+    }
+
     const rows: AssessmentDimension[] = inputs.map((input) => ({
       id: uuid(),
       assessmentTemplateId: templateId,
@@ -232,7 +246,17 @@ export class AssessmentBuilderService {
     }));
 
     if (rows.length > 0) {
-      await this.db.insert(assessmentDimensions).values(rows);
+      try {
+        await this.db.insert(assessmentDimensions).values(rows);
+      } catch (error) {
+        // A code already on this template (or a concurrent add of the same code) loses at the
+        // (template_id, code) unique index — surface it as a 422, not a 500 (L5/H4).
+        translateUniqueViolation(
+          error,
+          'code',
+          'A dimension with that code already exists on this template.',
+        );
+      }
     }
 
     return rows;
@@ -264,7 +288,9 @@ export class AssessmentBuilderService {
 
     if ((published?.total ?? 0) > 0) {
       throw ApiError.validation(
-        { dimensions: ['This template has a published version, so its dimensions are frozen.'] },
+        {
+          dimensions: ['This template has a published version, so its dimensions are frozen.'],
+        },
         'Dimensions cannot be changed once a version of their template has been published.',
       );
     }
@@ -321,7 +347,7 @@ export class AssessmentBuilderService {
 
   async findQuestion(
     questionId: string,
-  ): Promise<(typeof assessmentQuestions.$inferSelect) | undefined> {
+  ): Promise<typeof assessmentQuestions.$inferSelect | undefined> {
     const [question] = await this.db
       .select()
       .from(assessmentQuestions)
@@ -356,7 +382,11 @@ export class AssessmentBuilderService {
    * silently excluded from every dimension's `raw`/`max`, and impossible to spot by looking at
    * the question list.
    */
-  async addQuestion(user: User, versionId: string, input: CreateQuestionInput): Promise<string> {
+  async addQuestion(
+    user: User,
+    versionId: string,
+    input: CreateQuestionInput,
+  ): Promise<string> {
     const [questionId] = await this.addQuestions(user, versionId, [input]);
 
     if (questionId === undefined) {
@@ -472,7 +502,9 @@ export class AssessmentBuilderService {
     // The column counts are the tables' widths in `schema.ts` — see `chunk`'s note on why this is
     // a parameter budget rather than a row budget.
     const statements: BatchItem<'sqlite'>[] = [
-      ...chunk(questionRows, 10).map((rows) => this.db.insert(assessmentQuestions).values(rows)),
+      ...chunk(questionRows, 10).map((rows) =>
+        this.db.insert(assessmentQuestions).values(rows),
+      ),
       ...chunk(optionRows, 6).map((rows) => this.db.insert(questionOptions).values(rows)),
       ...chunk(mappingRows, 6).map((rows) => this.db.insert(questionDimensions).values(rows)),
     ];
@@ -541,7 +573,9 @@ export class AssessmentBuilderService {
 
     if ((questions?.total ?? 0) === 0) {
       throw ApiError.validation(
-        { questions: ['A version must have at least one question before it can be published.'] },
+        {
+          questions: ['A version must have at least one question before it can be published.'],
+        },
         'This version has no questions.',
       );
     }
@@ -615,7 +649,10 @@ export class AssessmentBuilderService {
     optionsByQuestion: Map<string, (typeof questionOptions.$inferSelect)[]>;
     mappingsByQuestion: Map<
       string,
-      ((typeof questionDimensions.$inferSelect) & { dimensionCode: string; dimensionName: string })[]
+      (typeof questionDimensions.$inferSelect & {
+        dimensionCode: string;
+        dimensionName: string;
+      })[]
     >;
   }> {
     const questions = await this.db
@@ -639,7 +676,10 @@ export class AssessmentBuilderService {
       })
       .from(questionDimensions)
       .innerJoin(assessmentQuestions, eq(questionDimensions.questionId, assessmentQuestions.id))
-      .innerJoin(assessmentDimensions, eq(questionDimensions.dimensionId, assessmentDimensions.id))
+      .innerJoin(
+        assessmentDimensions,
+        eq(questionDimensions.dimensionId, assessmentDimensions.id),
+      )
       .where(eq(assessmentQuestions.assessmentVersionId, versionId));
 
     const optionsByQuestion = new Map<string, (typeof questionOptions.$inferSelect)[]>();
@@ -652,7 +692,10 @@ export class AssessmentBuilderService {
 
     const mappingsByQuestion = new Map<
       string,
-      ((typeof questionDimensions.$inferSelect) & { dimensionCode: string; dimensionName: string })[]
+      (typeof questionDimensions.$inferSelect & {
+        dimensionCode: string;
+        dimensionName: string;
+      })[]
     >();
 
     for (const { mapping, dimensionCode, dimensionName } of mappings) {
@@ -784,7 +827,10 @@ export class AssessmentBuilderService {
       module: MODULE,
       targetType: 'question_dimension',
       targetId: mappingId,
-      newValues: { question_id: found.mapping.questionId, dimension_id: found.mapping.dimensionId },
+      newValues: {
+        question_id: found.mapping.questionId,
+        dimension_id: found.mapping.dimensionId,
+      },
     });
 
     return confirmed;

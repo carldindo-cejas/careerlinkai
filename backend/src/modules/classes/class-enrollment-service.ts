@@ -12,6 +12,7 @@ import {
 } from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
+import { translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError } from '@/lib/envelope';
 import { baseUsername, parseName, resolveUsername } from '@/lib/slugify';
 import { revokeAllTokensForUser } from '@/lib/tokens';
@@ -154,7 +155,17 @@ export class ClassEnrollmentService {
     // statements run in one implicit transaction and roll back together. The unique index on
     // (class_id, username) is the backstop under the checks above — a racing second confirm
     // fails the whole batch rather than half-provisioning the class.
-    await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+    try {
+      await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+    } catch (error) {
+      // The collision pre-checks are a race; a second confirm landing between the check and this
+      // batch loses at the (class_id, username) index and must surface as a 422, not a 500 (H4).
+      translateUniqueViolation(
+        error,
+        'students',
+        'A username in this list was just taken. Refresh the roster and try again.',
+      );
+    }
 
     await this.audit.write({
       action: 'ROSTER_STUDENTS_ENROLLED',
@@ -177,7 +188,10 @@ export class ClassEnrollmentService {
    * whether someone may keep working through a class's assessments. Removal revokes their tokens
    * too, but a session that somehow outlived the removal must still not get them in.
    */
-  async activeEnrollment(studentId: string, classId: string): Promise<ClassStudent | undefined> {
+  async activeEnrollment(
+    studentId: string,
+    classId: string,
+  ): Promise<ClassStudent | undefined> {
     const [enrollment] = await this.db
       .select()
       .from(classStudents)

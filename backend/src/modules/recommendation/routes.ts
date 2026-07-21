@@ -124,7 +124,8 @@ studentRecommendationRoutes.post('/recommendations/:id/explain', async (c) => {
   // is an AuthGuardDO instance (v1.5) — every attempt is charged, because this limiter
   // guards a hard daily neuron quota (§45), not a failure pattern.
   const guard = aiRateLimitGuard(c.env, user.id);
-  const state = await guard.check(AI_REQUEST_LIMIT);
+  // One atomic check-and-charge (M1): closes the TOCTOU the check()-then-recordFailure() pair had.
+  const state = await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
 
   if (state.locked) {
     throw ApiError.tooManyRequests({
@@ -132,16 +133,20 @@ studentRecommendationRoutes.post('/recommendations/:id/explain', async (c) => {
     });
   }
 
-  await guard.recordFailure(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
-
   const policy = await new AiPolicyService(db).activeGlobal();
-  const service = new ExplanationService(db, aiGatewayFrom(db, c.env), retrievalFrom(db, c.env), policy);
+  const service = new ExplanationService(
+    db,
+    aiGatewayFrom(db, c.env),
+    retrievalFrom(db, c.env),
+    policy,
+  );
   const outcome = await service.explain(recommendation, user.id);
 
   return c.json(
     successEnvelope(
       {
-        explanation: outcome.explanation === null ? null : serializeExplanation(outcome.explanation),
+        explanation:
+          outcome.explanation === null ? null : serializeExplanation(outcome.explanation),
         fallback_reason: outcome.fallbackReason,
         failure: outcome.failure ?? null,
       },
@@ -180,9 +185,7 @@ counselorRecommendationRoutes.get('/students/:studentId/recommendations', async 
   return c.json(
     successEnvelope(
       set === null ? null : serializeRecommendationSet(set),
-      set === null
-        ? 'This student has no recommendations yet.'
-        : 'Recommendations retrieved.',
+      set === null ? 'This student has no recommendations yet.' : 'Recommendations retrieved.',
     ),
   );
 });
