@@ -358,6 +358,6 @@ describe('results', () => {
     const results = await api('GET', '/student/results', { token: studentToken });
 
     expect(results.status).toBe(200);
-    expect(results.body.data).toHaveLength(0);
+    expect(results.body.data.items).toHaveLength(0);
   });
 });

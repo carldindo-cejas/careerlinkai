@@ -6,15 +6,18 @@ import {
   assessmentAnswers,
   assessmentAssignments,
   assessmentAttempts,
+  assessmentDimensions,
   assessmentQuestions,
   assessmentResults,
   assessmentTemplates,
   assessmentVersions,
   classStudents,
+  dimensionScores,
   questionOptions,
   users,
   type AssessmentAssignment,
   type AssessmentAttempt,
+  type AssessmentDimension,
   type AssessmentQuestion,
   type AssessmentResult,
   type AssessmentTemplate,
@@ -69,6 +72,25 @@ export interface ResultView {
   template: AssessmentTemplate;
   result: AssessmentResult | undefined;
   dimensions: ScoredDimension[];
+}
+
+export interface StudentResultRow {
+  id: string;
+  name: string;
+  username: string | null;
+}
+
+/**
+ * A page of results, hydrated in a **fixed number of D1 queries regardless of how many rows the
+ * page holds** (C1). `dimensionsByTemplate` carries every template's dimension rows once, so the
+ * route can serialize each view without the per-row dimension refetch that used to fan out.
+ */
+export interface ResultsPage<TView extends ResultView = ResultView> {
+  views: TView[];
+  dimensionsByTemplate: Map<string, AssessmentDimension[]>;
+  total: number;
+  page: number;
+  perPage: number;
 }
 
 export interface AssignmentView {
@@ -258,7 +280,10 @@ export class AssessmentAttemptService {
       .select()
       .from(assessmentAnswers)
       .where(
-        and(eq(assessmentAnswers.attemptId, attemptId), eq(assessmentAnswers.questionId, questionId)),
+        and(
+          eq(assessmentAnswers.attemptId, attemptId),
+          eq(assessmentAnswers.questionId, questionId),
+        ),
       )
       .limit(1);
 
@@ -325,21 +350,19 @@ export class AssessmentAttemptService {
 
     const submittedAt = now();
 
-    await this.db
-      .update(assessmentAttempts)
-      .set({ status: 'SUBMITTED', submittedAt, updatedAt: submittedAt })
-      .where(eq(assessmentAttempts.id, attemptId));
-
     const { version, template } = await this.versionWithTemplate(attempt.assessmentVersionId);
-    const scoredAttempt = { ...attempt, status: 'SUBMITTED' as const, submittedAt };
 
-    // Inline (§24). Moves the attempt to SCORED and writes dimension_scores + assessment_results.
-    const { generatedAt } = await this.scoring.score(scoredAttempt, version);
+    // **Atomic submit (C2).** There is no separate `SUBMITTED` flip before scoring. The status
+    // transition is folded into scoring's single `db.batch()` — IN_PROGRESS → SCORED, stamping
+    // `submitted_at` in the same write. A D1 blip or an unexpected throw inside `score()`
+    // therefore leaves the attempt IN_PROGRESS and re-submittable, rather than stranding it in a
+    // SUBMITTED state with no result row that nothing in the system ever re-scores.
+    const { generatedAt } = await this.scoring.score(attempt, version, { submittedAt });
 
     const view = await this.resultFor(attemptId, {
-      // Mirrors the row `score()` just wrote — status and updatedAt included — so the view
-      // does not pay a D1 read to learn what this request itself did two lines up.
-      attempt: { ...scoredAttempt, status: 'SCORED', updatedAt: generatedAt },
+      // Mirrors the row `score()` just wrote — status, submittedAt and updatedAt included — so the
+      // view does not pay a D1 read to learn what this request itself did two lines up.
+      attempt: { ...attempt, status: 'SCORED', submittedAt, updatedAt: generatedAt },
       template,
     });
 
@@ -379,17 +402,44 @@ export class AssessmentAttemptService {
     return view;
   }
 
-  /** `SCORED` attempts only — an expired one never appears in a student's results (§21). */
-  async listResultsForStudent(student: User): Promise<ResultView[]> {
-    const attempts = await this.db
-      .select()
-      .from(assessmentAttempts)
-      .where(
-        and(eq(assessmentAttempts.studentId, student.id), eq(assessmentAttempts.status, 'SCORED')),
-      )
-      .orderBy(desc(assessmentAttempts.submittedAt));
+  /**
+   * `SCORED` attempts only — an expired one never appears in a student's results (§21).
+   *
+   * **C1:** the whole page is hydrated in a fixed number of D1 queries (count + page + three set
+   * queries in `hydrateResultViews`), not ~5 per row. Paginated (§19) so the response is bounded
+   * even before that — a student realistically has a handful of results, but the contract matches
+   * the class listing and the platform's other heavy lists.
+   */
+  async listResultsForStudent(student: User, page = 1, perPage = 25): Promise<ResultsPage> {
+    const where = and(
+      eq(assessmentAttempts.studentId, student.id),
+      eq(assessmentAttempts.status, 'SCORED'),
+    );
 
-    return Promise.all(attempts.map((attempt) => this.resultFor(attempt.id)));
+    const [totalRow] = await this.db
+      .select({ total: count() })
+      .from(assessmentAttempts)
+      .where(where);
+
+    const rows = await this.db
+      .select({ attempt: assessmentAttempts, template: assessmentTemplates })
+      .from(assessmentAttempts)
+      .innerJoin(
+        assessmentVersions,
+        eq(assessmentAttempts.assessmentVersionId, assessmentVersions.id),
+      )
+      .innerJoin(
+        assessmentTemplates,
+        eq(assessmentVersions.assessmentTemplateId, assessmentTemplates.id),
+      )
+      .where(where)
+      .orderBy(desc(assessmentAttempts.submittedAt))
+      .limit(perPage)
+      .offset((page - 1) * perPage);
+
+    const { views, dimensionsByTemplate } = await this.hydrateResultViews(rows);
+
+    return { views, dimensionsByTemplate, total: totalRow?.total ?? 0, page, perPage };
   }
 
   async viewResult(user: User, attemptId: string): Promise<ResultView> {
@@ -503,7 +553,9 @@ export class AssessmentAttemptService {
       const roster = await this.db
         .select({ studentId: classStudents.studentId })
         .from(classStudents)
-        .where(and(eq(classStudents.classId, classRoom.id), eq(classStudents.status, 'active')));
+        .where(
+          and(eq(classStudents.classId, classRoom.id), eq(classStudents.status, 'active')),
+        );
 
       await new NotificationService(this.db).sendToMany(
         roster.map((row) => row.studentId),
@@ -624,12 +676,33 @@ export class AssessmentAttemptService {
   async listResultsForClass(
     user: User,
     classId: string,
-  ): Promise<(ResultView & { student: { id: string; name: string; username: string | null } })[]> {
+    page = 1,
+    perPage = 25,
+  ): Promise<ResultsPage<ResultView & { student: StudentResultRow }>> {
     const classRoom = await this.classes.find(user, classId);
+
+    const where = and(
+      eq(assessmentAssignments.classId, classRoom.id),
+      eq(assessmentAttempts.status, 'SCORED'),
+    );
+
+    // A class of 40 finishing RIASEC+SCCT is up to 80 scored attempts. The old code ran ~5 D1
+    // queries *per row* here (C1) — ~400 subrequests against a 50 cap, a guaranteed 500 the
+    // moment a real class finished. Now: one count, one page query, and three set queries in
+    // `hydrateResultViews` — a fixed cost regardless of N.
+    const [totalRow] = await this.db
+      .select({ total: count() })
+      .from(assessmentAttempts)
+      .innerJoin(
+        assessmentAssignments,
+        eq(assessmentAttempts.assignmentId, assessmentAssignments.id),
+      )
+      .where(where);
 
     const attempts = await this.db
       .select({
         attempt: assessmentAttempts,
+        template: assessmentTemplates,
         studentName: users.name,
         username: classStudents.username,
       })
@@ -637,6 +710,14 @@ export class AssessmentAttemptService {
       .innerJoin(
         assessmentAssignments,
         eq(assessmentAttempts.assignmentId, assessmentAssignments.id),
+      )
+      .innerJoin(
+        assessmentVersions,
+        eq(assessmentAttempts.assessmentVersionId, assessmentVersions.id),
+      )
+      .innerJoin(
+        assessmentTemplates,
+        eq(assessmentVersions.assessmentTemplateId, assessmentTemplates.id),
       )
       .innerJoin(users, eq(assessmentAttempts.studentId, users.id))
       .leftJoin(
@@ -646,24 +727,38 @@ export class AssessmentAttemptService {
           eq(classStudents.studentId, assessmentAttempts.studentId),
         ),
       )
-      .where(
-        and(
-          eq(assessmentAssignments.classId, classRoom.id),
-          eq(assessmentAttempts.status, 'SCORED'),
-        ),
-      )
-      .orderBy(desc(assessmentAttempts.submittedAt));
+      .where(where)
+      .orderBy(desc(assessmentAttempts.submittedAt))
+      .limit(perPage)
+      .offset((page - 1) * perPage);
 
-    return Promise.all(
-      attempts.map(async (row) => ({
-        ...(await this.resultFor(row.attempt.id)),
-        student: {
-          id: row.attempt.studentId,
-          name: row.studentName,
-          username: row.username,
+    const { views, dimensionsByTemplate } = await this.hydrateResultViews(
+      attempts.map((row) => ({ attempt: row.attempt, template: row.template })),
+    );
+
+    // `hydrateResultViews` preserves input order, so view[i] belongs to attempts[i]; key the
+    // student rows by attempt id anyway so the join to names can never drift silently.
+    const studentByAttempt = new Map<string, StudentResultRow>(
+      attempts.map((row) => [
+        row.attempt.id,
+        { id: row.attempt.studentId, name: row.studentName, username: row.username },
+      ]),
+    );
+
+    return {
+      views: views.map((view) => ({
+        ...view,
+        student: studentByAttempt.get(view.attempt.id) ?? {
+          id: view.attempt.studentId,
+          name: '',
+          username: null,
         },
       })),
-    );
+      dimensionsByTemplate,
+      total: totalRow?.total ?? 0,
+      page,
+      perPage,
+    };
   }
 
   /**
@@ -768,7 +863,9 @@ export class AssessmentAttemptService {
     return row;
   }
 
-  private async findAssignment(assignmentId: string): Promise<AssessmentAssignment | undefined> {
+  private async findAssignment(
+    assignmentId: string,
+  ): Promise<AssessmentAssignment | undefined> {
     const [assignment] = await this.db
       .select()
       .from(assessmentAssignments)
@@ -915,6 +1012,90 @@ export class AssessmentAttemptService {
   }
 
   /**
+   * Hydrate a set of attempts (each already joined to its template) into full `ResultView`s in a
+   * **fixed number of D1 queries regardless of N** — the C1 fix.
+   *
+   * `resultFor` costs ~4 queries for one attempt; calling it per row (as the old listings did)
+   * is the ~5N fan-out that blew the 50-subrequest ceiling on any real class. This replaces that
+   * with three set queries: results by attempt (`inArray`), scored dimensions by attempt
+   * (`inArray`, joined for the code), and every listed template's dimension rows (`inArray`) for
+   * the serializer's id → name/description lookup. The result and dimension shapes are byte-identical
+   * to what `resultFor` + `scoredDimensionsFor` produced, so serialized output does not drift.
+   */
+  private async hydrateResultViews(
+    rows: { attempt: AssessmentAttempt; template: AssessmentTemplate }[],
+  ): Promise<{
+    views: ResultView[];
+    dimensionsByTemplate: Map<string, AssessmentDimension[]>;
+  }> {
+    if (rows.length === 0) {
+      return { views: [], dimensionsByTemplate: new Map() };
+    }
+
+    const attemptIds = rows.map((row) => row.attempt.id);
+    const templateIds = [...new Set(rows.map((row) => row.template.id))];
+
+    const [resultRows, scoredRows, dimensionRows] = await Promise.all([
+      this.db
+        .select()
+        .from(assessmentResults)
+        .where(inArray(assessmentResults.attemptId, attemptIds)),
+      this.db
+        .select({
+          attemptId: dimensionScores.attemptId,
+          dimensionId: dimensionScores.dimensionId,
+          code: assessmentDimensions.code,
+          rawScore: dimensionScores.rawScore,
+          normalizedScore: dimensionScores.normalizedScore,
+          interpretation: dimensionScores.interpretation,
+        })
+        .from(dimensionScores)
+        .innerJoin(
+          assessmentDimensions,
+          eq(dimensionScores.dimensionId, assessmentDimensions.id),
+        )
+        .where(inArray(dimensionScores.attemptId, attemptIds))
+        .orderBy(asc(assessmentDimensions.orderNumber)),
+      this.db
+        .select()
+        .from(assessmentDimensions)
+        .where(inArray(assessmentDimensions.assessmentTemplateId, templateIds))
+        .orderBy(asc(assessmentDimensions.orderNumber)),
+    ]);
+
+    const resultByAttempt = new Map(resultRows.map((row) => [row.attemptId, row]));
+
+    const scoredByAttempt = new Map<string, ScoredDimension[]>();
+    for (const row of scoredRows) {
+      const list = scoredByAttempt.get(row.attemptId) ?? [];
+      list.push({
+        dimensionId: row.dimensionId,
+        code: row.code,
+        rawScore: row.rawScore,
+        normalizedScore: row.normalizedScore,
+        interpretation: row.interpretation,
+      });
+      scoredByAttempt.set(row.attemptId, list);
+    }
+
+    const dimensionsByTemplate = new Map<string, AssessmentDimension[]>();
+    for (const dimension of dimensionRows) {
+      const list = dimensionsByTemplate.get(dimension.assessmentTemplateId) ?? [];
+      list.push(dimension);
+      dimensionsByTemplate.set(dimension.assessmentTemplateId, list);
+    }
+
+    const views = rows.map((row) => ({
+      attempt: row.attempt,
+      template: row.template,
+      result: resultByAttempt.get(row.attempt.id),
+      dimensions: scoredByAttempt.get(row.attempt.id) ?? [],
+    }));
+
+    return { views, dimensionsByTemplate };
+  }
+
+  /**
    * `known` lets a caller that already holds the attempt and template (submit does — it just
    * wrote them) skip re-reading rows this same request produced. Every other caller omits it.
    */
@@ -923,7 +1104,8 @@ export class AssessmentAttemptService {
     known?: { attempt: AssessmentAttempt; template: AssessmentTemplate },
   ): Promise<ResultView> {
     const attempt = known?.attempt ?? (await this.findAttempt(attemptId));
-    const template = known?.template ?? (await this.templateForVersion(attempt.assessmentVersionId));
+    const template =
+      known?.template ?? (await this.templateForVersion(attempt.assessmentVersionId));
 
     const [result] = await this.db
       .select()
@@ -941,7 +1123,11 @@ export class AssessmentAttemptService {
    * else's**; the counselor view gets a completion count and no individual attempt.
    */
   private async decorateAssignments(
-    rows: { assignment: AssessmentAssignment; version: AssessmentVersion; template: AssessmentTemplate }[],
+    rows: {
+      assignment: AssessmentAssignment;
+      version: AssessmentVersion;
+      template: AssessmentTemplate;
+    }[],
     student?: User,
   ): Promise<AssignmentView[]> {
     return Promise.all(

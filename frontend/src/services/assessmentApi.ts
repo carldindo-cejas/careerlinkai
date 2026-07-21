@@ -8,6 +8,36 @@ import type {
   StudentProfile,
   UpdateProfilePayload,
 } from '@/types/assessment';
+import type { Paginated } from '@/types/class';
+
+/**
+ * The results-listing endpoints paginate on the server (§19, audit A1/M6) so no single response
+ * can approach the Free-plan subrequest ceiling. The current UI still wants the whole list, so
+ * the service layer walks the pages and flattens them — the public `Promise<AssessmentResult[]>`
+ * contract, and every hook and component above it, is unchanged. At thesis scale this is one
+ * request for a student and at most two for a class (max 50 rows/page).
+ */
+const RESULTS_PAGE_SIZE = 50;
+
+async function fetchAllResults(path: string): Promise<AssessmentResult[]> {
+  const items: AssessmentResult[] = [];
+  let page = 1;
+  let lastPage = 1;
+
+  do {
+    const data = await unwrap(
+      httpClient.get<ApiSuccess<Paginated<AssessmentResult>>>(path, {
+        params: { page, per_page: RESULTS_PAGE_SIZE },
+      }),
+    );
+
+    items.push(...data.items);
+    lastPage = data.pagination.last_page;
+    page += 1;
+  } while (page <= lastPage);
+
+  return items;
+}
 
 /**
  * The assessment engine (FULLPLAN §20, Phase 3).
@@ -81,7 +111,7 @@ export const studentAssessmentApi = {
   // Results (§37) ----------------------------------------------------------
 
   listResults(): Promise<AssessmentResult[]> {
-    return unwrap(httpClient.get<ApiSuccess<AssessmentResult[]>>('/student/results'));
+    return fetchAllResults('/student/results');
   },
 
   getResult(attemptId: string): Promise<AssessmentResult> {
@@ -132,9 +162,7 @@ export const counselorAssessmentApi = {
   },
 
   listClassResults(classId: string): Promise<AssessmentResult[]> {
-    return unwrap(
-      httpClient.get<ApiSuccess<AssessmentResult[]>>(`/counselor/classes/${classId}/results`),
-    );
+    return fetchAllResults(`/counselor/classes/${classId}/results`);
   },
 
   /**

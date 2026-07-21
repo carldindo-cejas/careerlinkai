@@ -350,9 +350,9 @@ describe('the retake (§21)', () => {
     await answerAll(studentToken, started.body.data, () => 4);
     await api('POST', `/student/attempts/${started.body.data.id}/submit`, { token: studentToken });
 
-    expect((await api('GET', '/student/results', { token: studentToken })).body.data).toHaveLength(
-      1,
-    );
+    expect(
+      (await api('GET', '/student/results', { token: studentToken })).body.data.items,
+    ).toHaveLength(1);
 
     await api('POST', `/counselor/attempts/${started.body.data.id}/reset`, {
       token: counselorToken,
@@ -360,6 +360,6 @@ describe('the retake (§21)', () => {
 
     const after = await api('GET', '/student/results', { token: studentToken });
 
-    expect(after.body.data).toHaveLength(0);
+    expect(after.body.data.items).toHaveLength(0);
   });
 });

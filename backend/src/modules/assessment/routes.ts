@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 
 import { createDatabase } from '@/db/client';
 import { assessmentDimensions } from '@/db/schema';
 import type { AppEnv } from '@/env';
-import { successEnvelope } from '@/lib/envelope';
-import { clientIp, parseBody } from '@/lib/validation';
+import { paginate, successEnvelope } from '@/lib/envelope';
+import { clientIp, parseBody, parseQuery } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
@@ -37,6 +38,18 @@ import { eq } from 'drizzle-orm';
  * structural property, not a convention: a route that means "mine" cannot be made to mean
  * "someone else's" by changing a parameter, because it has no parameter to change.
  */
+
+/**
+ * Results-listing pagination (§19, A1/M6). **Additive and backward-compatible**: a caller that
+ * sends no params gets page 1 at a generous default (25), and `max(50)` keeps any single page
+ * well inside the Free-plan subrequest budget even before the set-query hydration does. The
+ * response is the standard `{ items, pagination }` list envelope the frontend's `Paginated<T>`
+ * already pins — the same shape the audit log and notifications endpoints return.
+ */
+const resultsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  per_page: z.coerce.number().int().min(1).max(50).default(25),
+});
 
 // --- /student (role: student only) -----------------------------------------------------------
 
@@ -119,22 +132,18 @@ studentRoutes.post('/attempts/:attemptId/submit', async (c) => {
 });
 
 studentRoutes.get('/results', async (c) => {
+  const query = parseQuery(c, resultsQuerySchema, ['page', 'per_page']);
   const db = createDatabase(c.env.DB);
   const service = new AssessmentAttemptService(db, c.env);
-  const views = await service.listResultsForStudent(requireUser(c));
+  const { views, dimensionsByTemplate, total, page, perPage } =
+    await service.listResultsForStudent(requireUser(c), query.page, query.per_page);
 
-  const serialized = await Promise.all(
-    views.map(async (view) => {
-      const dimensions = await db
-        .select()
-        .from(assessmentDimensions)
-        .where(eq(assessmentDimensions.assessmentTemplateId, view.template.id));
-
-      return serializeResult(view, dimensions);
-    }),
+  // No per-row dimension refetch (C1): every template's dimensions arrived once, in the page load.
+  const items = views.map((view) =>
+    serializeResult(view, dimensionsByTemplate.get(view.template.id) ?? []),
   );
 
-  return c.json(successEnvelope(serialized, 'Results retrieved.'));
+  return c.json(successEnvelope(paginate(items, total, page, perPage), 'Results retrieved.'));
 });
 
 studentRoutes.get('/results/:attemptId', async (c) => {
@@ -225,23 +234,27 @@ counselorAssessmentRoutes.patch('/assignments/:assignmentId', async (c) => {
 });
 
 counselorAssessmentRoutes.get('/classes/:classId/results', async (c) => {
+  const query = parseQuery(c, resultsQuerySchema, ['page', 'per_page']);
   const db = createDatabase(c.env.DB);
   const service = new AssessmentAttemptService(db, c.env);
-  const views = await service.listResultsForClass(requireUser(c), c.req.param('classId'));
+  const { views, dimensionsByTemplate, total, page, perPage } =
+    await service.listResultsForClass(
+      requireUser(c),
+      c.req.param('classId'),
+      query.page,
+      query.per_page,
+    );
 
-  const serialized = await Promise.all(
-    views.map(async (view) => {
-      const dimensions = await db
-        .select()
-        .from(assessmentDimensions)
-        .where(eq(assessmentDimensions.assessmentTemplateId, view.template.id));
+  // Phase 6: the counselor's table names its rows — see `listResultsForClass`. No per-row
+  // dimension refetch (C1): the dimensions arrived once with the page.
+  const items = views.map((view) => ({
+    ...serializeResult(view, dimensionsByTemplate.get(view.template.id) ?? []),
+    student: view.student,
+  }));
 
-      // Phase 6: the counselor's table names its rows — see `listResultsForClass`.
-      return { ...serializeResult(view, dimensions), student: view.student };
-    }),
+  return c.json(
+    successEnvelope(paginate(items, total, page, perPage), 'Class results retrieved.'),
   );
-
-  return c.json(successEnvelope(serialized, 'Class results retrieved.'));
 });
 
 /** The retake (§21) — **the counselor's, never the student's.** */

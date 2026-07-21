@@ -50,6 +50,12 @@ export class ScoringService {
    * (an absent dimension means "not measured" — §24). The batch is what stops "not measured" from
    * ever being a lie about the system rather than a fact about the student.
    *
+   * **Atomic submit (C2).** When `options.submittedAt` is supplied, the final status update stamps
+   * `submitted_at` in the *same batch* — so the caller (`submit`) does not flip the attempt to
+   * SUBMITTED in a separate statement first. The transition is therefore IN_PROGRESS → SCORED in a
+   * single atomic write: any failure during scoring leaves the attempt IN_PROGRESS and
+   * re-submittable, never stranded in a SUBMITTED state that nothing re-scores.
+   *
    * `version`, when the caller already holds it, skips one D1 read — this runs inside the
    * submit request, whose subrequest budget is measured (§45, Phase 4.5). Returns the
    * timestamp it stamped, so the caller can mirror the row it just wrote without re-reading it.
@@ -57,6 +63,7 @@ export class ScoringService {
   async score(
     attempt: AssessmentAttempt,
     version?: AssessmentVersion,
+    options?: { submittedAt?: string },
   ): Promise<{ generatedAt: string }> {
     const input = await this.loadScoringInput(attempt, version);
     const output = runScoring(input);
@@ -96,7 +103,13 @@ export class ScoringService {
       }),
       this.db
         .update(assessmentAttempts)
-        .set({ status: 'SCORED', updatedAt: generatedAt })
+        .set({
+          status: 'SCORED',
+          updatedAt: generatedAt,
+          // Fold the submission stamp into this batch when submitting inline (C2): the attempt
+          // goes IN_PROGRESS → SCORED atomically, with no separate SUBMITTED write to strand.
+          ...(options?.submittedAt !== undefined ? { submittedAt: options.submittedAt } : {}),
+        })
         .where(eq(assessmentAttempts.id, attempt.id)),
     );
 

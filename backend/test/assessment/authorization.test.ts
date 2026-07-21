@@ -203,8 +203,8 @@ describe('reading results', () => {
     });
 
     expect(results.status).toBe(200);
-    expect(results.body.data).toHaveLength(1);
-    expect(results.body.data[0].result.result_code).toBeTruthy();
+    expect(results.body.data.items).toHaveLength(1);
+    expect(results.body.data.items[0].result.result_code).toBeTruthy();
   });
 
   it('404s another counselor asking for that class’s results', async () => {

@@ -1,7 +1,18 @@
 import { env } from 'cloudflare:test';
+import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createDatabase } from '@/db/client';
+import {
+  assessmentAttempts,
+  assessmentDimensions,
+  assessmentResults,
+  assessmentVersions,
+  dimensionScores,
+  users,
+} from '@/db/schema';
+import { uuid } from '@/lib/crypto';
+import { now } from '@/lib/datetime';
 import { AssessmentAttemptService } from '@/modules/assessment/assessment-attempt-service';
 import {
   answerAll,
@@ -10,9 +21,11 @@ import {
   attachCareer,
   classWithStudent,
   createCareer,
+  createClass,
   createCollege,
   createProgram,
   createStaffUser,
+  db,
   findUser,
   login,
   seedInstruments,
@@ -115,7 +128,11 @@ describe('the Free-plan 50-subrequest ceiling (§45)', () => {
     studentId = student.student_id;
 
     // RIASEC end to end over HTTP — after this, one of the two results exists.
-    const riasecAssignment = await assignVersion(counselorToken, classRoom.id, seeded.riasecVersionId!);
+    const riasecAssignment = await assignVersion(
+      counselorToken,
+      classRoom.id,
+      seeded.riasecVersionId!,
+    );
     const riasecStart = await api('POST', `/student/assignments/${riasecAssignment.id}/start`, {
       token: studentToken,
     });
@@ -129,7 +146,11 @@ describe('the Free-plan 50-subrequest ceiling (§45)', () => {
 
     // SCCT answered but NOT submitted — the measured call below is its submit, which is the
     // worst case: inline scoring plus full inline recommendation generation (D17).
-    const scctAssignment = await assignVersion(counselorToken, classRoom.id, seeded.scctVersionId!);
+    const scctAssignment = await assignVersion(
+      counselorToken,
+      classRoom.id,
+      seeded.scctVersionId!,
+    );
     const scctStart = await api('POST', `/student/assignments/${scctAssignment.id}/start`, {
       token: studentToken,
     });
@@ -148,12 +169,203 @@ describe('the Free-plan 50-subrequest ceiling (§45)', () => {
     const view = await new AssessmentAttemptService(db, env).submit(student!, scctAttemptId);
 
     // Logged so a budget regression can be seen approaching across runs, not just crossing.
-    console.info(`submit-with-inline-generation: ${counter.calls} D1 calls (budget 27, platform cap 50)`);
+    console.info(
+      `submit-with-inline-generation: ${counter.calls} D1 calls (budget 27, platform cap 50)`,
+    );
 
     // The path under measurement must have actually done the work: a scored SCCT attempt,
     // and — both results now existing — a persisted recommendation set behind it.
     expect(view.attempt.status).toBe('SCORED');
     expect(counter.calls).toBeGreaterThan(0);
     expect(counter.calls).toBeLessThanOrEqual(27);
+  });
+});
+
+/**
+ * The results-listing budget (§45, A3 — the C1 hole the original budget test never covered).
+ *
+ * C1's failure is invisible to every other test because Miniflare enforces no subrequest cap.
+ * So, exactly as above, this asserts on **what the code asks of the platform**: a class results
+ * listing must cost a *fixed, small* number of D1 calls no matter how many scored attempts the
+ * class holds. Before A1 it was ~5 per row — a 40-student class doing RIASEC+SCCT was ~400
+ * subrequests against a 50 cap, a guaranteed 500 the moment a real class finished. After A1 the
+ * whole page is hydrated in a handful of set queries, whatever N is.
+ */
+describe('the results-listing budget is O(1) in the number of rows (§45, C1/A3)', () => {
+  /** Insert `count` distinct students, each with one SCORED attempt (result + dimension scores). */
+  async function seedScoredAttempts(params: {
+    assignmentId: string;
+    versionId: string;
+    dimensionIds: string[];
+    count: number;
+    student?: string;
+  }): Promise<void> {
+    const database = db();
+
+    for (let i = 0; i < params.count; i += 1) {
+      const timestamp = now();
+      const attemptId = uuid();
+      let studentId = params.student;
+
+      // A distinct student per row unless one is pinned (the single-student listing seeds one
+      // student across many assignments instead — the live-attempt unique index forbids two
+      // non-EXPIRED attempts on the same (assignment, student) pair).
+      if (studentId === undefined) {
+        studentId = uuid();
+        await database.insert(users).values({
+          id: studentId,
+          name: `Budget Student ${i}`,
+          email: `budget.${uuid().slice(0, 8)}@school.test`,
+          password: null,
+          role: 'student',
+          status: 'active',
+          mustChangePassword: false,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      }
+
+      await database.insert(assessmentAttempts).values({
+        id: attemptId,
+        assignmentId: params.assignmentId,
+        assessmentVersionId: params.versionId,
+        studentId,
+        status: 'SCORED',
+        startedAt: timestamp,
+        submittedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+
+      await database.insert(assessmentResults).values({
+        id: uuid(),
+        attemptId,
+        overallSummary: 'Realistic, Investigative, Artistic.',
+        resultCode: 'RIA',
+        generatedAt: timestamp,
+      });
+
+      await database.insert(dimensionScores).values(
+        params.dimensionIds.map((dimensionId) => ({
+          id: uuid(),
+          attemptId,
+          dimensionId,
+          rawScore: 12,
+          normalizedScore: 60,
+          interpretation: 'Moderate',
+          createdAt: timestamp,
+        })),
+      );
+    }
+  }
+
+  let counselorToken: string;
+  let counselorId: string;
+  let riasecVersionId: string;
+  let dimensionIds: string[];
+
+  beforeAll(async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const counselor = await createStaffUser({ role: 'counselor' });
+    counselorToken = await login(counselor);
+    counselorId = counselor.id;
+
+    const seeded = await seedInstruments(admin);
+    riasecVersionId = seeded.riasecVersionId!;
+
+    const [version] = await db()
+      .select()
+      .from(assessmentVersions)
+      .where(eq(assessmentVersions.id, riasecVersionId))
+      .limit(1);
+    const dimensions = await db()
+      .select()
+      .from(assessmentDimensions)
+      .where(eq(assessmentDimensions.assessmentTemplateId, version!.assessmentTemplateId));
+    dimensionIds = dimensions.map((dimension) => dimension.id);
+  });
+
+  it('class results at N=40 scored attempts stays a small constant (≤ 15 D1 calls)', async () => {
+    const classRoom = await createClass(counselorToken);
+    const assignment = await assignVersion(counselorToken, classRoom.id, riasecVersionId);
+
+    await seedScoredAttempts({
+      assignmentId: assignment.id,
+      versionId: riasecVersionId,
+      dimensionIds,
+      count: 40,
+    });
+
+    const counter: SubrequestCounter = { calls: 0 };
+    const countingDb = createDatabase(countingD1(env.DB, counter));
+    const counselor = await findUser(counselorId);
+
+    const page = await new AssessmentAttemptService(countingDb, env).listResultsForClass(
+      counselor!,
+      classRoom.id,
+      1,
+      50,
+    );
+
+    console.info(
+      `class-results @ N=40: ${counter.calls} D1 calls (budget 15, platform cap 50)`,
+    );
+
+    expect(page.views).toHaveLength(40);
+    expect(page.total).toBe(40);
+    expect(counter.calls).toBeGreaterThan(0);
+    expect(counter.calls).toBeLessThanOrEqual(15);
+  });
+
+  it('student results across several assignments stays a small constant (≤ 12 D1 calls)', async () => {
+    // One student, six SCORED attempts on six assignments in one class — the live-attempt unique
+    // index forbids stacking them on a single assignment, so each gets its own.
+    const classRoom = await createClass(counselorToken);
+    const studentId = uuid();
+    const timestamp = now();
+
+    await db()
+      .insert(users)
+      .values({
+        id: studentId,
+        name: 'Solo Budget Student',
+        email: `solo.${uuid().slice(0, 8)}@school.test`,
+        password: null,
+        role: 'student',
+        status: 'active',
+        mustChangePassword: false,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+
+    for (let i = 0; i < 6; i += 1) {
+      const assignment = await assignVersion(counselorToken, classRoom.id, riasecVersionId);
+      await seedScoredAttempts({
+        assignmentId: assignment.id,
+        versionId: riasecVersionId,
+        dimensionIds,
+        count: 1,
+        student: studentId,
+      });
+    }
+
+    const counter: SubrequestCounter = { calls: 0 };
+    const countingDb = createDatabase(countingD1(env.DB, counter));
+    const student = await findUser(studentId);
+
+    const page = await new AssessmentAttemptService(countingDb, env).listResultsForStudent(
+      student!,
+      1,
+      25,
+    );
+
+    console.info(
+      `student-results @ N=6: ${counter.calls} D1 calls (budget 12, platform cap 50)`,
+    );
+
+    expect(page.views).toHaveLength(6);
+    expect(page.total).toBe(6);
+    expect(counter.calls).toBeGreaterThan(0);
+    expect(counter.calls).toBeLessThanOrEqual(12);
   });
 });
