@@ -11,16 +11,23 @@ import {
 import type { AuthGuardDO } from '@/do/auth-guard';
 import type { Env } from '@/env';
 import {
+  FORGOT_PASSWORD_LIMIT,
+  FORGOT_PASSWORD_WINDOW_SECONDS,
+  forgotPasswordGuard,
   LOGIN_LOCKOUT_LIMIT,
   LOGIN_LOCKOUT_WINDOW_SECONDS,
   staffAuthGuard,
 } from '@/lib/auth-guard';
 import { STAFF_TOKEN_TTL_HOURS } from '@/lib/config';
-import { generateToken, hashToken } from '@/lib/crypto';
+import { generateToken, hashToken, timingSafeEqualString } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
 import { issueToken, revokeAllTokensForUser, revokeToken } from '@/lib/tokens';
-import type { ChangePasswordInput, LoginInput, ResetPasswordInput } from '@/modules/identity/schemas';
+import type {
+  ChangePasswordInput,
+  LoginInput,
+  ResetPasswordInput,
+} from '@/modules/identity/schemas';
 import { AuditService } from '@/modules/platform/audit-service';
 
 /**
@@ -41,6 +48,17 @@ const MODULE = 'Identity';
 
 /** A password reset link is short-lived — an hour is long enough to read an email. */
 const RESET_TOKEN_TTL_MINUTES = 60;
+
+/**
+ * A constant, real 600,000-iteration PBKDF2 hash (of a throwaway password no account uses),
+ * verified against when a login resolves no staff account (H3). It exists only to make an
+ * unknown-email login pay the **same derivation cost** as a real one, so the two are
+ * indistinguishable by stopwatch. It is never a valid credential: the `!isStaff` check rejects
+ * the login regardless of the verify result, and no user row carries this hash. Generated once
+ * with `hashPassword` (which only runs in workerd); regenerate the same way if ever rotated.
+ */
+const DUMMY_PASSWORD_HASH =
+  'pbkdf2$600000$dZreIrS9fIjHOYU91CWU6g==$EDb7oRae4IDjyuI3UNA93ZRoclko0iNFhyAbwQJhdfI=';
 
 export interface LoginResult {
   user: User;
@@ -84,7 +102,19 @@ export class StaffAuthenticationService {
     // the verification — but the role check makes the intent explicit rather than relying
     // on that as a happy accident.
     const isStaff = user?.role === 'admin' || user?.role === 'counselor';
-    const passwordMatches = isStaff && (await guard.verify(input.password, user.password));
+
+    // H3: verify **unconditionally** — against the account's hash when it is staff, else the
+    // constant dummy hash — so an unknown or non-staff email pays the same ~600k-iteration
+    // derivation as a real login. The old `isStaff && verify(...)` short-circuited the derivation
+    // away for a missing user, so an unknown email answered in milliseconds while a real one paid
+    // hundreds: account enumeration by stopwatch, on the very endpoint whose siblings
+    // (`forgotPassword`, the reset-token compare) already pay to erase exactly this signal. The
+    // `!isStaff` guard still rejects a student or unknown even though the dummy verify returns
+    // false — it is there for correctness, not timing.
+    const passwordMatches = await guard.verify(
+      input.password,
+      user?.password ?? DUMMY_PASSWORD_HASH,
+    );
 
     if (!user || !isStaff || !passwordMatches) {
       return this.rejectLogin(email, guard, user?.id ?? null, ipAddress);
@@ -201,6 +231,20 @@ export class StaffAuthenticationService {
       return null;
     }
 
+    // M2: throttle to FORGOT_PASSWORD_LIMIT per window per email, on a DO counter dedicated to this
+    // flow (never the login lockout). A throttled request returns the same generic acknowledgement
+    // as an unknown email — no enumeration signal — and issues nothing: it does not overwrite the
+    // pending token, write an audit row, or mint a new token. This caps the reset-flow DoS and the
+    // unauthenticated D1 write amplification that made this the weakest credential endpoint.
+    const throttle = await forgotPasswordGuard(this.env, normalized).charge(
+      FORGOT_PASSWORD_LIMIT,
+      FORGOT_PASSWORD_WINDOW_SECONDS,
+    );
+
+    if (throttle.locked) {
+      return null;
+    }
+
     const { plaintext, hash } = await generateToken();
 
     // One live reset per email: requesting a second link invalidates the first.
@@ -242,7 +286,8 @@ export class StaffAuthenticationService {
     // acknowledgement in `forgotPassword` exists to prevent.
     const presentedHash = await hashToken(input.token);
 
-    if (record?.tokenHash !== presentedHash) {
+    // M9: constant-time compare of the two hex digests, not `!==` — see `timingSafeEqualString`.
+    if (record === undefined || !timingSafeEqualString(record.tokenHash, presentedHash)) {
       throw invalid;
     }
 
@@ -360,4 +405,3 @@ export class StaffAuthenticationService {
     });
   }
 }
-

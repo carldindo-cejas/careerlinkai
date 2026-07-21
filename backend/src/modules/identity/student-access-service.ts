@@ -68,16 +68,15 @@ export class StudentAccessService {
     const throttle = await guard.check(JOIN_THROTTLE_LIMIT);
 
     if (throttle.locked) {
-      await this.audit.write({
-        action: 'STUDENT_CLASS_ACCESS_THROTTLED',
-        module: MODULE,
-        userId: null,
-        newValues: { class_code: classCode, username },
-        ipAddress,
-      });
-
+      // M3: no audit write on an already-locked attempt. Once the window is locked, every further
+      // attempt used to write a `STUDENT_CLASS_ACCESS_THROTTLED` row — an attacker looping the
+      // endpoint could drain the D1 daily write quota (§45) from a single IP. The throttle is
+      // logged exactly once, at the moment it trips, in `reject()`; a still-locked retry is
+      // refused without a write.
       throw ApiError.tooManyRequests({
-        class_code: [`Too many failed attempts. Try again in ${throttle.retryAfterSeconds} seconds.`],
+        class_code: [
+          `Too many failed attempts. Try again in ${throttle.retryAfterSeconds} seconds.`,
+        ],
       });
     }
 
@@ -90,11 +89,25 @@ export class StudentAccessService {
     }
 
     if (isExpired(classRoom.joinCodeExpiresAt)) {
-      return this.reject('CODE_EXPIRED', guard, { classCode, username }, classRoom.id, null, ipAddress);
+      return this.reject(
+        'CODE_EXPIRED',
+        guard,
+        { classCode, username },
+        classRoom.id,
+        null,
+        ipAddress,
+      );
     }
 
     if (classRoom.status !== 'active') {
-      return this.reject('CLASS_NOT_ACTIVE', guard, { classCode, username }, classRoom.id, null, ipAddress);
+      return this.reject(
+        'CLASS_NOT_ACTIVE',
+        guard,
+        { classCode, username },
+        classRoom.id,
+        null,
+        ipAddress,
+      );
     }
 
     const enrollment = await this.db.query.classStudents.findFirst({
@@ -102,7 +115,14 @@ export class StudentAccessService {
     });
 
     if (!enrollment) {
-      return this.reject('UNKNOWN_USERNAME', guard, { classCode, username }, classRoom.id, null, ipAddress);
+      return this.reject(
+        'UNKNOWN_USERNAME',
+        guard,
+        { classCode, username },
+        classRoom.id,
+        null,
+        ipAddress,
+      );
     }
 
     if (enrollment.status !== 'active') {
@@ -188,8 +208,23 @@ export class StudentAccessService {
     });
 
     if (failure.locked) {
+      // M3: this is the failure that tripped the throttle — the first (and only) locked state in
+      // this window that reaches a code path at all, since every subsequent attempt is refused at
+      // the top `check()` above. Log the throttle once, here.
+      await this.audit.write({
+        action: 'STUDENT_CLASS_ACCESS_THROTTLED',
+        module: MODULE,
+        userId: studentId,
+        targetType: classId ? 'class' : null,
+        targetId: classId,
+        newValues: { class_code: attempt.classCode, username: attempt.username },
+        ipAddress,
+      });
+
       throw ApiError.tooManyRequests({
-        class_code: [`Too many failed attempts. Try again in ${failure.retryAfterSeconds} seconds.`],
+        class_code: [
+          `Too many failed attempts. Try again in ${failure.retryAfterSeconds} seconds.`,
+        ],
       });
     }
 

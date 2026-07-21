@@ -38,6 +38,15 @@ export const AI_REQUEST_LIMIT = 10;
 export const AI_REQUEST_WINDOW_SECONDS = 60;
 
 /**
+ * M2: 3 forgot-password requests per email per hour. A usage limiter (every request is charged),
+ * because an *unauthenticated* caller drives it — each request otherwise overwrote the pending
+ * reset token (denying a legitimate reset) and wrote an audit row + a token row. It was the only
+ * credential endpoint with no counter.
+ */
+export const FORGOT_PASSWORD_LIMIT = 3;
+export const FORGOT_PASSWORD_WINDOW_SECONDS = 60 * 60;
+
+/**
  * One instance per staff account (§38 v1.5): the object that derives the account's hash is
  * the object that counts its failures, so the count is exact and brute force against one
  * account is serialized by construction.
@@ -64,4 +73,14 @@ export function joinThrottleGuard(
 /** One instance per user for the §41 AI request limit — same counter, different charging rule. */
 export function aiRateLimitGuard(env: Env, userId: string): DurableObjectStub<AuthGuardDO> {
   return env.AUTH_DO.get(env.AUTH_DO.idFromName(`ai:${userId}`));
+}
+
+/**
+ * One instance per email for the forgot-password throttle (M2). **A different instance from the
+ * login lockout on the same email** (`forgot:` prefix), so a reset request never charges the login
+ * counter and a login failure never charges this one — the two limits are independent by
+ * construction, exactly as the join throttle is kept apart from the lockout.
+ */
+export function forgotPasswordGuard(env: Env, email: string): DurableObjectStub<AuthGuardDO> {
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`forgot:${email.trim().toLowerCase()}`));
 }

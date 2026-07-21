@@ -131,6 +131,38 @@ describe('POST /auth/login — rejections', () => {
     expect(wrongPassword.body.message).toBe('Invalid credentials.');
   });
 
+  it('pays the same derivation for an unknown email as for a wrong password — no timing oracle (H3)', async () => {
+    // A **deliberate wall-clock test**, the exception to this codebase's "assert on what the code
+    // asks of the platform" rule — because here the wall clock *is* the vulnerability. Before H3,
+    // `isStaff && verify(...)` skipped the ~600k-iteration derivation for an unknown email, so it
+    // answered in single-digit ms while a real account paid hundreds: account enumeration by
+    // stopwatch. It is written as a **ratio** (unknown ÷ known-bad), not an absolute floor, so it
+    // self-calibrates to the machine and correlated noise (CPU contention in the full suite)
+    // cancels: both logins now derive, so the ratio is ~1; the old behaviour would make it ~0.
+    const admin = await createStaffUser({ role: 'admin' });
+
+    // Warm the account's DO instance (cold start / JIT) so the measured pair is steady-state.
+    await api('POST', '/auth/login', {
+      body: { email: admin.email, password: 'WrongPassword9' },
+    });
+
+    const knownStart = Date.now();
+    await api('POST', '/auth/login', {
+      body: { email: admin.email, password: 'WrongPassword8' },
+    });
+    const knownBadMs = Date.now() - knownStart;
+
+    const unknownStart = Date.now();
+    await api('POST', '/auth/login', {
+      body: { email: `nobody.${crypto.randomUUID()}@school.test`, password: 'WrongPassword9' },
+    });
+    const unknownMs = Date.now() - unknownStart;
+
+    // Lenient bar (0.4): the unknown-email path additionally pays a cold DO start, so in practice
+    // it is at least as slow as the warm known-bad path; the pre-H3 code would sit near zero.
+    expect(unknownMs).toBeGreaterThan(knownBadMs * 0.4);
+  });
+
   it('refuses a student — passwordless accounts can never come through the staff flow', async () => {
     const student = await createStudentUser();
 

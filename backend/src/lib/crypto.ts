@@ -43,6 +43,28 @@ export async function hashToken(plaintext: string): Promise<string> {
   return toHex(await crypto.subtle.digest('SHA-256', encoder.encode(plaintext)));
 }
 
+/**
+ * Constant-time string equality (M9) — compare two secrets without leaking, through early-return
+ * timing, how many leading characters matched. Used for the password-reset token compare, whose
+ * operands are two hex SHA-256 digests of fixed width; the length check therefore short-circuits
+ * only on a structural mismatch, never on secret content. Practically the payoff is small (an
+ * attacker cannot choose the stored hash), but it is one line and matches the discipline the rest
+ * of the auth surface already keeps (`timingSafeEqual` in the DO).
+ */
+export function timingSafeEqualString(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  let difference = 0;
+
+  for (let i = 0; i < a.length; i += 1) {
+    difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+
+  return difference === 0;
+}
+
 /** UUID v4 primary keys, per §12 — never auto-increment integers. */
 export function uuid(): string {
   return crypto.randomUUID();

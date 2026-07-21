@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { FORGOT_PASSWORD_LIMIT } from '@/lib/auth-guard';
 import {
   api,
   auditActionsFor,
@@ -92,6 +93,30 @@ describe('POST /auth/forgot-password', () => {
     await expect(auditActionsFor(counselor.id)).resolves.toContain(
       'STAFF_PASSWORD_RESET_REQUESTED',
     );
+  });
+
+  it('throttles after the per-email limit and then issues nothing (M2)', async () => {
+    const counselor = await createStaffUser();
+
+    // The first FORGOT_PASSWORD_LIMIT requests are honoured, each minting a token.
+    for (let attempt = 1; attempt <= FORGOT_PASSWORD_LIMIT; attempt += 1) {
+      const response = await api('POST', '/auth/forgot-password', {
+        body: { email: counselor.email },
+      });
+
+      expect(response.status).toBe(200);
+      expect(typeof response.body.data.reset_token).toBe('string');
+    }
+
+    // The next one is throttled: the response is the **same generic acknowledgement** an unknown
+    // email gets — no enumeration signal — and it mints no token, so `data` is null.
+    const throttled = await api('POST', '/auth/forgot-password', {
+      body: { email: counselor.email },
+    });
+
+    expect(throttled.status).toBe(200);
+    expect(throttled.body.message).toBe(GENERIC_ACK);
+    expect(throttled.body.data).toBeNull();
   });
 });
 
@@ -213,7 +238,9 @@ describe('POST /auth/reset-password', () => {
     }
 
     await expect(
-      api('POST', '/auth/login', { body: { email: counselor.email, password: counselor.password } }),
+      api('POST', '/auth/login', {
+        body: { email: counselor.email, password: counselor.password },
+      }),
     ).resolves.toMatchObject({ status: 429 });
 
     const token = await requestReset(counselor.email);
