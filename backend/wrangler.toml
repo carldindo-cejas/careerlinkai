@@ -92,12 +92,38 @@ queue = "careerlinkai-default-queue"
 max_batch_size = 10
 max_batch_timeout = 30
 max_retries = 3
+# H1: after 3 retries a message is dead-lettered here instead of dropped. Free tier includes DLQs.
+dead_letter_queue = "careerlinkai-default-dlq"
 
 [[queues.consumers]]
 queue = "careerlinkai-ai-queue"
 max_batch_size = 5
 max_batch_timeout = 30
 max_retries = 3
+dead_letter_queue = "careerlinkai-ai-dlq"
+
+# The DLQs are consumed by this same Worker (see the `queue` handler in src/index.ts): a
+# dead-lettered job is logged and marked FAILED where possible, then acked — never silently lost.
+[[queues.consumers]]
+queue = "careerlinkai-default-dlq"
+max_batch_size = 10
+max_batch_timeout = 30
+
+[[queues.consumers]]
+queue = "careerlinkai-ai-dlq"
+max_batch_size = 10
+max_batch_timeout = 30
+
+# --- Observability & Cron (audit H / M11) --------------------------------------------
+# Workers Logs, free tier: without it the correlation-id design has nowhere to persist, so a
+# production incident has no trail. Declared per-scope (environments inherit nothing).
+[observability]
+enabled = true
+
+# Nightly housekeeping at 03:00 UTC — see the `scheduled` handler in src/index.ts. Cron Triggers
+# are free. Idempotent, so the exact minute and a missed run are both immaterial.
+[triggers]
+crons = ["0 3 * * *"]
 
 # --- Environments (FULLPLAN §45) -----------------------------------------------------
 # Staging and production are two Wrangler environments of the same Worker. Wrangler
@@ -166,12 +192,30 @@ queue = "careerlinkai-staging-default-queue"
 max_batch_size = 10
 max_batch_timeout = 30
 max_retries = 3
+dead_letter_queue = "careerlinkai-staging-default-dlq"
 
 [[env.staging.queues.consumers]]
 queue = "careerlinkai-staging-ai-queue"
 max_batch_size = 5
 max_batch_timeout = 30
 max_retries = 3
+dead_letter_queue = "careerlinkai-staging-ai-dlq"
+
+[[env.staging.queues.consumers]]
+queue = "careerlinkai-staging-default-dlq"
+max_batch_size = 10
+max_batch_timeout = 30
+
+[[env.staging.queues.consumers]]
+queue = "careerlinkai-staging-ai-dlq"
+max_batch_size = 10
+max_batch_timeout = 30
+
+[env.staging.observability]
+enabled = true
+
+[env.staging.triggers]
+crons = ["0 3 * * *"]
 
 [env.production.vars]
 APP_ENV = "production"
@@ -221,12 +265,30 @@ queue = "careerlinkai-default-queue"
 max_batch_size = 10
 max_batch_timeout = 30
 max_retries = 3
+dead_letter_queue = "careerlinkai-default-dlq"
 
 [[env.production.queues.consumers]]
 queue = "careerlinkai-ai-queue"
 max_batch_size = 5
 max_batch_timeout = 30
 max_retries = 3
+dead_letter_queue = "careerlinkai-ai-dlq"
+
+[[env.production.queues.consumers]]
+queue = "careerlinkai-default-dlq"
+max_batch_size = 10
+max_batch_timeout = 30
+
+[[env.production.queues.consumers]]
+queue = "careerlinkai-ai-dlq"
+max_batch_size = 10
+max_batch_timeout = 30
+
+[env.production.observability]
+enabled = true
+
+[env.production.triggers]
+crons = ["0 3 * * *"]
 
 # --- Durable Object migrations --------------------------------------------------------
 # Top-level and shared by every environment (unlike bindings, migrations ARE inherited —

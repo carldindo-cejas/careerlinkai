@@ -136,6 +136,30 @@ gate(
   'Test the AI/RAG pipelines against a stubbed gateway, never a live binding.',
 );
 
+// The Phase H operational surfaces (audit H1 / M11 / observability). Each is a config-only
+// capability a deploy ships fine without — so a missing one is exactly the silent kind of gap
+// these gates exist to catch: a dropped dead-lettered job, unpersisted logs, no housekeeping.
+const dlqCount = (wranglerToml.match(/dead_letter_queue = /g) ?? []).length;
+gate(
+  'wrangler.toml: every source queue consumer has a dead_letter_queue (H1)',
+  dlqCount >= 6,
+  `Found ${dlqCount} dead_letter_queue line(s); expected 6 (default+ai across top level, staging, production).`,
+);
+
+const observabilityCount = (wranglerToml.match(/^enabled = true$/gm) ?? []).length;
+gate(
+  'wrangler.toml: [observability] enabled in all three scopes',
+  observabilityCount >= 3,
+  `Found ${observabilityCount} "enabled = true"; expected 3 [observability] blocks (top level, staging, production).`,
+);
+
+const cronCount = (wranglerToml.match(/^crons = /gm) ?? []).length;
+gate(
+  'wrangler.toml: a Cron Trigger is declared in all three scopes (M11 nightly cleanup)',
+  cronCount >= 3,
+  'Add [triggers] crons = ["0 3 * * *"] per scope, plus the scheduled handler in src/index.ts.',
+);
+
 // --- Gate 2: the DO boundary --------------------------------------------------------------
 
 console.log('\nSource gates (src/):');
