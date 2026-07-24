@@ -35,7 +35,7 @@ export function RosterTable({ classId }: RosterTableProps) {
       <CardContent>
         {isPending ? (
           <div className="flex justify-center py-8" role="status">
-            <Loader2 className="size-5 animate-spin text-slate-400" aria-hidden="true" />
+            <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden="true" />
             <span className="sr-only">Loading the roster…</span>
           </div>
         ) : null}
@@ -43,7 +43,7 @@ export function RosterTable({ classId }: RosterTableProps) {
         {isError ? <Alert>{error.message}</Alert> : null}
 
         {roster && roster.length === 0 ? (
-          <p className="py-4 text-sm text-slate-500">
+          <p className="py-4 text-sm text-muted-foreground">
             Nobody yet. Paste a name list above to provision accounts.
           </p>
         ) : null}
@@ -52,7 +52,7 @@ export function RosterTable({ classId }: RosterTableProps) {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
                   <th scope="col" className="pb-2 pr-4 font-medium">
                     Name
                   </th>
@@ -85,16 +85,16 @@ function RosterRow({ classId, entry }: { classId: string; entry: RosterEntry }) 
   const error = removeStudent.error instanceof ApiRequestError ? removeStudent.error : null;
 
   return (
-    <tr className="border-b border-slate-100 last:border-0">
-      <td className="py-2.5 pr-4 text-slate-900">{fullName(entry)}</td>
-      <td className="py-2.5 pr-4 font-mono text-slate-600">{entry.username}</td>
+    <tr className="border-b border-border last:border-0">
+      <td className="py-2.5 pr-4 text-foreground">{fullName(entry)}</td>
+      <td className="py-2.5 pr-4 font-mono text-muted-foreground">{entry.username}</td>
       <td className="py-2.5 text-right">
-        {error ? <p className="mb-1 text-sm text-red-600">{error.message}</p> : null}
+        {error ? <p className="mb-1 text-sm text-destructive">{error.message}</p> : null}
 
         {isConfirming ? (
           <div className="flex items-center justify-end gap-2">
             {/* Removal signs them out on the spot (§38) — say so before it happens. */}
-            <span className="text-sm text-slate-600">
+            <span className="text-sm text-muted-foreground">
               Remove {fullName(entry)}? This signs them out immediately.
             </span>
             <Button

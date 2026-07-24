@@ -9,14 +9,14 @@ import {
   Users,
 } from 'lucide-react';
 
-import { StaffLayout, type StaffNavItem } from '@/layouts/StaffLayout';
+import { AppShell, type AppNavItem } from '@/layouts/AppShell';
 import { paths } from '@/routes/paths';
 
 /**
  * Admin shell (FULLPLAN §35, §37) — every §37 admin destination, one nav item each,
  * in the order an admin's day actually runs: overview, then content, then governance.
  */
-const nav: StaffNavItem[] = [
+const nav: AppNavItem[] = [
   { to: paths.adminDashboard, label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: paths.adminColleges, label: 'Colleges', icon: GraduationCap },
   { to: paths.adminCareers, label: 'Careers', icon: Briefcase },
@@ -28,5 +28,5 @@ const nav: StaffNavItem[] = [
 ];
 
 export function AdminLayout() {
-  return <StaffLayout title="Administrator" nav={nav} />;
+  return <AppShell title="Administrator" nav={nav} />;
 }

@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { authApi, type ChangePasswordPayload, type LoginPayload } from '@/services/authApi';
 import { useAuthStore } from '@/stores/authStore';
-import type { User } from '@/types/user';
+import { ApiRequestError } from '@/types/api';
+import type { User, UserRole } from '@/types/user';
 
 /**
  * Auth hooks (FULLPLAN §36).
@@ -32,13 +33,36 @@ export function useCurrentUser() {
   });
 }
 
-export function useLogin() {
+export interface LoginOptions {
+  /**
+   * Roles this login screen accepts. The server authenticates any staff account against
+   * /auth/login; the *screen* decides who it is for — /login is the counselor door and
+   * /admin-login the administrator's, and neither lets the other role through (§38).
+   */
+  allow: UserRole[];
+  /** Shown when valid credentials belong to a role this screen does not serve. */
+  refusalMessage: string;
+}
+
+export function useLogin(options?: LoginOptions) {
   const queryClient = useQueryClient();
   const setToken = useAuthStore((state) => state.setToken);
   const setUser = useAuthStore((state) => state.setUser);
 
   return useMutation({
-    mutationFn: (payload: LoginPayload) => authApi.login(payload),
+    mutationFn: async (payload: LoginPayload) => {
+      const result = await authApi.login(payload);
+
+      if (options && !options.allow.includes(result.user.role)) {
+        // Right credentials, wrong door. Revoke the token we were just issued — it must
+        // not survive a sign-in the UI refused — then surface the refusal like any other
+        // login failure. Best-effort: a failed revocation still leaves nothing stored.
+        await authApi.revoke(result.token).catch(() => undefined);
+        throw new ApiRequestError(options.refusalMessage, 403);
+      }
+
+      return result;
+    },
     onSuccess: ({ user, token }) => {
       setToken(token);
       setUser(user);

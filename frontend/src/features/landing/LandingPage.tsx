@@ -14,6 +14,7 @@ import { Link } from 'react-router-dom';
 import artUrl from '@/assets/careerlinkai_art.png';
 import { Logo } from '@/components/brand/Logo';
 import { FadeIn } from '@/components/motion/FadeIn';
+import { Blueprint, Corners } from '@/components/ui/blueprint';
 import { catalogApi } from '@/services/catalogApi';
 import { homePathForRole, paths } from '@/routes/paths';
 import { useAuthStore } from '@/stores/authStore';
@@ -30,17 +31,17 @@ export function LandingPage() {
   const user = useAuthStore((state) => state.user);
 
   return (
-    <div className="min-h-screen bg-sidebar text-white">
+    <div className="min-h-screen bg-sidebar text-sidebar-active-foreground">
       {/* --- Nav ------------------------------------------------------------------- */}
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-sidebar/80 backdrop-blur">
+      <header className="sticky top-0 z-40 border-b border-sidebar-border bg-sidebar/80 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-          <Logo wordmarkClassName="text-white" />
+          <Logo wordmarkClassName="text-sidebar-active-foreground" />
 
           <nav className="hidden items-center gap-6 text-sm text-sidebar-foreground md:flex">
-            <a href="#how-it-works" className="transition-colors hover:text-white">
+            <a href="#how-it-works" className="transition-colors hover:text-sidebar-active-foreground">
               How it works
             </a>
-            <a href="#programs" className="transition-colors hover:text-white">
+            <a href="#programs" className="transition-colors hover:text-sidebar-active-foreground">
               Programs
             </a>
           </nav>
@@ -49,7 +50,7 @@ export function LandingPage() {
             {user ? (
               <Link
                 to={homePathForRole(user.role)}
-                className="inline-flex h-9 items-center gap-1.5 rounded-md bg-white px-4 text-sm font-medium text-sidebar transition-colors hover:bg-white/90"
+                className="inline-flex h-9 items-center gap-1.5 rounded-none bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-[#4d7196]"
               >
                 Go to my dashboard
                 <ArrowRight className="size-4" aria-hidden="true" />
@@ -58,13 +59,13 @@ export function LandingPage() {
               <>
                 <Link
                   to={paths.login}
-                  className="hidden h-9 items-center rounded-md px-4 text-sm font-medium text-sidebar-foreground transition-colors hover:text-white sm:inline-flex"
+                  className="hidden h-9 items-center rounded-none px-4 text-sm font-medium text-sidebar-foreground transition-colors hover:text-sidebar-active-foreground sm:inline-flex"
                 >
-                  Staff sign in
+                  Counselor Login
                 </Link>
                 <Link
                   to={paths.studentAccess}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-primary/90"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-none bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-[#4d7196]"
                 >
                   Join your class
                 </Link>
@@ -78,21 +79,22 @@ export function LandingPage() {
       <section className="relative overflow-hidden">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -top-56 left-1/2 size-[36rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(139,92,246,0.35),transparent_65%)]"
+          className="pointer-events-none absolute -top-56 left-1/2 size-[36rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(89,128,166,0.35),transparent_65%)]"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -bottom-40 -right-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(20,184,166,0.25),transparent_65%)]"
+          className="pointer-events-none absolute -bottom-40 -right-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(65,97,128,0.3),transparent_65%)]"
         />
 
         <div className="relative mx-auto max-w-6xl px-4 pb-16 pt-16 sm:px-6 sm:pt-24">
           <FadeIn className="mx-auto max-w-3xl text-center">
-            <p className="mx-auto mb-4 w-fit rounded-full border border-white/15 bg-white/5 px-4 py-1 text-xs font-medium tracking-wide text-sidebar-foreground">
+            <p className="mx-auto mb-4 w-fit rounded-none border border-sidebar-border bg-sidebar-active/50 px-4 py-1 text-xs font-medium uppercase tracking-wide text-sidebar-foreground">
               For Senior High School students, counselors and administrators
             </p>
             <h1 className="text-4xl font-bold leading-tight tracking-tight sm:text-5xl">
               Know where your strengths point{' '}
-              <span className="bg-gradient-to-r from-violet-400 to-teal-300 bg-clip-text text-transparent">
+              {/* Mono scheme: the emphasis is the single steel accent, not a two-hue gradient. */}
+              <span className="text-primary">
                 before you choose a college.
               </span>
             </h1>
@@ -106,16 +108,17 @@ export function LandingPage() {
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Link
                 to={paths.studentAccess}
-                className="inline-flex h-11 items-center gap-2 rounded-md bg-primary px-6 text-base font-medium text-white shadow-lg shadow-primary/25 transition-all hover:bg-primary/90 active:scale-[0.98]"
+                className="relative inline-flex h-11 items-center gap-2 rounded-none bg-primary px-6 text-base font-medium text-primary-foreground transition-all hover:bg-[#4d7196] active:scale-[0.98]"
               >
+                <Corners className="text-primary-foreground" />
                 Join with a class code
                 <ArrowRight className="size-4" aria-hidden="true" />
               </Link>
               <Link
                 to={paths.login}
-                className="inline-flex h-11 items-center rounded-md border border-white/20 px-6 text-base font-medium text-white transition-colors hover:bg-white/10"
+                className="inline-flex h-11 items-center rounded-none border border-sidebar-border px-6 text-base font-medium text-sidebar-active-foreground transition-colors hover:bg-sidebar-active"
               >
-                Staff sign in
+                Counselor Login
               </Link>
             </div>
             <p className="mt-3 text-xs text-sidebar-muted">
@@ -124,13 +127,14 @@ export function LandingPage() {
           </FadeIn>
 
           <FadeIn delay={0.15} className="mx-auto mt-12 max-w-4xl">
-            <div className="rounded-2xl bg-white/95 p-3 shadow-2xl shadow-black/40 ring-1 ring-white/20">
+            {/* The hero figure is a framed plate: hairline border, registration marks, no shadow. */}
+            <Blueprint className="border-sidebar-border bg-background p-3">
               <img
                 src={artUrl}
                 alt="Senior high school students reviewing their career recommendations on laptops and tablets"
-                className="w-full rounded-xl object-contain"
+                className="w-full rounded-none object-contain"
               />
-            </div>
+            </Blueprint>
           </FadeIn>
         </div>
       </section>
@@ -192,16 +196,16 @@ export function LandingPage() {
       <ProgramBrowser />
 
       {/* --- Footer -------------------------------------------------------------------- */}
-      <footer className="border-t border-white/10">
+      <footer className="border-t border-sidebar-border">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 py-8 text-sm text-sidebar-muted sm:flex-row sm:px-6">
-          <Logo wordmarkClassName="text-white" />
+          <Logo wordmarkClassName="text-sidebar-active-foreground" />
           <p>Career &amp; college guidance for Senior High School.</p>
           <div className="flex gap-4">
-            <Link to={paths.studentAccess} className="hover:text-white">
+            <Link to={paths.studentAccess} className="hover:text-sidebar-active-foreground">
               Join a class
             </Link>
-            <Link to={paths.login} className="hover:text-white">
-              Staff sign in
+            <Link to={paths.login} className="hover:text-sidebar-active-foreground">
+              Counselor Login
             </Link>
           </div>
         </div>
@@ -222,9 +226,12 @@ function StepCard({
   body: string;
 }) {
   return (
-    <FadeIn className="relative rounded-xl border border-border bg-card p-6 shadow-sm">
-      <span className="absolute right-5 top-4 text-4xl font-bold text-secondary">{step}</span>
-      <span className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+    <FadeIn className="relative rounded-none border border-border bg-transparent p-6">
+      <Corners />
+      <span className="absolute right-5 top-4 text-4xl font-bold tabular-nums text-secondary">
+        {step}
+      </span>
+      <span className="flex size-10 items-center justify-center rounded-none border border-border bg-primary/10 text-primary">
         {icon}
       </span>
       <h3 className="mt-4 font-semibold">{title}</h3>
@@ -235,13 +242,13 @@ function StepCard({
 
 function ValueCard({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
   return (
-    <div className="rounded-xl bg-secondary/60 p-6">
+    <Blueprint className="p-6">
       <div className="flex items-center gap-2.5">
         {icon}
         <h3 className="font-semibold">{title}</h3>
       </div>
       <p className="mt-2 text-sm text-muted-foreground">{body}</p>
-    </div>
+    </Blueprint>
   );
 }
 
@@ -278,7 +285,7 @@ function ProgramBrowser() {
 
         <div className="mt-10 grid gap-6 sm:grid-cols-2">
           {data.colleges.map((college) => (
-            <div key={college.id} className="rounded-xl border border-border bg-card p-6 shadow-sm">
+            <Blueprint key={college.id} className="p-6">
               <div className="flex items-center gap-2.5">
                 <GraduationCap className="size-5 text-primary" aria-hidden="true" />
                 <h3 className="font-semibold">{college.name}</h3>
@@ -287,7 +294,7 @@ function ProgramBrowser() {
                 {college.programs.map((program) => (
                   <li
                     key={program.id}
-                    className="rounded-full bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground/80"
+                    className="rounded-none bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground/80"
                     title={program.name}
                   >
                     {program.code}
@@ -297,7 +304,7 @@ function ProgramBrowser() {
                   </li>
                 ))}
               </ul>
-            </div>
+            </Blueprint>
           ))}
         </div>
       </div>

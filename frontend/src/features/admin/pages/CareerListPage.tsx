@@ -26,8 +26,8 @@ export function CareerListPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">Careers</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-xl font-semibold text-foreground">Careers</h1>
+          <p className="text-sm text-muted-foreground">
             What programs lead to. Each career's RIASEC code is what a student's assessment
             result is matched against.
           </p>
@@ -47,7 +47,7 @@ export function CareerListPage() {
 
       {isPending ? (
         <div className="flex justify-center py-12" role="status">
-          <Loader2 className="size-6 animate-spin text-slate-400" aria-hidden="true" />
+          <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
           <span className="sr-only">Loading careers…</span>
         </div>
       ) : null}
@@ -98,11 +98,11 @@ function CareerRow({ career, onEdit }: { career: Career; onEdit: () => void }) {
       <CardContent className="flex items-center justify-between gap-4 py-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-slate-900">{career.title}</span>
+            <span className="font-medium text-foreground">{career.title}</span>
 
             {career.typical_riasec_code ? (
               <span
-                className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs font-semibold tracking-widest text-slate-700"
+                className="rounded-none bg-secondary px-1.5 py-0.5 font-mono text-xs font-semibold tracking-widest text-foreground/80"
                 title={describeHollandCode(career.typical_riasec_code) ?? undefined}
               >
                 {career.typical_riasec_code}
@@ -111,13 +111,13 @@ function CareerRow({ career, onEdit }: { career: Career; onEdit: () => void }) {
               // Not a missing value to be nagged about — a career with no code is a valid
               // entry that simply cannot be RIASEC-matched. Saying which is more useful
               // than an empty cell.
-              <span className="text-xs text-amber-700">No RIASEC code — cannot be matched</span>
+              <span className="text-xs text-accent">No RIASEC code — cannot be matched</span>
             )}
 
             <Badge tone={isArchived ? 'neutral' : 'success'}>{career.status}</Badge>
           </div>
 
-          <p className="mt-0.5 truncate text-sm text-slate-500">
+          <p className="mt-0.5 truncate text-sm text-muted-foreground">
             {[career.employment_outlook, career.salary_range].filter(Boolean).join(' · ') ||
               'No outlook or salary recorded'}
           </p>

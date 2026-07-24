@@ -111,10 +111,10 @@ export function RosterBuilder({ classId, onConfirmed }: RosterBuilderProps) {
                 placeholder={'Juan Dela Cruz\nMaria Santos\nJosé Peña'}
                 aria-invalid={tooMany}
               />
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-muted-foreground">
                 {names.length} {names.length === 1 ? 'name' : 'names'}
                 {tooMany ? (
-                  <span className="text-red-600">
+                  <span className="text-destructive">
                     {' '}
                     — that is over the limit of {MAX_NAMES} per batch. Split it up.
                   </span>
@@ -201,8 +201,8 @@ function RosterRow({ index, row, error, onChange, onRemove }: RosterRowProps) {
     <li
       className={
         hasError
-          ? 'rounded-md border border-red-300 bg-red-50 p-3'
-          : 'rounded-md border border-slate-200 p-3'
+          ? 'rounded-none border border-destructive/30 bg-destructive/10 p-3'
+          : 'rounded-none border border-border p-3'
       }
     >
       <div className="flex items-end gap-3">
@@ -261,7 +261,7 @@ interface FieldProps {
 function Field({ label, id, value, error, className, onChange }: FieldProps) {
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor={id} className="text-xs text-slate-500">
+      <Label htmlFor={id} className="text-xs text-muted-foreground">
         {label}
       </Label>
       <Input
@@ -271,7 +271,7 @@ function Field({ label, id, value, error, className, onChange }: FieldProps) {
         aria-invalid={Boolean(error)}
         onChange={(event) => onChange(event.target.value)}
       />
-      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
     </div>
   );
 }

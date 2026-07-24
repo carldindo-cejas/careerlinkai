@@ -40,7 +40,7 @@ export function TemplateBuilderPage() {
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
 
   if (isLoading) {
-    return <p className="text-sm text-slate-500">Loading template…</p>;
+    return <p className="text-sm text-muted-foreground">Loading template…</p>;
   }
 
   if (isError || !template) {
@@ -54,12 +54,12 @@ export function TemplateBuilderPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="flex items-center gap-2 text-xl font-semibold text-slate-900">
+        <h1 className="flex items-center gap-2 text-xl font-semibold text-foreground">
           {template.title}
           <Badge>{template.category}</Badge>
           <Badge>{template.ownership === 'GLOBAL' ? 'Global' : 'Private'}</Badge>
         </h1>
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted-foreground">
           Dimensions first, then a version, then questions — by hand or drafted with AI. Nothing
           publishes until every AI-proposed mapping has been confirmed by a person.
         </p>
@@ -101,7 +101,7 @@ function DimensionsCard({ template }: { template: BuilderTemplate }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {dimensions.length === 0 ? (
-          <p className="text-sm text-slate-500">None yet — this would publish as an ungraded survey.</p>
+          <p className="text-sm text-muted-foreground">None yet — this would publish as an ungraded survey.</p>
         ) : (
           <div className="flex flex-wrap gap-2">
             {dimensions.map((dimension) => (
@@ -113,7 +113,7 @@ function DimensionsCard({ template }: { template: BuilderTemplate }) {
         )}
 
         {frozen ? (
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-muted-foreground">
             A version of this template has published, so its dimensions are frozen.
           </p>
         ) : (
@@ -189,7 +189,7 @@ function VersionsCard({
       </CardHeader>
       <CardContent className="flex flex-wrap gap-2">
         {versions.length === 0 ? (
-          <p className="text-sm text-slate-500">No versions yet — create one to start adding questions.</p>
+          <p className="text-sm text-muted-foreground">No versions yet — create one to start adding questions.</p>
         ) : (
           versions.map((version) => (
             <Button
@@ -213,7 +213,7 @@ function VersionWorkspace({ versionId, templateId }: { versionId: string; templa
   const { data: review, isLoading, isError, error } = useVersionReview(versionId);
 
   if (isLoading) {
-    return <p className="text-sm text-slate-500">Loading version…</p>;
+    return <p className="text-sm text-muted-foreground">Loading version…</p>;
   }
 
   if (isError || !review) {
@@ -308,7 +308,7 @@ function GeneratePanel({ review }: { review: VersionReview }) {
             ref={fileInput}
             type="file"
             accept=".pdf,.docx"
-            className="block text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+            className="block text-sm text-muted-foreground file:mr-3 file:rounded-none file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground/80 hover:file:bg-secondary"
             disabled={extracting || generateFromDocument.isPending}
             onChange={(event) => {
               const file = event.target.files?.[0];
@@ -318,7 +318,7 @@ function GeneratePanel({ review }: { review: VersionReview }) {
               }
             }}
           />
-          {extracting ? <p className="text-sm text-slate-500">Extracting text…</p> : null}
+          {extracting ? <p className="text-sm text-muted-foreground">Extracting text…</p> : null}
         </div>
 
         {generateFromDescription.isError ? <Alert>{generateFromDescription.error.message}</Alert> : null}
@@ -326,7 +326,7 @@ function GeneratePanel({ review }: { review: VersionReview }) {
         {extractionProblem ? <Alert>{extractionProblem}</Alert> : null}
 
         {aiRequestId !== null ? (
-          <div className="rounded-md bg-slate-50 p-3 text-sm text-slate-700">
+          <div className="rounded-none bg-muted p-3 text-sm text-foreground/80">
             {status.data === undefined || status.data.status === 'PENDING' ? (
               <p>Generating… the draft appears below when it lands (this can take a minute).</p>
             ) : null}
@@ -337,7 +337,7 @@ function GeneratePanel({ review }: { review: VersionReview }) {
                   for review.
                 </p>
                 {(status.data.suggested_dimensions?.length ?? 0) > 0 ? (
-                  <p className="text-slate-500">
+                  <p className="text-muted-foreground">
                     The AI also suggested dimensions (inert until you add one yourself):{' '}
                     {status.data.suggested_dimensions!
                       .map((suggestion) => suggestion.name)
@@ -375,7 +375,7 @@ function ReviewCard({ review, draft }: { review: VersionReview; draft: boolean }
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {review.questions.length === 0 ? (
-          <p className="text-sm text-slate-500">No questions yet.</p>
+          <p className="text-sm text-muted-foreground">No questions yet.</p>
         ) : (
           review.questions.map((question) => (
             <QuestionRow key={question.id} question={question} versionId={review.id} draft={draft} />
@@ -401,7 +401,7 @@ function QuestionRow({
   const [text, setText] = useState(question.question_text);
 
   return (
-    <div className="rounded-md border border-slate-200 p-3">
+    <div className="rounded-none border border-border p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
           {editing ? (
@@ -424,12 +424,12 @@ function QuestionRow({
               </div>
             </div>
           ) : (
-            <p className="text-sm text-slate-800">
+            <p className="text-sm text-foreground">
               {question.order_number}. {question.question_text}
             </p>
           )}
 
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-muted-foreground">
             {question.options.map((option) => `${option.label} (${option.score})`).join (' · ')}
           </p>
         </div>
@@ -569,7 +569,7 @@ function PublishCard({ review, templateId }: { review: VersionReview; templateId
       ) : null}
       {publish.isSuccess ? (
         <CardContent>
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-muted-foreground">
             Published. This version is now frozen and can be assigned to classes.
           </p>
         </CardContent>

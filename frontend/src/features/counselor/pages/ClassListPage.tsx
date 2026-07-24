@@ -24,8 +24,8 @@ export function ClassListPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">Classes</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-xl font-semibold text-foreground">Classes</h1>
+          <p className="text-sm text-muted-foreground">
             Create a class, share its code, and build the roster.
           </p>
         </div>
@@ -52,7 +52,7 @@ export function ClassListPage() {
 
       {isPending ? (
         <div className="flex justify-center py-12" role="status">
-          <Loader2 className="size-6 animate-spin text-slate-400" aria-hidden="true" />
+          <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
           <span className="sr-only">Loading classes…</span>
         </div>
       ) : null}
@@ -85,7 +85,7 @@ export function ClassListPage() {
 
 function ClassCard({ classRoom }: { classRoom: ClassRoom }) {
   return (
-    <Card className="h-full transition-colors hover:border-slate-300">
+    <Card className="h-full transition-colors hover:border-primary">
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <CardTitle>
@@ -106,15 +106,15 @@ function ClassCard({ classRoom }: { classRoom: ClassRoom }) {
 
       <CardContent className="flex items-center justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-wide text-slate-400">Class code</p>
-          <p className="font-mono text-lg font-semibold tracking-wider text-slate-900">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Class code</p>
+          <p className="font-mono text-lg font-semibold tracking-wider text-foreground">
             {classRoom.join_code}
           </p>
         </div>
 
         <Link
           to={classDetailPath(classRoom.id)}
-          className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
         >
           <Users className="size-4" aria-hidden="true" />
           Roster

@@ -20,13 +20,13 @@ import { cn } from '@/components/ui/cn';
  *
  * `danger` stays the default, so every existing caller keeps the behaviour it was written against.
  */
-const alertVariants = cva('flex items-start gap-2 rounded-md border p-3 text-sm', {
+const alertVariants = cva('flex items-start gap-2 rounded-none border p-3 text-sm', {
   variants: {
     tone: {
-      danger: 'border-red-200 bg-red-50 text-red-800',
-      warning: 'border-amber-200 bg-amber-50 text-amber-900',
-      success: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-      info: 'border-slate-200 bg-slate-50 text-slate-700',
+      danger: 'border-destructive/30 bg-destructive/10 text-destructive',
+      warning: 'border-accent/30 bg-accent/10 text-accent',
+      success: 'border-primary/30 bg-primary/10 text-primary',
+      info: 'border-border bg-muted text-muted-foreground',
     },
   },
   defaultVariants: {

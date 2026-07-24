@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 
 import { useCurrentUser } from '@/features/auth/hooks/useAuth';
-import { homePathForRole, paths } from '@/routes/paths';
+import { homePathForRole, loginPathForRole, paths } from '@/routes/paths';
 import { useAuthStore } from '@/stores/authStore';
 import type { UserRole } from '@/types/user';
 
@@ -23,6 +23,7 @@ export function ProtectedRoute({ allow }: ProtectedRouteProps) {
   const location = useLocation();
   const token = useAuthStore((state) => state.token);
   const setUser = useAuthStore((state) => state.setUser);
+  const lastRole = useAuthStore((state) => state.lastRole);
 
   const { data: user, isPending, isError } = useCurrentUser();
 
@@ -32,9 +33,23 @@ export function ProtectedRoute({ allow }: ProtectedRouteProps) {
     }
   }, [user, setUser]);
 
-  // A student turned away from a student-only route belongs at the class-code screen, not
-  // at the staff login — that page has a password field and they have no password (§38).
-  const signInPath = allow?.every((role) => role === 'student') ? paths.studentAccess : paths.login;
+  // Each role is sent to its own door (§38): a student turned away from a student-only
+  // route belongs at the class-code screen (they have no password), and an admin-only
+  // route resolves to the administrator login — a guard redirect, not a visible link,
+  // so /admin-login stays unreferenced in the UI.
+  //
+  // On a route that serves every role the guard has no `allow` to read the door from, so it
+  // falls back to who was last signed in. /change-password is that route, and it is also the
+  // one place a session ends *by design*: rotating a password revokes the token, and without
+  // this an admin would be handed to the counselor door, which refuses them — a lockout, since
+  // /admin-login is unlinked and nothing on screen would offer it.
+  const signInPath = allow?.every((role) => role === 'student')
+    ? paths.studentAccess
+    : allow?.every((role) => role === 'admin')
+      ? paths.adminLogin
+      : allow
+        ? paths.login
+        : (lastRole && loginPathForRole(lastRole)) || paths.login;
 
   if (!token) {
     return <Navigate to={signInPath} state={{ from: location }} replace />;
@@ -43,7 +58,7 @@ export function ProtectedRoute({ allow }: ProtectedRouteProps) {
   if (isPending) {
     return (
       <div className="flex min-h-screen items-center justify-center" role="status">
-        <Loader2 className="size-6 animate-spin text-slate-400" aria-hidden="true" />
+        <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
         <span className="sr-only">Loading…</span>
       </div>
     );

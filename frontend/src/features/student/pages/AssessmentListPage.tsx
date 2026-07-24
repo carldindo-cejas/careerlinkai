@@ -25,13 +25,13 @@ export function AssessmentListPage() {
   const start = useStartAttempt();
   const navigate = useNavigate();
 
-  if (isLoading) return <p className="text-sm text-slate-500">Loading your assessments…</p>;
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading your assessments…</p>;
 
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">My assessments</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">My assessments</h1>
+        <p className="text-sm text-muted-foreground">
           Answer honestly — there are no right or wrong answers, and nobody is grading you.
         </p>
       </div>
@@ -131,7 +131,7 @@ function AssignmentCard({
       </CardHeader>
 
       <CardContent className="flex flex-wrap items-center justify-between gap-4">
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted-foreground">
           {assignment.assessment.question_count} questions
           {assignment.assessment.duration_minutes
             ? ` · about ${assignment.assessment.duration_minutes} minutes`

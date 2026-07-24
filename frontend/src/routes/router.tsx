@@ -8,6 +8,7 @@ import { CollegeDetailPage } from '@/features/admin/pages/CollegeDetailPage';
 import { CollegeListPage } from '@/features/admin/pages/CollegeListPage';
 import { CounselorManagementPage } from '@/features/admin/pages/CounselorManagementPage';
 import { KnowledgeListPage } from '@/features/admin/pages/KnowledgeListPage';
+import { AdminLoginPage } from '@/features/auth/pages/AdminLoginPage';
 import { ChangePasswordPage } from '@/features/auth/pages/ChangePasswordPage';
 import { ForgotPasswordPage } from '@/features/auth/pages/ForgotPasswordPage';
 import { LoginPage } from '@/features/auth/pages/LoginPage';
@@ -38,9 +39,10 @@ import { RoleHome } from '@/routes/RoleHome';
 /**
  * Application routes (FULLPLAN §37).
  *
- * The two sign-in flows are separate all the way up to the router: /login is staff only
- * and /join is students only (§38). Neither page links to the other, and no route serves
- * both.
+ * The sign-in flows are separate all the way up to the router: /login is counselors
+ * only, /admin-login is administrators only (and is linked from nowhere — admins type
+ * the URL), and /join is students only (§38). No page links across the flows, and no
+ * route serves more than one of them.
  */
 export function AppRoutes() {
   return (
@@ -50,6 +52,8 @@ export function AppRoutes() {
 
       <Route element={<StaffAuthLayout />}>
         <Route path={paths.login} element={<LoginPage />} />
+        {/* Unlinked on purpose: administrators reach this by typing the URL. */}
+        <Route path={paths.adminLogin} element={<AdminLoginPage />} />
         {/* Phase 6 (D7): the reset flow, in its honest no-email shape. */}
         <Route path={paths.forgotPassword} element={<ForgotPasswordPage />} />
         <Route path={paths.resetPassword} element={<ResetPasswordPage />} />

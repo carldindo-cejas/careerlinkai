@@ -41,7 +41,7 @@ export function StudentProfilePage() {
     });
   }, [profile]);
 
-  if (isLoading) return <p className="text-sm text-slate-500">Loading your profile…</p>;
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading your profile…</p>;
 
   /*
     D11. Rendering the form with empty fields when the profile failed to load is worse here than on
@@ -73,8 +73,8 @@ export function StudentProfilePage() {
   return (
     <form className="flex max-w-2xl flex-col gap-6" onSubmit={onSubmit}>
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">My profile</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">My profile</h1>
+        <p className="text-sm text-muted-foreground">
           Your assessment results do not depend on any of this. Your{' '}
           <span className="font-medium">program recommendations do</span> — we match programs
           against your strand and your grades, so a blank field here means a recommendation we
@@ -122,7 +122,7 @@ export function StudentProfilePage() {
                 Technical-Professional (TVL, Sports, Arts &amp; Design)
               </option>
             </Select>
-            {errors?.strand ? <p className="text-sm text-red-600">{errors.strand[0]}</p> : null}
+            {errors?.strand ? <p className="text-sm text-destructive">{errors.strand[0]}</p> : null}
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -215,7 +215,7 @@ function GradeField({
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
       />
-      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
     </div>
   );
 }

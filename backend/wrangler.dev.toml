@@ -1,0 +1,108 @@
+# Mixed-mode dev: local storage + REAL Workers AI and Vectorize (FULLPLAN §45, §49).
+#
+# There are three dev/test profiles in this repo, and they exist for different reasons:
+#
+#   wrangler.test.toml  — the hermetic gate. workerd + Miniflare, fully OFFLINE, no AI/Vectorize
+#                         bindings at all. `npm test` and `npm run dev` use it. Runs with zero
+#                         Cloudflare credentials; this is the suite CI depends on.
+#   wrangler.dev.toml   — THIS FILE. Everything Miniflare can emulate (D1, KV, R2, Queues, the
+#                         AuthGuardDO) stays local and disposable, but the two bindings that have
+#                         **no local emulation** — `[ai]` and `[[vectorize]]` — are marked
+#                         `remote = true` and proxy to real Cloudflare during `wrangler dev`.
+#                         This is the only way to exercise the Phase 5 RAG/generation pipeline
+#                         (ingest → embed → vector search → explain) against a real model and a
+#                         real index without a full staging deploy.
+#   wrangler.toml       — the DEPLOY config (staging + production environments). Never run `dev`
+#                         against production bindings.
+#
+# ── Why this file, and why these two bindings ────────────────────────────────────────────────
+# `remote` is a **dev-only** field — `wrangler deploy` ignores it entirely, so nothing here can
+# change what ships. Only bindings marked `remote = true` dial out; every other binding below is
+# locally emulated exactly as in the offline profile. So this profile is NOT hermetic: it needs
+# `wrangler login` (or CLOUDFLARE_API_TOKEN) and a network connection. That is the whole trade —
+# fidelity for the AI legs in exchange for the offline guarantee. Keep it opt-in; the hermetic
+# `npm run dev` remains the default loop for everything that isn't AI/RAG.
+#
+# ── Vectorize points at STAGING, never production ────────────────────────────────────────────
+# Writing a vector is a stateful mutation. A dev loop that ingests documents must not write into
+# the production index (`careerlinkai_main_knowledge`) — same rule as §45 for D1: dev/staging must
+# never be able to corrupt production's data. So the remote Vectorize binding below targets
+# `careerlinkai_staging_knowledge`. Workers AI is stateless model inference, so its remote target
+# is not a data-safety concern (only billed usage on your account). If shared-staging index
+# pollution ever becomes a problem, provision a dedicated dev index and repoint the line below —
+# nothing else changes.
+#
+# Keep the [vars] and the local bindings in lockstep with wrangler.toml's top-level block.
+
+name = "careerlinkai"
+main = "src/index.ts"
+compatibility_date = "2026-07-13"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_ENV = "local"
+FRONTEND_URL = "http://localhost:5173"
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
+WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+STUDENT_JOIN_CODE_TTL_DAYS = "90"
+STUDENT_TOKEN_TTL_HOURS = "12"
+STAFF_TOKEN_TTL_HOURS = "168"
+ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+
+# --- Local (emulated, disposable) ----------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "CareerLinkAI_Main"
+database_id = "a3d20b3b-d9dd-435c-b6a7-2eb85e746942"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "careerlinkai-docs"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "2c31fc74fb2b40c59e7c0dda8884a848"
+
+[[durable_objects.bindings]]
+name = "AUTH_DO"
+class_name = "AuthGuardDO"
+
+# Producers AND consumers, unlike wrangler.test.toml — the ingestion pipeline runs in a queue
+# consumer (§42), so the consumer loop has to be live for a doc to actually get chunked/embedded
+# in this profile. Emulated locally; no remote queue subscription.
+[[queues.producers]]
+binding = "QUEUE_DEFAULT"
+queue = "careerlinkai-default-queue"
+
+[[queues.producers]]
+binding = "QUEUE_AI"
+queue = "careerlinkai-ai-queue"
+
+[[queues.consumers]]
+queue = "careerlinkai-default-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+
+[[queues.consumers]]
+queue = "careerlinkai-ai-queue"
+max_batch_size = 5
+max_batch_timeout = 30
+max_retries = 3
+
+# --- Remote (real Cloudflare during `wrangler dev`) -----------------------------------
+# No local emulation exists for either; `remote = true` proxies the binding to your account.
+[ai]
+binding = "AI"
+remote = true
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "careerlinkai_staging_knowledge"
+remote = true
+
+# --- Durable Object migrations --------------------------------------------------------
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AuthGuardDO"]

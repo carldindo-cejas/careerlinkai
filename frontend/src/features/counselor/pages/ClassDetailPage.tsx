@@ -1,4 +1,4 @@
-import { ArrowLeft, CheckCircle2, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
@@ -27,7 +27,7 @@ export function ClassDetailPage() {
   if (isPending) {
     return (
       <div className="flex justify-center py-16" role="status">
-        <Loader2 className="size-6 animate-spin text-slate-400" aria-hidden="true" />
+        <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
         <span className="sr-only">Loading the class…</span>
       </div>
     );
@@ -48,29 +48,24 @@ export function ClassDetailPage() {
         <BackLink />
 
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-slate-900">{classRoom.name}</h1>
+          <h1 className="text-xl font-semibold text-foreground">{classRoom.name}</h1>
           <Badge tone={classRoom.status === 'active' ? 'success' : 'neutral'}>
             {classRoom.status}
           </Badge>
         </div>
 
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted-foreground">
           {classRoom.academic_year}
           {classRoom.grade_level ? ` · ${classRoom.grade_level}` : null}
         </p>
       </div>
 
       {enrolled !== null ? (
-        <div
-          role="status"
-          className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"
-        >
-          <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
-          <span>
-            Enrolled {enrolled} {enrolled === 1 ? 'student' : 'students'}. They can sign in with
-            the class code and their username.
-          </span>
-        </div>
+        // Alert tone="success" carries the same role="status" and check icon this block hand-rolled.
+        <Alert tone="success">
+          Enrolled {enrolled} {enrolled === 1 ? 'student' : 'students'}. They can sign in with the
+          class code and their username.
+        </Alert>
       ) : null}
 
       <JoinCodeCard classRoom={classRoom} />
@@ -94,7 +89,7 @@ function BackLink() {
   return (
     <Link
       to={paths.counselorClasses}
-      className="inline-flex w-fit items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
+      className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
     >
       <ArrowLeft className="size-4" aria-hidden="true" />
       All classes

@@ -30,13 +30,13 @@ export function ClassResultsPanel({ classId }: { classId: string }) {
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">
-        {isLoading ? <p className="text-sm text-slate-500">Loading results…</p> : null}
+        {isLoading ? <p className="text-sm text-muted-foreground">Loading results…</p> : null}
 
         {/* D11's rule, applied from birth: a failed load is never an empty state. */}
         {isError ? <Alert>We could not load the results. {error.message}</Alert> : null}
 
         {results && results.length === 0 ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             No results yet. They appear here as students submit.
           </p>
         ) : null}
@@ -54,28 +54,28 @@ function ResultRow({ classId, result }: { classId: string; result: AssessmentRes
   const [confirming, setConfirming] = useState(false);
 
   return (
-    <div className="rounded-lg border border-slate-200 p-4">
+    <div className="rounded-none border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="flex items-center gap-2 font-medium text-slate-900">
+          <p className="flex items-center gap-2 font-medium text-foreground">
             {result.student?.name ?? 'Student'}
             {result.student?.username ? (
-              <span className="text-sm font-normal text-slate-400">
+              <span className="text-sm font-normal text-muted-foreground">
                 {result.student.username}
               </span>
             ) : null}
           </p>
-          <p className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+          <p className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             {result.assessment ? <Badge className="normal-case">{result.assessment.title}</Badge> : null}
             {result.result?.result_code ? (
-              <span className="font-mono font-medium text-slate-900">
+              <span className="font-mono font-medium text-foreground">
                 {result.result.result_code}
               </span>
             ) : null}
             {result.result?.overall_summary ? <span>{result.result.overall_summary}</span> : null}
           </p>
           {result.submitted_at ? (
-            <p className="mt-0.5 text-xs text-slate-400">
+            <p className="mt-0.5 text-xs text-muted-foreground">
               Submitted {new Date(result.submitted_at).toLocaleString()}
             </p>
           ) : null}

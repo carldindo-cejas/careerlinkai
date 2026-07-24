@@ -53,7 +53,7 @@ export function JoinCodeCard({ classRoom }: JoinCodeCardProps) {
         {error ? <Alert>{error.message}</Alert> : null}
 
         <div className="flex flex-wrap items-center gap-3">
-          <p className="font-mono text-3xl font-semibold tracking-[0.2em] text-slate-900">
+          <p className="font-mono text-3xl font-semibold tracking-[0.2em] text-foreground">
             {classRoom.join_code}
           </p>
 
@@ -80,18 +80,19 @@ export function JoinCodeCard({ classRoom }: JoinCodeCardProps) {
         ) : null}
 
         {classRoom.join_code_expires_at && !isExpired ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             Expires {new Date(classRoom.join_code_expires_at).toLocaleDateString()}.
           </p>
         ) : null}
 
         {isConfirmingRegenerate ? (
-          <div className="flex flex-col gap-3 rounded-md border border-amber-200 bg-amber-50 p-3">
-            <p className="text-sm text-amber-900">
-              <span className="font-medium">This immediately stops the old code working.</span>{' '}
-              Any student who has not signed in yet will need the new one — and anyone already
-              signed in stays signed in.
-            </p>
+          <div className="flex flex-col gap-3">
+            {/* The consequence names itself before the button that carries it out — copy verbatim. */}
+            <Alert tone="warning">
+              <span className="font-medium">This immediately stops the old code working.</span> Any
+              student who has not signed in yet will need the new one — and anyone already signed in
+              stays signed in.
+            </Alert>
 
             <div className="flex gap-2">
               <Button

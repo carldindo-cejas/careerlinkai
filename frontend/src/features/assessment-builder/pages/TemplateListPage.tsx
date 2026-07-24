@@ -48,8 +48,8 @@ export function TemplateListPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">Assessment templates</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">Assessment templates</h1>
+        <p className="text-sm text-muted-foreground">
           Build CUSTOM assessments by hand or draft them with AI — every AI-proposed scoring
           mapping must be confirmed by a human before a version can publish.
         </p>
@@ -84,7 +84,7 @@ export function TemplateListPage() {
         ) : null}
       </Card>
 
-      {isLoading ? <p className="text-sm text-slate-500">Loading templates…</p> : null}
+      {isLoading ? <p className="text-sm text-muted-foreground">Loading templates…</p> : null}
 
       {isError ? (
         <Alert>
@@ -124,7 +124,7 @@ export function TemplateListPage() {
                 Open builder
               </Button>
             ) : (
-              <p className="text-sm text-slate-400">Curated instrument</p>
+              <p className="text-sm text-muted-foreground">Curated instrument</p>
             )}
           </CardHeader>
         </Card>

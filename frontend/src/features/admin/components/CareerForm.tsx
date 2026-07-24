@@ -148,7 +148,7 @@ export function CareerForm({ career, onSaved, onCancel }: CareerFormProps) {
               />
               {/* Echo the code back in words. "IEC" is opaque; "Investigative · Enterprising
                   · Conventional" is checkable by someone who knows the career. */}
-              <p id="career-riasec-help" className="text-xs text-slate-500">
+              <p id="career-riasec-help" className="text-xs text-muted-foreground">
                 {codeMeaning ?? 'Optional — leave blank if the career has no Holland code.'}
               </p>
             </div>
@@ -195,10 +195,10 @@ export function CareerForm({ career, onSaved, onCancel }: CareerFormProps) {
 /** Nobody remembers all six letters. Showing them costs one line and saves a lookup. */
 function RiasecLegend() {
   return (
-    <dl className="flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+    <dl className="flex flex-wrap gap-x-4 gap-y-1 rounded-none bg-muted px-3 py-2 text-xs text-muted-foreground">
       {RIASEC_LETTERS.map((letter) => (
         <div key={letter} className="flex gap-1">
-          <dt className="font-mono font-semibold text-slate-800">{letter}</dt>
+          <dt className="font-mono font-semibold text-foreground">{letter}</dt>
           <dd>{RIASEC_NAMES[letter]}</dd>
         </div>
       ))}
@@ -207,5 +207,5 @@ function RiasecLegend() {
 }
 
 function FieldError({ message }: { message?: string | undefined }) {
-  return message ? <p className="text-sm text-red-600">{message}</p> : null;
+  return message ? <p className="text-sm text-destructive">{message}</p> : null;
 }

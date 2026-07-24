@@ -83,17 +83,17 @@ export function ForgotPasswordPage() {
               </Link>
             </Alert>
           ) : (
-            <p className="text-sm text-slate-600">
+            <p className="text-sm text-muted-foreground">
               CareerLinkAI does not send email. An administrator completes the reset and gives
               you the reset code — once you have it, use the link below.
             </p>
           )}
 
           <div className="flex items-center gap-4 text-sm">
-            <Link className="font-medium text-slate-900 hover:underline" to={paths.resetPassword}>
+            <Link className="font-medium text-foreground hover:underline" to={paths.resetPassword}>
               I have a reset code
             </Link>
-            <Link className="text-slate-500 hover:underline" to={paths.login}>
+            <Link className="text-muted-foreground hover:underline" to={paths.login}>
               Back to sign in
             </Link>
           </div>
@@ -124,14 +124,14 @@ export function ForgotPasswordPage() {
               aria-invalid={Boolean(errors.email)}
               {...register('email')}
             />
-            {errors.email ? <p className="text-sm text-red-600">{errors.email.message}</p> : null}
+            {errors.email ? <p className="text-sm text-destructive">{errors.email.message}</p> : null}
           </div>
 
           <Button type="submit" loading={pending} className="mt-2">
             Request a reset
           </Button>
 
-          <Link className="text-center text-sm text-slate-500 hover:underline" to={paths.login}>
+          <Link className="text-center text-sm text-muted-foreground hover:underline" to={paths.login}>
             Back to sign in
           </Link>
         </form>

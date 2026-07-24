@@ -31,8 +31,8 @@ export function AuditLogPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">Audit log</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">Audit log</h1>
+        <p className="text-sm text-muted-foreground">
           The append-only record of every critical action. Failed student sign-ins are answered
           generically on purpose — the real reason is only ever written here.
         </p>
@@ -47,7 +47,7 @@ export function AuditLogPage() {
         }}
       >
         <div className="flex flex-col gap-1">
-          <label htmlFor="audit-action" className="text-xs font-medium text-slate-600">
+          <label htmlFor="audit-action" className="text-xs font-medium text-muted-foreground">
             Action (prefix match)
           </label>
           <Input
@@ -77,7 +77,7 @@ export function AuditLogPage() {
         ) : null}
       </form>
 
-      {isLoading ? <p className="text-sm text-slate-500">Loading the trail…</p> : null}
+      {isLoading ? <p className="text-sm text-muted-foreground">Loading the trail…</p> : null}
 
       {isError ? <Alert>We could not load the audit log. {error.message}</Alert> : null}
 
@@ -98,7 +98,7 @@ export function AuditLogPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
-                  <tr className="border-b border-slate-100 text-xs uppercase tracking-wide text-slate-400">
+                  <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-3 font-medium">When</th>
                     <th className="px-4 py-3 font-medium">Action</th>
                     <th className="px-4 py-3 font-medium">Actor</th>
@@ -119,7 +119,7 @@ export function AuditLogPage() {
 
       {data && data.pagination.last_page > 1 ? (
         <div className="flex items-center justify-between">
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             Page {data.pagination.current_page} of {data.pagination.last_page} ·{' '}
             {data.pagination.total} entries
           </p>
@@ -153,8 +153,8 @@ function AuditRow({ entry }: { entry: AuditLogEntry }) {
 
   return (
     <>
-      <tr className="border-b border-slate-50 align-top last:border-b-0">
-        <td className="whitespace-nowrap px-4 py-3 text-slate-500">
+      <tr className="border-b border-border align-top last:border-b-0">
+        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
           {entry.created_at ? new Date(entry.created_at).toLocaleString() : '—'}
         </td>
         <td className="px-4 py-3">
@@ -162,26 +162,26 @@ function AuditRow({ entry }: { entry: AuditLogEntry }) {
             {entry.action}
           </Badge>
         </td>
-        <td className="px-4 py-3 text-slate-700">
-          {entry.user_name ?? <span className="italic text-slate-400">system / unresolved</span>}
+        <td className="px-4 py-3 text-foreground/80">
+          {entry.user_name ?? <span className="italic text-muted-foreground">system / unresolved</span>}
         </td>
-        <td className="px-4 py-3 text-slate-500">{entry.module}</td>
+        <td className="px-4 py-3 text-muted-foreground">{entry.module}</td>
         <td className="px-4 py-3">
           {hasDetails ? (
             <button
               type="button"
-              className="text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline"
+              className="text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
               onClick={() => setExpanded((value) => !value)}
             >
               {expanded ? 'Hide' : 'Show'}
             </button>
           ) : (
-            <span className="text-xs text-slate-300">—</span>
+            <span className="text-xs text-muted-foreground">—</span>
           )}
         </td>
       </tr>
       {expanded ? (
-        <tr className="border-b border-slate-50 bg-slate-50/60">
+        <tr className="border-b border-border bg-muted/60">
           <td colSpan={5} className="px-4 py-3">
             <div className="grid gap-3 sm:grid-cols-2">
               {entry.old_values ? (
@@ -190,7 +190,7 @@ function AuditRow({ entry }: { entry: AuditLogEntry }) {
               {entry.new_values ? <DetailBlock label="After" values={entry.new_values} /> : null}
             </div>
             {entry.ip_address ? (
-              <p className="mt-2 text-xs text-slate-400">IP: {entry.ip_address}</p>
+              <p className="mt-2 text-xs text-muted-foreground">IP: {entry.ip_address}</p>
             ) : null}
           </td>
         </tr>
@@ -202,18 +202,25 @@ function AuditRow({ entry }: { entry: AuditLogEntry }) {
 function DetailBlock({ label, values }: { label: string; values: Record<string, unknown> }) {
   return (
     <div>
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
-      <pre className="overflow-x-auto rounded-md bg-white p-3 text-xs text-slate-700 ring-1 ring-slate-100">
+      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+      <pre className="overflow-x-auto rounded-none bg-muted p-3 text-xs text-foreground/80 ring-1 ring-border">
         {JSON.stringify(values, null, 2)}
       </pre>
     </div>
   );
 }
 
-/** Failures and deletions read as warnings; everything else stays neutral. */
-function toneFor(action: string): 'neutral' | 'success' | 'warning' {
+/**
+ * Failures and deletions read as outlines; everything else stays neutral.
+ *
+ * Outline rather than a warning tint because this is a mono scheme: a filled `warning` badge is
+ * deep steel and a filled `success` badge is base steel, which at 12px sit a shade apart and read
+ * as the same thing. Scanning a log for what went wrong is the whole job of this page, so the
+ * failures are separated by *fill* — hollow against filled — which survives being glanced at.
+ */
+function toneFor(action: string): 'neutral' | 'success' | 'outline' {
   if (action.endsWith('_FAILED') || action.endsWith('_THROTTLED') || action.endsWith('_DELETED')) {
-    return 'warning';
+    return 'outline';
   }
 
   if (action.endsWith('_SUCCESS') || action === 'ASSESSMENT_PUBLISHED') {

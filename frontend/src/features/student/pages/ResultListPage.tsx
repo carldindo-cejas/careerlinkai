@@ -17,13 +17,13 @@ export function ResultListPage() {
   const { data: results, isLoading, isError, error } = useResults();
   const navigate = useNavigate();
 
-  if (isLoading) return <p className="text-sm text-slate-500">Loading your results…</p>;
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading your results…</p>;
 
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">My results</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">My results</h1>
+        <p className="text-sm text-muted-foreground">
           These are computed directly from your answers. No AI is involved anywhere in them.
         </p>
       </div>
@@ -47,8 +47,8 @@ export function ResultListPage() {
           <Card key={result.attempt_id}>
             <CardContent className="flex flex-wrap items-center justify-between gap-4 pt-6">
               <div>
-                <p className="font-medium text-slate-900">{result.assessment?.title}</p>
-                <p className="mt-0.5 text-sm text-slate-500">
+                <p className="font-medium text-foreground">{result.assessment?.title}</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">
                   {/* RIASEC shows its code; SCCT shows its sentence (§22, §23). */}
                   {result.result?.result_code
                     ? `Holland Code: ${result.result.result_code}`

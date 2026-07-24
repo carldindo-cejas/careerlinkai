@@ -20,14 +20,14 @@ export function ResultPage() {
   const { attemptId = '' } = useParams();
   const { data: result, isLoading, error } = useResult(attemptId);
 
-  if (isLoading) return <p className="text-sm text-slate-500">Loading your result…</p>;
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading your result…</p>;
   if (error || !result) return <Alert tone="danger">This result could not be loaded.</Alert>;
 
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">{result.assessment?.title}</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">{result.assessment?.title}</h1>
+        <p className="text-sm text-muted-foreground">
           Completed{' '}
           {result.submitted_at ? new Date(result.submitted_at).toLocaleDateString() : 'recently'}
         </p>
@@ -65,11 +65,11 @@ function Headline({ result }: { result: AssessmentResult }) {
     return (
       <Card>
         <CardContent className="flex flex-col items-center gap-2 py-8">
-          <p className="text-sm font-medium uppercase tracking-wide text-slate-500">
+          <p className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
             Your Holland Code
           </p>
-          <p className="font-mono text-5xl font-semibold tracking-[0.2em] text-slate-900">{code}</p>
-          <p className="max-w-md text-center text-sm text-slate-500">
+          <p className="font-mono text-5xl font-semibold tracking-[0.2em] text-foreground">{code}</p>
+          <p className="max-w-md text-center text-sm text-muted-foreground">
             Your three strongest interest areas, in order:{' '}
             {result.dimensions
               .slice()
@@ -87,7 +87,7 @@ function Headline({ result }: { result: AssessmentResult }) {
     return (
       <Card>
         <CardContent className="flex flex-col items-center gap-2 py-8">
-          <p className="text-sm font-medium uppercase tracking-wide text-slate-500">
+          <p className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
             Your career confidence
           </p>
           {/*
@@ -96,7 +96,7 @@ function Headline({ result }: { result: AssessmentResult }) {
             the composite as a number, it comes from the dimension scores below, recomputed, the
             way Part VII will do it.
           */}
-          <p className="text-center text-2xl font-semibold text-slate-900">{summary}</p>
+          <p className="text-center text-2xl font-semibold text-foreground">{summary}</p>
         </CardContent>
       </Card>
     );
@@ -111,22 +111,22 @@ function DimensionBar({ dimension }: { dimension: DimensionScore }) {
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between gap-4">
-        <span className="text-sm font-medium text-slate-800">
-          <span className="mr-2 font-mono text-slate-400">{dimension.code}</span>
+        <span className="text-sm font-medium text-foreground">
+          <span className="mr-2 font-mono text-muted-foreground">{dimension.code}</span>
           {dimension.name}
         </span>
-        <span className="whitespace-nowrap text-sm text-slate-500">
+        <span className="whitespace-nowrap text-sm text-muted-foreground">
           {score.toFixed(0)}
           {dimension.interpretation ? ` · ${dimension.interpretation}` : null}
         </span>
       </div>
 
-      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
-        <div className="h-full rounded-full bg-slate-800" style={{ width: `${score}%` }} />
+      <div className="h-2 w-full overflow-hidden border border-border bg-secondary">
+        <div className="h-full bg-primary" style={{ width: `${score}%` }} />
       </div>
 
       {dimension.description ? (
-        <p className="mt-1.5 text-xs leading-relaxed text-slate-500">{dimension.description}</p>
+        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{dimension.description}</p>
       ) : null}
     </div>
   );

@@ -35,7 +35,7 @@ export function StaffAuthLayout() {
           <img
             src={artUrl}
             alt="Senior high school students exploring career recommendations together"
-            className="mt-8 w-full rounded-2xl object-contain"
+            className="mt-8 w-full rounded-none border border-border object-contain"
           />
         </FadeIn>
 
@@ -46,21 +46,26 @@ export function StaffAuthLayout() {
 
       {/* Form panel: deep navy, the card floats on it. */}
       <div className="relative flex flex-col items-center justify-center gap-6 overflow-hidden bg-sidebar p-4 sm:p-8">
-        {/* A soft brand glow, echoing the logo's violet→teal. */}
+        {/* A soft glow in the single steel accent — mono, so both blobs are the same hue at
+            different depths rather than the old violet→teal pair. */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -right-40 -top-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(139,92,246,0.28),transparent_65%)]"
+          className="pointer-events-none absolute -right-40 -top-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(89,128,166,0.32),transparent_65%)]"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -bottom-44 -left-48 size-120 rounded-full bg-[radial-gradient(circle,rgba(20,184,166,0.22),transparent_65%)]"
+          className="pointer-events-none absolute -bottom-44 -left-48 size-120 rounded-full bg-[radial-gradient(circle,rgba(65,97,128,0.26),transparent_65%)]"
         />
 
         <Link to={paths.landing} className="focus-visible:outline-none lg:hidden">
-          <Logo wordmarkClassName="text-white" />
+          <Logo wordmarkClassName="text-sidebar-active-foreground" />
         </Link>
 
-        <FadeIn delay={0.05} className="relative w-full max-w-md">
+        {/* The plate the card floats on. Cards are transparent line-drawings everywhere else,
+            because everywhere else they sit on the light ground and their ink reads against it.
+            This is the one panel where a card sits on the deep field, so the layout that put it
+            there supplies the light surface — rather than every auth page remembering to. */}
+        <FadeIn delay={0.05} className="relative w-full max-w-md bg-background">
           <Outlet />
         </FadeIn>
       </div>

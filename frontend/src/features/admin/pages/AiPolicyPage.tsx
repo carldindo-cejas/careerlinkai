@@ -22,14 +22,14 @@ export function AiPolicyPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">AI policy</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">AI policy</h1>
+        <p className="text-sm text-muted-foreground">
           These instructions and restrictions are appended to every prompt the AI receives — they
           govern what it may say when explaining recommendations to students.
         </p>
       </div>
 
-      {isLoading ? <p className="text-sm text-slate-500">Loading the policy…</p> : null}
+      {isLoading ? <p className="text-sm text-muted-foreground">Loading the policy…</p> : null}
       {isError ? <Alert>We could not load the AI policy. {error.message}</Alert> : null}
 
       {policies && policies.length === 0 ? (
@@ -112,7 +112,7 @@ function PolicyEditor({ policy }: { policy: AiPolicy }) {
 
         {update.isError ? <Alert>{update.error.message}</Alert> : null}
         {saved && !update.isPending ? (
-          <p className="text-sm text-emerald-600">Saved. Every new AI request uses this text.</p>
+          <p className="text-sm text-primary">Saved. Every new AI request uses this text.</p>
         ) : null}
 
         <div>

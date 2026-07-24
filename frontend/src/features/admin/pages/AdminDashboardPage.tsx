@@ -8,9 +8,9 @@ import {
   School,
   Users,
 } from 'lucide-react';
-import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
+import { StatCard } from '@/components/dashboard/StatCard';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,13 +32,13 @@ export function AdminDashboardPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">
+        <h1 className="text-xl font-semibold text-foreground">
           Welcome back, {user?.name ?? 'Administrator'}
         </h1>
-        <p className="text-sm text-slate-500">Platform overview — live numbers, not caches.</p>
+        <p className="text-sm text-muted-foreground">Platform overview — live numbers, not caches.</p>
       </div>
 
-      {isLoading ? <p className="text-sm text-slate-500">Gathering the numbers…</p> : null}
+      {isLoading ? <p className="text-sm text-muted-foreground">Gathering the numbers…</p> : null}
 
       {isError ? <Alert>We could not load the dashboard. {error.message}</Alert> : null}
 
@@ -74,7 +74,7 @@ export function AdminDashboardPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <BookOpen className="size-4 text-slate-400" aria-hidden="true" />
+                  <BookOpen className="size-4 text-muted-foreground" aria-hidden="true" />
                   <CardTitle>Assessments</CardTitle>
                 </div>
                 <CardDescription>
@@ -82,7 +82,7 @@ export function AdminDashboardPage() {
                   {data.assessments.published_versions === 1 ? '' : 's'}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-col gap-1.5 text-sm text-slate-600">
+              <CardContent className="flex flex-col gap-1.5 text-sm text-muted-foreground">
                 <MetricRow label="In progress" value={data.assessments.attempts_in_progress} />
                 <MetricRow label="Scored" value={data.assessments.attempts_scored} />
                 <MetricRow
@@ -99,7 +99,7 @@ export function AdminDashboardPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <KeyRound className="size-4 text-slate-400" aria-hidden="true" />
+                  <KeyRound className="size-4 text-muted-foreground" aria-hidden="true" />
                   <CardTitle>Student access · 7 days</CardTitle>
                 </div>
                 <CardDescription>
@@ -107,7 +107,7 @@ export function AdminDashboardPage() {
                   the reasons are in the audit log.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-col gap-1.5 text-sm text-slate-600">
+              <CardContent className="flex flex-col gap-1.5 text-sm text-muted-foreground">
                 <MetricRow label="Successful joins" value={data.student_access_7d.success} />
                 <MetricRow label="Failed attempts" value={data.student_access_7d.failed} />
                 <MetricRow label="Throttled" value={data.student_access_7d.throttled} />
@@ -117,14 +117,14 @@ export function AdminDashboardPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <Bot className="size-4 text-slate-400" aria-hidden="true" />
+                  <Bot className="size-4 text-muted-foreground" aria-hidden="true" />
                   <CardTitle>AI · 7 days</CardTitle>
                 </div>
                 <CardDescription>
                   Every gateway call is one row in ai_requests — success or failure (§29).
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-col gap-1.5 text-sm text-slate-600">
+              <CardContent className="flex flex-col gap-1.5 text-sm text-muted-foreground">
                 <MetricRow label="Requests" value={data.ai_7d.requests} />
                 <MetricRow label="Failed" value={data.ai_7d.failed} />
                 <MetricRow label="Tokens used" value={data.ai_7d.tokens_used.toLocaleString()} />
@@ -140,12 +140,12 @@ export function AdminDashboardPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Activity className="size-4 text-slate-400" aria-hidden="true" />
+                  <Activity className="size-4 text-muted-foreground" aria-hidden="true" />
                   <CardTitle>Recent activity</CardTitle>
                 </div>
                 <Link
                   to={paths.adminAuditLog}
-                  className="text-sm font-medium text-slate-500 hover:text-slate-900 hover:underline"
+                  className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline"
                 >
                   Open the audit log
                 </Link>
@@ -153,19 +153,19 @@ export function AdminDashboardPage() {
             </CardHeader>
             <CardContent className="p-0">
               {data.recent_activity.length === 0 ? (
-                <p className="px-6 pb-5 text-sm text-slate-500">Nothing recorded yet.</p>
+                <p className="px-6 pb-5 text-sm text-muted-foreground">Nothing recorded yet.</p>
               ) : (
                 <ul>
                   {data.recent_activity.map((entry) => (
                     <li
                       key={entry.id}
-                      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-50 px-6 py-2.5 text-sm first:border-t-0"
+                      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-6 py-2.5 text-sm first:border-t-0"
                     >
                       <Badge className="normal-case">{entry.action}</Badge>
-                      <span className="text-slate-600">
+                      <span className="text-muted-foreground">
                         {entry.user_name ?? 'system / unresolved'}
                       </span>
-                      <span className="ml-auto text-xs text-slate-400">
+                      <span className="ml-auto text-xs text-muted-foreground">
                         {entry.created_at ? new Date(entry.created_at).toLocaleString() : ''}
                       </span>
                     </li>
@@ -180,43 +180,11 @@ export function AdminDashboardPage() {
   );
 }
 
-function StatCard({
-  icon,
-  label,
-  value,
-  to,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: number | string;
-  to?: string;
-}) {
-  const body = (
-    <Card className={to ? 'h-full transition-colors hover:border-slate-300' : 'h-full'}>
-      <CardContent className="flex flex-col gap-1 p-5">
-        <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-          {icon}
-          {label}
-        </span>
-        <span className="text-2xl font-semibold tabular-nums text-slate-900">{value}</span>
-      </CardContent>
-    </Card>
-  );
-
-  return to ? (
-    <Link to={to} className="focus-visible:outline-none">
-      {body}
-    </Link>
-  ) : (
-    body
-  );
-}
-
 function MetricRow({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="flex items-center justify-between">
       <span>{label}</span>
-      <span className="font-medium tabular-nums text-slate-900">{value}</span>
+      <span className="font-medium tabular-nums text-foreground">{value}</span>
     </div>
   );
 }

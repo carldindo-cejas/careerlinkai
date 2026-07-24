@@ -88,10 +88,10 @@ export function ChangePasswordPage() {
               {...register('current_password')}
             />
             {errors.current_password ? (
-              <p className="text-sm text-red-600">{errors.current_password.message}</p>
+              <p className="text-sm text-destructive">{errors.current_password.message}</p>
             ) : null}
             {serverError?.fieldError('current_password') ? (
-              <p className="text-sm text-red-600">{serverError.fieldError('current_password')}</p>
+              <p className="text-sm text-destructive">{serverError.fieldError('current_password')}</p>
             ) : null}
           </div>
 
@@ -105,10 +105,10 @@ export function ChangePasswordPage() {
               {...register('password')}
             />
             {errors.password ? (
-              <p className="text-sm text-red-600">{errors.password.message}</p>
+              <p className="text-sm text-destructive">{errors.password.message}</p>
             ) : null}
             {serverError?.fieldError('password') ? (
-              <p className="text-sm text-red-600">{serverError.fieldError('password')}</p>
+              <p className="text-sm text-destructive">{serverError.fieldError('password')}</p>
             ) : null}
           </div>
 
@@ -122,7 +122,7 @@ export function ChangePasswordPage() {
               {...register('password_confirmation')}
             />
             {errors.password_confirmation ? (
-              <p className="text-sm text-red-600">{errors.password_confirmation.message}</p>
+              <p className="text-sm text-destructive">{errors.password_confirmation.message}</p>
             ) : null}
           </div>
 

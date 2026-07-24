@@ -40,8 +40,8 @@ export function CounselorManagementPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">Counselors</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-xl font-semibold text-foreground">Counselors</h1>
+          <p className="text-sm text-muted-foreground">
             The accounts that can create classes and read their students’ results.
           </p>
         </div>
@@ -56,7 +56,7 @@ export function CounselorManagementPage() {
           <div className="flex flex-col gap-1">
             <p>
               Temporary password for <span className="font-semibold">{issued.email}</span>:{' '}
-              <code className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-sm">
+              <code className="rounded-none bg-background/70 px-1.5 py-0.5 font-mono text-sm">
                 {issued.password}
               </code>
               <button
@@ -122,7 +122,7 @@ export function CounselorManagementPage() {
         ) : null}
       </form>
 
-      {isLoading ? <p className="text-sm text-slate-500">Loading counselors…</p> : null}
+      {isLoading ? <p className="text-sm text-muted-foreground">Loading counselors…</p> : null}
 
       {isError ? <Alert>We could not load the counselor list. {error.message}</Alert> : null}
 
@@ -144,7 +144,7 @@ export function CounselorManagementPage() {
 
       {data && data.pagination.last_page > 1 ? (
         <div className="flex items-center justify-between">
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             Page {data.pagination.current_page} of {data.pagination.last_page} ·{' '}
             {data.pagination.total} counselors
           </p>
@@ -251,7 +251,7 @@ function CreateCounselorCard({
           />
 
           {failure && Object.keys(failure.errors).length === 0 ? (
-            <p className="text-sm text-rose-600 sm:col-span-2">{failure.message}</p>
+            <p className="text-sm text-destructive sm:col-span-2">{failure.message}</p>
           ) : null}
 
           <div className="sm:col-span-2">
@@ -292,7 +292,7 @@ function FormField({
         onChange={(event) => onChange(event.target.value)}
         required={required}
       />
-      {error ? <p className="text-xs text-rose-600">{error}</p> : null}
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
 }
@@ -309,7 +309,7 @@ function CounselorRow({ counselor }: { counselor: ManagedCounselor }) {
       <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-3 p-5">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-slate-900">{counselor.name}</span>
+            <span className="font-medium text-foreground">{counselor.name}</span>
             <Badge tone={counselor.status === 'active' ? 'success' : 'warning'}>
               {counselor.status}
             </Badge>
@@ -319,13 +319,13 @@ function CounselorRow({ counselor }: { counselor: ManagedCounselor }) {
               </Badge>
             ) : null}
           </div>
-          <p className="mt-0.5 truncate text-sm text-slate-500">
+          <p className="mt-0.5 truncate text-sm text-muted-foreground">
             {counselor.email}
             {counselor.counselor_profile?.specialization
               ? ` · ${counselor.counselor_profile.specialization}`
               : ''}
           </p>
-          <p className="mt-0.5 text-xs text-slate-400">
+          <p className="mt-0.5 text-xs text-muted-foreground">
             {counselor.classes_count} {counselor.classes_count === 1 ? 'class' : 'classes'} ·{' '}
             {counselor.students_count} active {counselor.students_count === 1 ? 'student' : 'students'}
           </p>
@@ -368,7 +368,7 @@ function CounselorRow({ counselor }: { counselor: ManagedCounselor }) {
         </div>
 
         {update.isError || remove.isError ? (
-          <p className="w-full text-sm text-rose-600">
+          <p className="w-full text-sm text-destructive">
             {(update.error ?? remove.error)?.message ?? 'The change failed.'}
           </p>
         ) : null}

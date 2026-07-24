@@ -122,5 +122,5 @@ export function CreateClassForm({ onCreated, onCancel }: CreateClassFormProps) {
 }
 
 function FieldError({ message }: { message?: string | undefined }) {
-  return message ? <p className="text-sm text-red-600">{message}</p> : null;
+  return message ? <p className="text-sm text-destructive">{message}</p> : null;
 }

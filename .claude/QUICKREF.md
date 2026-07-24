@@ -62,10 +62,12 @@ Full structure: FULLPLAN §16 (backend), §35 (frontend).
 ```bash
 # Backend (cd backend)
 npm install
-npx wrangler d1 migrations apply DB --local    # append-only migrations (drop --local for remote)
-npm test                                        # Vitest in the Workers runtime
-npx wrangler dev                                # local dev — Miniflare emulates D1/KV/R2/Queues
-npx wrangler deploy --env production            # the careerlinkai.online Worker
+npm run db:migrate                              # apply migrations to the LOCAL D1 (append-only)
+npm test                                        # Vitest in the Workers runtime (offline, hermetic)
+npm run dev                                     # dev loop — fully OFFLINE (wrangler.test.toml)
+npm run dev:remote                              # dev loop — local storage + REAL AI/Vectorize (needs login)
+npm run deploy:staging                          # publish careerlinkai-staging (pre-prod fidelity gate)
+npm run deploy:production                       # the careerlinkai.online Worker
 npx wrangler secret put NAME                    # secrets never go in wrangler.toml
 
 # Frontend (cd frontend)
@@ -74,6 +76,31 @@ npm run dev
 npm run build
 npm test                       # Vitest
 ```
+
+## Test & Dev Environments
+
+Three profiles, on purpose (FULLPLAN §45, §49). Match the tool to the job — **do not route the
+hermetic suite through the network**; the suite's per-file isolated storage and offline/no-credentials
+guarantee (deviation D9) are load-bearing, and one shared remote D1 cannot give 40 test files a clean
+isolated schema each.
+
+| Profile | Command | Storage | AI / Vectorize | Needs login? | Use for |
+|---|---|---|---|---|---|
+| **Hermetic suite** | `npm test` | local (per-file isolated) | stubbed / absent | no | the gate on every push · CI |
+| **Offline dev** | `npm run dev` (`wrangler.test.toml`) | local | absent | no | default loop — auth, classes, assessments, recs |
+| **Mixed-mode dev** | `npm run dev:remote` (`wrangler.dev.toml`) | local (disposable) | **real** (`remote = true`) | yes | Phase 5 RAG/generation — real model + real index |
+| **Staging** | `npm run deploy:staging` + `scripts/walkthrough.mjs` | real staging | real | yes | **pre-prod fidelity gate** — the authority for anything Miniflare can't see |
+
+**Staging is the required check before production**, not an optional one. Miniflare enforces neither
+the PBKDF2 100k-iteration ceiling nor the 10 ms Worker CPU limit (that's how D14 shipped 371× green
+and couldn't verify a password on the edge), and it has no AI/Vectorize emulation at all. So a green
+suite proves the contract, but **staging proves the platform** — validate the CPU-sensitive auth path,
+the AI/RAG legs, CORS, and queue delivery there before promoting. `scripts/walkthrough.mjs` is
+environment-agnostic and drives the real browser flow against either local or staging.
+
+`dev:remote` points Vectorize at the **staging** index (`careerlinkai_staging_knowledge`), never
+production — dev must not write production data (§45). `remote` is a dev-only flag; `wrangler deploy`
+ignores it, so it can never change what ships.
 
 ## Database Tables (28)
 

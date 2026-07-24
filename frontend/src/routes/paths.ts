@@ -3,7 +3,13 @@ import type { UserRole } from '@/types/user';
 export const paths = {
   /** The public landing page (post-Phase-6 design pass) — the only unauthenticated screen beyond the two sign-ins. */
   landing: '/',
+  /** Counselor login. Admin authentication does not share this route (see adminLogin). */
   login: '/login',
+  /**
+   * Administrator login. Deliberately unlinked: no button, menu item or navigation
+   * reference anywhere in the app points here — admins reach it by typing the URL.
+   */
+  adminLogin: '/admin-login',
   changePassword: '/change-password',
   // Phase 6 (D7, in its honest shape): no email channel exists, so the reset code is
   // handed over out of band — these screens are where it gets used.
@@ -81,5 +87,24 @@ export function homePathForRole(role: UserRole): string {
       return paths.counselorDashboard;
     case 'student':
       return paths.studentDashboard;
+  }
+}
+
+/**
+ * Which door a role signs back in through (§38) — the inverse of homePathForRole.
+ *
+ * Every session that ends has to send someone somewhere, and since each role now has its own
+ * door and each door refuses the other roles, sending everyone to /login strands the ones it
+ * refuses. That matters most for an admin: /admin-login is deliberately unlinked, so an admin
+ * dropped at the counselor door has no route back that the UI will show them.
+ */
+export function loginPathForRole(role: UserRole): string {
+  switch (role) {
+    case 'admin':
+      return paths.adminLogin;
+    case 'counselor':
+      return paths.login;
+    case 'student':
+      return paths.studentAccess;
   }
 }

@@ -56,8 +56,8 @@ export function CareerMapping({ collegeId, program }: CareerMappingProps) {
   };
 
   return (
-    <div className="flex flex-col gap-3 border-t border-slate-100 pt-3">
-      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+    <div className="flex flex-col gap-3 border-t border-border pt-3">
+      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         <Link2 className="size-3.5" aria-hidden="true" />
         Careers this program leads to
       </div>
@@ -65,7 +65,7 @@ export function CareerMapping({ collegeId, program }: CareerMappingProps) {
       {message ? <Alert>{message}</Alert> : null}
 
       {linked.length === 0 ? (
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted-foreground">
           Not linked to any career yet — until it is, this program cannot be matched to a
           student's RIASEC profile.
         </p>
@@ -73,14 +73,14 @@ export function CareerMapping({ collegeId, program }: CareerMappingProps) {
         <ul className="flex flex-wrap gap-2">
           {linked.map((career) => (
             <li key={career.id}>
-              <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 py-1 pl-3 pr-1 text-sm text-slate-700">
+              <span className="inline-flex items-center gap-2 rounded-none border border-border bg-muted py-1 pl-3 pr-1 text-sm text-foreground/80">
                 <span>
                   <span className={career.status === 'archived' ? 'line-through opacity-60' : ''}>
                     {career.title}
                   </span>
                   {career.typical_riasec_code ? (
                     <span
-                      className="ml-1.5 font-mono text-xs tracking-wider text-slate-500"
+                      className="ml-1.5 font-mono text-xs tracking-wider text-muted-foreground"
                       title={describeHollandCode(career.typical_riasec_code) ?? undefined}
                     >
                       {career.typical_riasec_code}
@@ -93,7 +93,7 @@ export function CareerMapping({ collegeId, program }: CareerMappingProps) {
                     no chip at all.
                   */}
                   {career.status === 'archived' ? (
-                    <span className="ml-1.5 text-xs text-amber-700">archived — not counted</span>
+                    <span className="ml-1.5 text-xs text-accent">archived — not counted</span>
                   ) : null}
                 </span>
 
@@ -103,7 +103,7 @@ export function CareerMapping({ collegeId, program }: CareerMappingProps) {
                     detachCareer.mutate({ programId: program.id, careerId: career.id })
                   }
                   disabled={detachCareer.isPending}
-                  className="rounded-full p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-50"
+                  className="rounded-none p-1 text-muted-foreground hover:bg-secondary hover:text-foreground/80 disabled:opacity-50"
                   aria-label={`Unlink ${career.title} from ${program.code}`}
                 >
                   <X className="size-3.5" aria-hidden="true" />
@@ -148,7 +148,7 @@ export function CareerMapping({ collegeId, program }: CareerMappingProps) {
       ) : null}
 
       {careers && careers.items.length === 0 ? (
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted-foreground">
           There are no careers in the catalog yet. Add some on the Careers page, then link
           them here.
         </p>

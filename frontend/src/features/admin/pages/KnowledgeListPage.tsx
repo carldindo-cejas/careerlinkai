@@ -29,8 +29,8 @@ export function KnowledgeListPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">Knowledge documents</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">Knowledge documents</h1>
+        <p className="text-sm text-muted-foreground">
           What the AI is allowed to know. Explanations only ever cite content uploaded here —
           archiving a document removes it from the AI&apos;s reach immediately.
         </p>
@@ -38,7 +38,7 @@ export function KnowledgeListPage() {
 
       <UploadCard />
 
-      {isLoading ? <p className="text-sm text-slate-500">Loading documents…</p> : null}
+      {isLoading ? <p className="text-sm text-muted-foreground">Loading documents…</p> : null}
 
       {isError ? (
         <Alert>We could not load the document list. {error.message}</Alert>
@@ -108,7 +108,7 @@ function UploadCard() {
           ref={inputRef}
           type="file"
           accept=".pdf,.docx"
-          className="text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+          className="text-sm text-muted-foreground file:mr-3 file:rounded-none file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground/80 hover:file:bg-secondary"
           disabled={extracting || upload.isPending}
           onChange={(event) => {
             const file = event.target.files?.[0];
@@ -120,9 +120,9 @@ function UploadCard() {
         />
 
         {extracting ? (
-          <p className="text-sm text-slate-500">Extracting text from the document…</p>
+          <p className="text-sm text-muted-foreground">Extracting text from the document…</p>
         ) : null}
-        {upload.isPending ? <p className="text-sm text-slate-500">Uploading…</p> : null}
+        {upload.isPending ? <p className="text-sm text-muted-foreground">Uploading…</p> : null}
         {problem ? <Alert>{problem}</Alert> : null}
       </CardContent>
     </Card>
@@ -191,7 +191,7 @@ function DocumentRow({ document }: { document: KnowledgeDocument }) {
 
       {archived ? (
         <CardContent>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             No longer retrievable by the AI. The file and its history are kept — nothing is ever
             deleted.
           </p>

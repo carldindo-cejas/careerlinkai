@@ -58,7 +58,7 @@ export function AssessmentPlayerPage() {
     setHydrated(true);
   }
 
-  if (isLoading) return <p className="text-sm text-slate-500">Loading your assessment…</p>;
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading your assessment…</p>;
   if (error || !attempt) return <Alert tone="danger">This assessment could not be loaded.</Alert>;
 
   if (attempt.status !== 'IN_PROGRESS') {
@@ -105,9 +105,9 @@ export function AssessmentPlayerPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">{attempt.assessment?.title}</h1>
+        <h1 className="text-xl font-semibold text-foreground">{attempt.assessment?.title}</h1>
         {attempt.assessment?.instructions ? (
-          <p className="mt-1 max-w-2xl text-sm text-slate-500">
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             {attempt.assessment.instructions}
           </p>
         ) : null}
@@ -117,15 +117,15 @@ export function AssessmentPlayerPage() {
           between "nearly done" and "this is endless". */}
       <div>
         <div className="mb-2 flex items-baseline justify-between text-sm">
-          <span className="font-medium text-slate-700">
+          <span className="font-medium text-foreground/80">
             {question.section_label ? `${question.section_label} · ` : null}
             Question {index + 1} of {questions.length}
           </span>
-          <span className="text-slate-500">{answeredCount} answered</span>
+          <span className="text-muted-foreground">{answeredCount} answered</span>
         </div>
-        <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+        <div className="h-2 w-full overflow-hidden border border-border bg-secondary">
           <div
-            className="h-full rounded-full bg-slate-900 transition-all"
+            className="h-full bg-primary transition-all"
             style={{ width: `${(answeredCount / questions.length) * 100}%` }}
           />
         </div>
@@ -146,10 +146,12 @@ export function AssessmentPlayerPage() {
                 aria-pressed={selected}
                 onClick={() => choose(question.id, option.id)}
                 className={[
-                  'rounded-lg border px-4 py-3 text-left text-sm transition',
+                  'rounded-none border px-4 py-3 text-left text-sm transition',
+                  // Selected is the one filled object on the screen — the same steel block the
+                  // primary button uses. Unselected is a hairline outline on the ground.
                   selected
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400',
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-transparent text-foreground/80 hover:border-primary',
                 ].join(' ')}
               >
                 {option.label}
@@ -179,12 +181,12 @@ export function AssessmentPlayerPage() {
       <Card>
         <CardContent className="flex flex-col gap-3 pt-6">
           {remaining > 0 ? (
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-muted-foreground">
               {remaining} {remaining === 1 ? 'question' : 'questions'} left to answer before you can
               submit.
             </p>
           ) : (
-            <p className="text-sm text-emerald-700">
+            <p className="text-sm text-primary">
               All {questions.length} questions answered. You can submit now.
             </p>
           )}

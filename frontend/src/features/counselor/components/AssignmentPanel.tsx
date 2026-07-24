@@ -91,7 +91,7 @@ export function AssignmentPanel({ classId }: { classId: string }) {
           </Alert>
         ) : null}
 
-        {isLoading ? <p className="text-sm text-slate-500">Loading assignments…</p> : null}
+        {isLoading ? <p className="text-sm text-muted-foreground">Loading assignments…</p> : null}
 
         {/*
           D11. "Nothing assigned yet" on a failed load is the counselor-side version of the same
@@ -102,7 +102,7 @@ export function AssignmentPanel({ classId }: { classId: string }) {
         {isError ? <Alert tone="danger">{error.message}</Alert> : null}
 
         {assignments && assignments.length === 0 ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             Nothing assigned yet. Students see an empty list until you assign something.
           </p>
         ) : null}
@@ -135,14 +135,14 @@ function AssignmentRow({
   const open = assignment.status === 'ACTIVE';
 
   return (
-    <div className="rounded-lg border border-slate-200 p-4">
+    <div className="rounded-none border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="flex items-center gap-2 font-medium text-slate-900">
+          <p className="flex items-center gap-2 font-medium text-foreground">
             {assignment.assessment.title}
             {open ? <Badge tone="success">Open</Badge> : <Badge>Closed</Badge>}
           </p>
-          <p className="mt-0.5 text-sm text-slate-500">
+          <p className="mt-0.5 text-sm text-muted-foreground">
             {assignment.assessment.question_count} questions
             {typeof assignment.submitted_count === 'number'
               ? ` · ${assignment.submitted_count} completed`

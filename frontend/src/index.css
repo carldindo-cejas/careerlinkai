@@ -1,48 +1,57 @@
-@import '@fontsource-variable/inter';
+@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600;700&display=swap');
 @import 'tailwindcss';
 
 /**
- * The CareerLinkAI design system (post-Phase-6 polish pass).
+ * CareerLinkAI design system — "Industry" retune.
  *
  * shadcn/ui theming convention on Tailwind v4: semantic tokens as CSS variables, mapped
- * into Tailwind color names via @theme inline. The palette comes from the brand logo —
- * violet + teal over a deep indigo navy — with slate neutrals. Light theme only for v1
- * (a ratified decision; the dark reference is deferred).
+ * into Tailwind color names via @theme inline. Because the components consume the semantic
+ * names (bg-primary, text-foreground, border-border, bg-sidebar …), retuning the variables
+ * here reskins the whole app in one file.
+ *
+ * Industry is a steel-blue technical wireframe on a light ground: a single accent
+ * (#5980a6), squared corners, Barlow Condensed headings over Barlow body. Light theme only.
  */
 
 :root {
-  --background: #f8fafc; /* slate-50 */
-  --foreground: #0f172a; /* slate-900 */
-  --card: #ffffff;
-  --card-foreground: #0f172a;
-  --popover: #ffffff;
-  --popover-foreground: #0f172a;
-  --primary: #6d28d9; /* violet-700 — the logo's purple, at AA contrast on white */
-  --primary-foreground: #ffffff;
-  --secondary: #f1f5f9; /* slate-100 */
-  --secondary-foreground: #0f172a;
-  --muted: #f1f5f9;
-  --muted-foreground: #64748b; /* slate-500 */
-  --accent: #0d9488; /* teal-600 — the logo's arrow */
-  --accent-foreground: #ffffff;
-  --destructive: #dc2626; /* red-600 */
-  --destructive-foreground: #ffffff;
-  --border: #e2e8f0; /* slate-200 */
-  --input: #e2e8f0;
-  --ring: #8b5cf6; /* violet-500 */
-  --radius: 0.75rem;
+  --background: #f2f2f3; /* technical ground */
+  --foreground: #1d1f20;
+  --card: #f2f2f3; /* cards read as wireframe frames — the border does the work, not a fill */
+  --card-foreground: #1d1f20;
+  --popover: #f2f2f3;
+  --popover-foreground: #1d1f20;
 
-  /* The staff sidebar — the deep navy the logo sits on in the references. */
-  --sidebar: #171338;
-  --sidebar-foreground: #c7c3e6;
-  --sidebar-muted: #8b86b8;
-  --sidebar-active: #2a2454;
-  --sidebar-active-foreground: #ffffff;
-  --sidebar-border: #2a2454;
+  --primary: #5980a6; /* the steel accent — the one solid object on the board */
+  --primary-foreground: #f2f2f3;
+
+  --secondary: #e7e7ea; /* neutral-200 — tinted fills, chips, hovers */
+  --secondary-foreground: #1d1f20;
+  --muted: #e7e7ea;
+  --muted-foreground: #5d5d60; /* neutral-700 — readable muted text on the ground */
+
+  --accent: #416180; /* accent-700 — deep steel for small accent text/fills (mono scheme) */
+  --accent-foreground: #f2f2f3;
+
+  --destructive: #b23b34; /* functional danger only — a restrained brick, not decoration */
+  --destructive-foreground: #f2f2f3;
+
+  --border: #d4d4d7; /* hairline dividers (neutral-300) */
+  --input: #d4d4d7;
+  --ring: #5980a6;
+  --radius: 0.25rem; /* squared: lg 4px · md 2px · sm 0 — the Industry 4px feel */
+
+  /* The staff sidebar — Industry's sanctioned deep-accent field, type reversed to paper. */
+  --sidebar: #1d2d3d; /* accent-900 */
+  --sidebar-foreground: #a9b7c4;
+  --sidebar-muted: #7c8ea0;
+  --sidebar-active: #2c455d; /* accent-800 */
+  --sidebar-active-foreground: #f2f2f3;
+  --sidebar-border: #2c455d;
 }
 
 @theme inline {
-  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+  --font-heading: 'Barlow Condensed', 'Barlow', ui-sans-serif, system-ui, sans-serif;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -88,4 +97,21 @@ body {
   color: var(--foreground);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* Headings take the condensed face — CardTitle (<h2>) and every page <h1> inherit this
+   automatically, since they set no font utility of their own. */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+/* Keyboard focus is the accent ring, never the browser blue. */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+::selection {
+  background: color-mix(in srgb, var(--primary) 30%, transparent);
 }

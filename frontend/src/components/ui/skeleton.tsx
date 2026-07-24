@@ -8,5 +8,5 @@ import { cn } from '@/components/ui/cn';
  * while data arrives reads as fast; one that reflows reads as broken.
  */
 export function Skeleton({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('animate-pulse rounded-md bg-secondary', className)} {...props} />;
+  return <div className={cn('animate-pulse rounded-none bg-secondary', className)} {...props} />;
 }

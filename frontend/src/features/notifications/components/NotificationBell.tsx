@@ -49,24 +49,24 @@ export function NotificationBell() {
         aria-label={unread > 0 ? `Notifications (${unread} unread)` : 'Notifications'}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="relative rounded-md p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+        className="relative rounded-none p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <Bell className="size-5" aria-hidden="true" />
         {unread > 0 ? (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-semibold text-white">
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-none bg-destructive px-1 text-[10px] font-semibold tabular-nums text-destructive-foreground">
             {unread > 99 ? '99+' : unread}
           </span>
         ) : null}
       </button>
 
       {open ? (
-        <div className="absolute right-0 z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
-            <span className="text-sm font-semibold text-slate-900">Notifications</span>
+        <div className="absolute right-0 z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-none border border-border bg-background">
+          <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+            <span className="text-sm font-semibold text-foreground">Notifications</span>
             {unread > 0 ? (
               <button
                 type="button"
-                className="text-xs font-medium text-slate-500 hover:text-slate-800"
+                className="text-xs font-medium text-muted-foreground hover:text-foreground"
                 onClick={() => markAllRead.mutate()}
                 disabled={markAllRead.isPending}
               >
@@ -76,16 +76,16 @@ export function NotificationBell() {
           </div>
 
           <div className="max-h-96 overflow-y-auto">
-            {isLoading ? <p className="px-4 py-6 text-sm text-slate-500">Loading…</p> : null}
+            {isLoading ? <p className="px-4 py-6 text-sm text-muted-foreground">Loading…</p> : null}
 
             {isError ? (
-              <p className="px-4 py-6 text-sm text-slate-500">
+              <p className="px-4 py-6 text-sm text-muted-foreground">
                 We could not load your notifications.
               </p>
             ) : null}
 
             {data && data.items.length === 0 ? (
-              <p className="px-4 py-6 text-center text-sm text-slate-500">
+              <p className="px-4 py-6 text-center text-sm text-muted-foreground">
                 Nothing yet. You’ll hear from us when something is ready.
               </p>
             ) : null}
@@ -122,14 +122,14 @@ function NotificationRow({
         }
       }}
       className={cn(
-        'block w-full border-b border-slate-50 px-4 py-3 text-left transition-colors last:border-b-0',
-        unread ? 'bg-slate-50/80 hover:bg-slate-100' : 'hover:bg-slate-50',
+        'block w-full border-b border-border px-4 py-3 text-left transition-colors last:border-b-0',
+        unread ? 'bg-muted/80 hover:bg-secondary' : 'hover:bg-muted',
       )}
     >
       <span className="flex items-start gap-2">
         {unread ? (
           <span
-            className="mt-1.5 size-1.5 shrink-0 rounded-full bg-sky-500"
+            className="mt-1.5 size-1.5 shrink-0 rounded-full bg-primary"
             aria-hidden="true"
           />
         ) : (
@@ -139,14 +139,14 @@ function NotificationRow({
           <span
             className={cn(
               'block text-sm',
-              unread ? 'font-semibold text-slate-900' : 'font-medium text-slate-700',
+              unread ? 'font-semibold text-foreground' : 'font-medium text-foreground/80',
             )}
           >
             {notification.title}
           </span>
-          <span className="mt-0.5 block text-sm text-slate-500">{notification.message}</span>
+          <span className="mt-0.5 block text-sm text-muted-foreground">{notification.message}</span>
           {notification.created_at ? (
-            <span className="mt-1 block text-xs text-slate-400">
+            <span className="mt-1 block text-xs text-muted-foreground">
               {relativeTime(notification.created_at)}
             </span>
           ) : null}

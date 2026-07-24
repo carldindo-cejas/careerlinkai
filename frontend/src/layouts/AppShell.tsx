@@ -1,15 +1,16 @@
 import { LogOut, Menu, type LucideIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
 import { Logo } from '@/components/brand/Logo';
+import { Corners } from '@/components/ui/blueprint';
 import { cn } from '@/components/ui/cn';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { useLogout } from '@/features/auth/hooks/useAuth';
 import { NotificationBell } from '@/features/notifications/components/NotificationBell';
 import { useAuthStore } from '@/stores/authStore';
 
-export interface StaffNavItem {
+export interface AppNavItem {
   to: string;
   label: string;
   icon: LucideIcon;
@@ -17,17 +18,26 @@ export interface StaffNavItem {
   end?: boolean;
 }
 
-export interface StaffLayoutProps {
+export interface AppShellProps {
   title: string;
-  nav: StaffNavItem[];
+  nav: AppNavItem[];
+  /** Extra chrome next to the breadcrumb — the student shell shows the joined class here. */
+  headerBadge?: ReactNode;
+  /**
+   * Runs after sign-out settles. The student shell clears the joined-class context here
+   * so the next student on a shared lab machine never sees the last one's class.
+   */
+  onSignedOut?: () => void;
 }
 
 /**
- * The signed-in staff shell (FULLPLAN §35) — post-Phase-6 design pass: a deep-navy
- * sidebar (the reference layout), collapsing to a sheet drawer under `lg`. AdminLayout
- * and CounselorLayout compose this; they differ only in title and navigation.
+ * The signed-in application shell (FULLPLAN §35) — one layout system for all three
+ * roles: a deep-navy sidebar (the reference layout) collapsing to a sheet drawer under
+ * `lg`, and a sticky top bar with the notification bell and identity. AdminLayout,
+ * CounselorLayout and StudentLayout compose this; they differ only in title, navigation
+ * and the small role-specific chrome passed through props.
  */
-export function StaffLayout({ title, nav }: StaffLayoutProps) {
+export function AppShell({ title, nav, headerBadge, onSignedOut }: AppShellProps) {
   const user = useAuthStore((state) => state.user);
   const logout = useLogout();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -40,7 +50,9 @@ export function StaffLayout({ title, nav }: StaffLayoutProps) {
       userName={user?.name ?? null}
       userRole={user?.role ?? null}
       signingOut={logout.isPending}
-      onSignOut={() => logout.mutate()}
+      onSignOut={() =>
+        logout.mutate(undefined, onSignedOut ? { onSettled: onSignedOut } : undefined)
+      }
     />
   );
 
@@ -53,13 +65,13 @@ export function StaffLayout({ title, nav }: StaffLayoutProps) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar: drawer trigger on mobile, bell + identity everywhere. */}
-        <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur">
+        <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur">
           <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
             <div className="flex items-center gap-3">
               <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
                 <SheetTrigger
                   aria-label="Open menu"
-                  className="rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
+                  className="rounded-none p-2 text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
                 >
                   <Menu className="size-5" aria-hidden="true" />
                 </SheetTrigger>
@@ -79,17 +91,18 @@ export function StaffLayout({ title, nav }: StaffLayoutProps) {
                 <Logo />
               </div>
 
-              {/* Section heading on desktop — the sidebar already carries the brand. */}
-              <span className="hidden text-sm font-medium text-muted-foreground lg:block">
-                {breadcrumbFor(location.pathname, nav) ?? title}
-              </span>
+              {/* Breadcrumb trail on desktop — the sidebar already carries the brand. */}
+              <Breadcrumbs title={title} nav={nav} pathname={location.pathname} />
+
+              {headerBadge}
             </div>
 
             <div className="flex items-center gap-3">
               <NotificationBell />
               {user ? (
                 <span className="hidden items-center gap-2 sm:flex">
-                  <span className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                  <span className="relative flex size-8 items-center justify-center border border-border bg-primary/10 text-sm font-semibold tabular-nums text-primary">
+                    <Corners />
                     {initials(user.name)}
                   </span>
                   <span className="text-sm text-foreground/80">{user.name}</span>
@@ -106,13 +119,59 @@ export function StaffLayout({ title, nav }: StaffLayoutProps) {
     </div>
   );
 
-  function breadcrumbFor(pathname: string, items: StaffNavItem[]): string | null {
-    const match = items
-      .filter((item) => (item.end ? pathname === item.to : pathname.startsWith(item.to)))
-      .sort((a, b) => b.to.length - a.to.length)[0];
+}
 
-    return match?.label ?? null;
-  }
+/**
+ * A real trail rather than a bare section label: `Admin / Colleges`, with the root linking to the
+ * shell's first nav item (its dashboard). Two levels is all the route data honestly supports —
+ * a detail route like /admin/colleges/:id matches its list's prefix, so it names the section it
+ * sits under and does not invent a leaf label it has no source for.
+ */
+function Breadcrumbs({
+  title,
+  nav,
+  pathname,
+}: {
+  title: string;
+  nav: AppNavItem[];
+  pathname: string;
+}) {
+  const root = nav[0];
+  const match = nav
+    .filter((item) => (item.end ? pathname === item.to : pathname.startsWith(item.to)))
+    .sort((a, b) => b.to.length - a.to.length)[0];
+
+  // At the root itself the trail would read "Admin / Dashboard" — the section alone is truer.
+  const leaf = match && match.to !== root?.to ? match.label : null;
+
+  return (
+    <nav aria-label="Breadcrumb" className="hidden text-sm lg:block">
+      <ol className="flex items-center gap-1.5">
+        <li>
+          {root ? (
+            <NavLink
+              to={root.to}
+              className="uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {title}
+            </NavLink>
+          ) : (
+            <span className="uppercase tracking-wide text-muted-foreground">{title}</span>
+          )}
+        </li>
+        {leaf ? (
+          <>
+            <li aria-hidden="true" className="text-border">
+              /
+            </li>
+            <li className="font-medium text-foreground" aria-current="page">
+              {leaf}
+            </li>
+          </>
+        ) : null}
+      </ol>
+    </nav>
+  );
 }
 
 function SidebarBody({
@@ -124,7 +183,7 @@ function SidebarBody({
   onSignOut,
 }: {
   title: string;
-  nav: StaffNavItem[];
+  nav: AppNavItem[];
   userName: string | null;
   userRole: string | null;
   signingOut: boolean;
@@ -133,7 +192,7 @@ function SidebarBody({
   return (
     <div className="flex h-full flex-col">
       <div className="px-5 pb-5 pt-6">
-        <Logo wordmarkClassName="text-sidebar-active-foreground" />
+        <Logo wordmarkClassName="text-sidebar-foreground" />
         <p className="mt-1.5 pl-[2.9rem] text-xs font-medium uppercase tracking-widest text-sidebar-muted">
           {title}
         </p>
@@ -150,10 +209,12 @@ function SidebarBody({
               end={item.end ?? false}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+                  // The transparent left border on the inactive state reserves the accent bar's
+                  // width, so lighting a link up never shifts its label sideways.
+                  'flex items-center gap-3 rounded-none border-l-2 px-3 py-2.5 text-sm font-medium transition-colors',
                   isActive
-                    ? 'bg-sidebar-active text-sidebar-active-foreground'
-                    : 'text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground',
+                    ? 'border-primary bg-sidebar-active text-sidebar-active-foreground'
+                    : 'border-transparent text-sidebar-muted hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground',
                 )
               }
             >
@@ -167,7 +228,8 @@ function SidebarBody({
       <div className="border-t border-sidebar-border p-3">
         {userName ? (
           <div className="flex items-center gap-3 px-2 pb-3 pt-1">
-            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-sm font-semibold text-sidebar-active-foreground">
+            <span className="relative flex size-8 shrink-0 items-center justify-center border border-sidebar-border bg-sidebar-active text-sm font-semibold text-sidebar-active-foreground">
+              <Corners />
               {initials(userName)}
             </span>
             <span className="min-w-0">
@@ -183,7 +245,7 @@ function SidebarBody({
           type="button"
           onClick={onSignOut}
           disabled={signingOut}
-          className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground disabled:opacity-50"
+          className="flex w-full items-center gap-3 rounded-none border-l-2 border-transparent px-3 py-2.5 text-sm font-medium text-sidebar-muted transition-colors hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground disabled:opacity-50"
         >
           <LogOut className="size-4" aria-hidden="true" />
           {signingOut ? 'Signing out…' : 'Sign out'}

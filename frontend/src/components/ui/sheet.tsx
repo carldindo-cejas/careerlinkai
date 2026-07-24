@@ -31,7 +31,7 @@ export function SheetContent({
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
       <DialogPrimitive.Content
         className={cn(
-          'fixed inset-y-0 z-50 flex w-72 flex-col bg-sidebar text-sidebar-foreground shadow-xl outline-none transition-transform',
+          'fixed inset-y-0 z-50 flex w-72 flex-col bg-sidebar text-sidebar-foreground outline-none transition-transform',
           side === 'left' ? 'left-0' : 'right-0',
           className,
         )}
@@ -41,7 +41,7 @@ export function SheetContent({
         {children}
         <DialogPrimitive.Close
           aria-label="Close menu"
-          className="absolute right-3 top-3 rounded-md p-1.5 text-sidebar-muted hover:bg-sidebar-active hover:text-sidebar-active-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="absolute right-3 top-3 rounded-none p-1.5 text-sidebar-muted hover:bg-sidebar-active hover:text-sidebar-active-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <X className="size-4" aria-hidden="true" />
         </DialogPrimitive.Close>

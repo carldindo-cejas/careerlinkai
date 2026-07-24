@@ -24,8 +24,8 @@ export function CollegeListPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">Colleges</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-xl font-semibold text-foreground">Colleges</h1>
+          <p className="text-sm text-muted-foreground">
             The institutions students can be recommended to, and the programs each one offers.
           </p>
         </div>
@@ -52,7 +52,7 @@ export function CollegeListPage() {
 
       {isPending ? (
         <div className="flex justify-center py-12" role="status">
-          <Loader2 className="size-6 animate-spin text-slate-400" aria-hidden="true" />
+          <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
           <span className="sr-only">Loading colleges…</span>
         </div>
       ) : null}
@@ -88,7 +88,7 @@ function CollegeCard({ college }: { college: College }) {
   const programCount = college.programs_count ?? 0;
 
   return (
-    <Card className="h-full transition-colors hover:border-slate-300">
+    <Card className="h-full transition-colors hover:border-primary">
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <CardTitle>
@@ -107,7 +107,7 @@ function CollegeCard({ college }: { college: College }) {
       <CardContent>
         <Link
           to={collegeDetailPath(college.id)}
-          className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
         >
           <GraduationCap className="size-4" aria-hidden="true" />
           {programCount === 0

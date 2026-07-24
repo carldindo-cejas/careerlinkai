@@ -3,16 +3,19 @@ import type { ReactNode } from 'react';
 
 import { cn } from '@/components/ui/cn';
 
+// Mono scheme: success/brand read steel, warning reads deep steel. There is no second accent hue,
+// so a badge's tone carries meaning through weight and fill, not through a colour wheel.
 const badgeVariants = cva(
-  'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize',
+  'inline-flex items-center rounded-none px-2 py-0.5 text-xs font-medium tracking-wide',
   {
     variants: {
       tone: {
-        neutral: 'bg-secondary text-secondary-foreground/80',
-        success: 'bg-emerald-100 text-emerald-800',
-        warning: 'bg-amber-100 text-amber-800',
+        neutral: 'bg-secondary text-muted-foreground',
+        success: 'bg-primary/10 text-primary',
+        warning: 'bg-accent/10 text-accent',
         brand: 'bg-primary/10 text-primary',
-        accent: 'bg-teal-100 text-teal-800',
+        accent: 'bg-accent/10 text-accent',
+        outline: 'border border-border bg-transparent text-muted-foreground',
       },
     },
     defaultVariants: {

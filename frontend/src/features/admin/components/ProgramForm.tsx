@@ -169,7 +169,7 @@ export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFo
               {/* Only an active program is ever recommended (§27) — so this is not a label,
                   it is the difference between a program students can be matched to and one
                   that exists only in the catalog. */}
-              <p className="text-xs text-slate-500">Only active programs are recommended.</p>
+              <p className="text-xs text-muted-foreground">Only active programs are recommended.</p>
             </div>
 
             <div className="flex flex-col gap-1.5 sm:col-span-3">
@@ -194,5 +194,5 @@ export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFo
 }
 
 function FieldError({ message }: { message?: string | undefined }) {
-  return message ? <p className="text-sm text-red-600">{message}</p> : null;
+  return message ? <p className="text-sm text-destructive">{message}</p> : null;
 }

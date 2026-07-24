@@ -37,6 +37,17 @@ export const authApi = {
     await httpClient.post('/auth/logout');
   },
 
+  /**
+   * Revoke a token that was never stored. The interceptor attaches the token from the
+   * auth store, which is empty when a login screen refuses a wrong-role sign-in — so
+   * this variant carries the freshly issued token explicitly.
+   */
+  async revoke(token: string): Promise<void> {
+    await httpClient.post('/auth/logout', undefined, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+
   async changePassword(payload: ChangePasswordPayload): Promise<void> {
     await httpClient.post('/auth/change-password', payload);
   },

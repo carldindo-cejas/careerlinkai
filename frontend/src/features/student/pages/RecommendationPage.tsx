@@ -30,7 +30,7 @@ export function RecommendationPage() {
   const navigate = useNavigate();
 
   if (isLoading) {
-    return <p className="text-sm text-slate-500">Working out your recommendations…</p>;
+    return <p className="text-sm text-muted-foreground">Working out your recommendations…</p>;
   }
 
   // D11's rule, applied from the start on this screen rather than retrofitted onto it: a failed
@@ -47,8 +47,8 @@ export function RecommendationPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">My recommendations</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">My recommendations</h1>
+        <p className="text-sm text-muted-foreground">
           Ranked from your RIASEC interests, your SCCT confidence, and your academic profile. Every
           score here is calculated — no AI decided any of it.
         </p>
@@ -80,8 +80,8 @@ export function RecommendationPage() {
         <>
           <section className="flex flex-col gap-4">
             <div>
-              <h2 className="text-lg font-semibold text-slate-900">Careers</h2>
-              <p className="text-sm text-slate-500">
+              <h2 className="text-lg font-semibold text-foreground">Careers</h2>
+              <p className="text-sm text-muted-foreground">
                 Matched against your interest profile and your confidence scores.
               </p>
             </div>
@@ -93,8 +93,8 @@ export function RecommendationPage() {
 
           <section className="flex flex-col gap-4">
             <div>
-              <h2 className="text-lg font-semibold text-slate-900">Programs</h2>
-              <p className="text-sm text-slate-500">
+              <h2 className="text-lg font-semibold text-foreground">Programs</h2>
+              <p className="text-sm text-muted-foreground">
                 These also weigh your strand and your general weighted average — which is why a
                 program can rank differently from the careers it leads to.
               </p>
@@ -121,7 +121,7 @@ export function RecommendationPage() {
 function MatchScore({ score, rank }: { score: number; rank: number }) {
   return (
     <div className="flex flex-col items-end">
-      <span className="text-2xl font-semibold text-slate-900">{score.toFixed(1)}%</span>
+      <span className="text-2xl font-semibold text-foreground">{score.toFixed(1)}%</span>
       <Badge tone={rank === 1 ? 'success' : undefined}>
         {rank === 1 ? 'Best match' : `#${rank}`}
       </Badge>
@@ -143,9 +143,9 @@ function ExplainMore({ recommendationId }: { recommendationId: string }) {
 
   if (explain.data?.explanation) {
     return (
-      <div className="rounded-md bg-slate-50 p-3">
-        <p className="text-sm text-slate-700">{explain.data.explanation.explanation_text}</p>
-        <p className="mt-1 text-xs text-slate-400">
+      <div className="rounded-none bg-muted p-3">
+        <p className="text-sm text-foreground/80">{explain.data.explanation.explanation_text}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
           AI-generated from the school&apos;s guidance materials — the scores above are computed,
           not AI.
         </p>
@@ -155,7 +155,7 @@ function ExplainMore({ recommendationId }: { recommendationId: string }) {
 
   if (explain.data && explain.data.explanation === null) {
     return (
-      <p className="text-sm text-slate-500">
+      <p className="text-sm text-muted-foreground">
         An AI explanation isn&apos;t available right now — the reason above is the computed one
         and still stands.
       </p>
@@ -174,7 +174,7 @@ function ExplainMore({ recommendationId }: { recommendationId: string }) {
         </Button>
       </div>
       {explain.isError ? (
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted-foreground">
           We couldn&apos;t reach the explanation service. {explain.error.message}
         </p>
       ) : null}
@@ -205,10 +205,10 @@ function CareerCard({ recommendation }: { recommendation: CareerRecommendation }
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">
-        <p className="text-sm text-slate-600">{recommendation.reason}</p>
+        <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
 
         {career.salary_range || career.employment_outlook ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             {career.salary_range}
             {career.salary_range && career.employment_outlook ? ' · ' : null}
             {career.employment_outlook}
@@ -247,10 +247,10 @@ function ProgramCard({ recommendation }: { recommendation: ProgramRecommendation
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">
-        <p className="text-sm text-slate-600">{recommendation.reason}</p>
+        <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
 
         {program.recommended_strand ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             Typically taken by <strong>{program.recommended_strand}</strong> students.
           </p>
         ) : null}

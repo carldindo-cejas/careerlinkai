@@ -88,7 +88,7 @@ export function ResetPasswordPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Link to={paths.login} className="text-sm font-medium text-slate-900 hover:underline">
+          <Link to={paths.login} className="text-sm font-medium text-foreground hover:underline">
             Sign in with your new password
           </Link>
         </CardContent>
@@ -148,7 +148,7 @@ export function ResetPasswordPage() {
             Reset password
           </Button>
 
-          <Link className="text-center text-sm text-slate-500 hover:underline" to={paths.login}>
+          <Link className="text-center text-sm text-muted-foreground hover:underline" to={paths.login}>
             Back to sign in
           </Link>
         </form>
@@ -182,7 +182,7 @@ function Field({
         {...(autoComplete ? { autoComplete } : {})}
         {...registration}
       />
-      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
     </div>
   );
 }

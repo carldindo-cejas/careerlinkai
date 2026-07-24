@@ -1,20 +1,35 @@
+import {
+  BookOpenCheck,
+  ChartColumn,
+  CheckCircle2,
+  Compass,
+  Sparkles,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
+import { BarList } from '@/components/charts/BarList';
+import { chartColors } from '@/components/charts/colors';
+import { ColumnChart } from '@/components/charts/ColumnChart';
+import { DonutChart } from '@/components/charts/DonutChart';
+import { Meter } from '@/components/charts/Meter';
+import { StatCard } from '@/components/dashboard/StatCard';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAssignments, useProfile, useResults } from '@/features/student/hooks/useAssessment';
 import { useStudentDashboard } from '@/features/student/hooks/useDashboard';
+import { useMyRecommendations } from '@/features/student/hooks/useRecommendations';
 import { paths } from '@/routes/paths';
 import { useAuthStore } from '@/stores/authStore';
 import { useStudentClassStore } from '@/stores/studentClassStore';
+import type { AssessmentResult } from '@/types/assessment';
 
 /**
- * The student's landing page (FULLPLAN §37).
- *
- * It answers one question — *what should I do next?* — and then gets out of the way. A dashboard
- * that presents a student with five equal-weight cards has not decided anything on their behalf,
- * which is the one thing a landing page is for.
+ * The student's landing page (FULLPLAN §37) — analytics pass over the idea1 reference:
+ * a KPI row, then chart cards (progress donut, RIASEC profile, recommendation
+ * confidence) around the one question the page still answers first: *what should I do
+ * next?* Every chart renders real data when it exists and says plainly what is missing
+ * when it does not — never a zero pretending to be a measurement.
  */
 export function StudentDashboardPage() {
   const user = useAuthStore((state) => state.user);
@@ -26,17 +41,25 @@ export function StudentDashboardPage() {
   // Phase 6: the aggregate view — used for the one fact the other queries cannot answer,
   // "do I have recommendations waiting?" (§27 needs both RIASEC and SCCT before any exist).
   const { data: dashboard } = useStudentDashboard();
+  const { data: recommendations } = useMyRecommendations();
   const navigate = useNavigate();
 
-  const todo = (assignments ?? []).filter((a) => a.my_attempt?.status !== 'SCORED');
+  const all = assignments ?? [];
+  const scored = all.filter((a) => a.my_attempt?.status === 'SCORED');
+  const inProgress = all.filter((a) => a.my_attempt?.status === 'IN_PROGRESS');
+  const notStarted = all.filter((a) => !a.my_attempt || a.my_attempt.status === 'EXPIRED');
+  const todo = all.filter((a) => a.my_attempt?.status !== 'SCORED');
   const done = results ?? [];
+
+  const completionPercent = all.length > 0 ? (scored.length / all.length) * 100 : null;
+  const riasec = latestRiasecResult(done);
 
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">Welcome, {user?.name ?? 'student'}</h1>
+        <h1 className="text-xl font-semibold text-foreground">Welcome, {user?.name ?? 'student'}</h1>
         {classRoom ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             {classRoom.name} · {classRoom.academic_year}
             {classRoom.grade_level ? ` · ${classRoom.grade_level}` : null}
           </p>
@@ -52,6 +75,40 @@ export function StudentDashboardPage() {
           </button>
         </Alert>
       ) : null}
+
+      {/* KPI row — real counts, no teasers. */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          icon={<BookOpenCheck className="size-4" aria-hidden="true" />}
+          label="Assessments"
+          value={all.length}
+          hint={todo.length > 0 ? `${todo.length} still to finish` : 'all done'}
+          to={paths.studentAssessments}
+        />
+        <StatCard
+          icon={<CheckCircle2 className="size-4" aria-hidden="true" />}
+          label="Completed"
+          value={scored.length}
+          hint={inProgress.length > 0 ? `${inProgress.length} in progress` : undefined}
+        />
+        <StatCard
+          icon={<ChartColumn className="size-4" aria-hidden="true" />}
+          label="Results"
+          value={dashboard?.results_count ?? done.length}
+          to={paths.studentResults}
+        />
+        <StatCard
+          icon={<Compass className="size-4" aria-hidden="true" />}
+          label="Recommendations"
+          value={dashboard?.recommendations_ready ? 'Ready' : '—'}
+          hint={
+            dashboard?.recommendations_ready
+              ? 'drawn from RIASEC and SCCT'
+              : 'finish both assessments first'
+          }
+          to={dashboard?.recommendations_ready ? paths.studentRecommendations : undefined}
+        />
+      </div>
 
       {/*
         Deviation D11, and this card is the reason D11 was written down.
@@ -72,60 +129,203 @@ export function StudentDashboardPage() {
           keeps happening, tell your counselor.
         </Alert>
       ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle>{todo.length > 0 ? 'You have work to do' : 'Nothing to do yet'}</CardTitle>
-            <CardDescription>
-              {todo.length > 0
-                ? `${todo.length} ${todo.length === 1 ? 'assessment is' : 'assessments are'} waiting for you.`
-                : 'Your counselor will assign you an assessment. It will show up here.'}
-            </CardDescription>
-          </CardHeader>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>{todo.length > 0 ? 'You have work to do' : 'Nothing to do yet'}</CardTitle>
+              <CardDescription>
+                {todo.length > 0
+                  ? `${todo.length} ${todo.length === 1 ? 'assessment is' : 'assessments are'} waiting for you.`
+                  : 'Your counselor will assign you an assessment. It will show up here.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              {todo.length > 0 ? (
+                <Button onClick={() => navigate(paths.studentAssessments)} className="w-fit">
+                  {inProgress.length > 0 ? 'Continue where I left off' : 'Start'}
+                </Button>
+              ) : null}
 
-          {todo.length > 0 ? (
-            <CardContent>
-              <Button onClick={() => navigate(paths.studentAssessments)}>
-                {todo.some((a) => a.my_attempt?.status === 'IN_PROGRESS')
-                  ? 'Continue where I left off'
-                  : 'Start'}
-              </Button>
+              {/* Phase 6: only rendered once recommendations actually exist — never as a teaser. */}
+              {dashboard?.recommendations_ready ? (
+                <div className="rounded-none bg-primary/5 p-4">
+                  <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                    <Sparkles className="size-4 text-primary" aria-hidden="true" />
+                    Your recommendations are ready
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Ranked careers and programs, drawn from your RIASEC and SCCT results together.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="mt-3"
+                    onClick={() => navigate(paths.studentRecommendations)}
+                  >
+                    See my recommendations
+                  </Button>
+                </div>
+              ) : null}
             </CardContent>
-          ) : null}
-        </Card>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Assessment progress</CardTitle>
+              <CardDescription>
+                {all.length > 0
+                  ? 'Where each assigned assessment stands.'
+                  : 'Once something is assigned, your progress shows here.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-5">
+              <DonutChart
+                segments={[
+                  { label: 'Completed', value: scored.length, color: chartColors.primary },
+                  { label: 'In progress', value: inProgress.length, color: chartColors.accent },
+                  { label: 'Not started', value: notStarted.length, color: chartColors.amber },
+                ]}
+                centerValue={String(all.length)}
+                centerLabel={all.length === 1 ? 'assessment' : 'assessments'}
+              />
+              {completionPercent !== null ? (
+                <Meter percent={completionPercent} label="complete" remainderLabel="to go" />
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Your RIASEC profile</CardTitle>
+              <CardDescription>
+                {riasec
+                  ? riasec.result?.result_code
+                    ? `Holland code ${riasec.result.result_code} — how strongly each interest area showed up.`
+                    : 'How strongly each interest area showed up.'
+                  : 'Take the RIASEC assessment to see your interest profile here.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {riasec ? (
+                <BarList
+                  max={100}
+                  items={riasec.dimensions.map((dimension) => ({
+                    label: dimension.name,
+                    value: Number.parseFloat(dimension.normalized_score),
+                    display: Number.parseFloat(dimension.normalized_score).toFixed(0),
+                  }))}
+                />
+              ) : (
+                <ChartPlaceholder />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Match confidence</CardTitle>
+              <CardDescription>
+                {recommendations
+                  ? 'How your career and program match scores are distributed.'
+                  : 'Your match-score spread appears once recommendations exist.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {recommendations ? (
+                <ColumnChart items={confidenceBuckets(recommendations)} />
+              ) : (
+                <ChartPlaceholder />
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {done.length > 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle>Your results</CardTitle>
+            <CardTitle>Recent activity</CardTitle>
             <CardDescription>
               {done.length} {done.length === 1 ? 'assessment' : 'assessments'} completed.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <Button variant="secondary" onClick={() => navigate(paths.studentResults)}>
-              See my results
-            </Button>
+          <CardContent className="p-0">
+            <ul>
+              {[...done]
+                .sort(bySubmittedAtDesc)
+                .slice(0, 5)
+                .map((result) => (
+                  <li
+                    key={result.attempt_id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-6 py-2.5 text-sm first:border-t-0"
+                  >
+                    <span className="font-medium text-foreground">
+                      {result.assessment?.title ?? 'Assessment'}
+                    </span>
+                    {result.result?.result_code ? (
+                      <span className="rounded-none bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground/80">
+                        {result.result.result_code}
+                      </span>
+                    ) : null}
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {result.submitted_at ? new Date(result.submitted_at).toLocaleDateString() : ''}
+                    </span>
+                  </li>
+                ))}
+            </ul>
+            <div className="border-t border-border px-6 py-3">
+              <Button variant="secondary" size="sm" onClick={() => navigate(paths.studentResults)}>
+                See all my results
+              </Button>
+            </div>
           </CardContent>
         </Card>
       ) : null}
+    </div>
+  );
+}
 
-      {/* Phase 6: only rendered once recommendations actually exist — never as a teaser. */}
-      {dashboard?.recommendations_ready ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Your recommendations are ready</CardTitle>
-            <CardDescription>
-              Ranked careers and programs, drawn from your RIASEC and SCCT results together.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button onClick={() => navigate(paths.studentRecommendations)}>
-              See my recommendations
-            </Button>
-          </CardContent>
-        </Card>
-      ) : null}
+/** The newest RIASEC result that actually carries dimension scores. */
+function latestRiasecResult(results: AssessmentResult[]): AssessmentResult | null {
+  return (
+    [...results]
+      .filter((r) => r.assessment?.category === 'RIASEC' && r.dimensions.length > 0)
+      .sort(bySubmittedAtDesc)[0] ?? null
+  );
+}
+
+function bySubmittedAtDesc(a: AssessmentResult, b: AssessmentResult): number {
+  return (b.submitted_at ?? '').localeCompare(a.submitted_at ?? '');
+}
+
+/**
+ * Match scores bucketed for the distribution chart. Careers and programs are pooled:
+ * the question the widget answers is "how confident are my matches overall", not a
+ * cross-type ranking (§27 forbids comparing a career's score with a program's).
+ */
+function confidenceBuckets(set: {
+  careers: { match_score: number }[];
+  programs: { match_score: number }[];
+}): { label: string; value: number }[] {
+  const scores = [...set.careers, ...set.programs].map((r) => r.match_score);
+  const buckets = [
+    { label: '<50', min: 0, max: 50 },
+    { label: '50–64', min: 50, max: 65 },
+    { label: '65–79', min: 65, max: 80 },
+    { label: '80+', min: 80, max: 101 },
+  ];
+
+  return buckets.map((bucket) => ({
+    label: bucket.label,
+    value: scores.filter((score) => score >= bucket.min && score < bucket.max).length,
+  }));
+}
+
+/** The graceful no-data state: an honest sentence-sized gap, not fake bars. */
+function ChartPlaceholder() {
+  return (
+    <div className="flex h-24 items-center justify-center rounded-none border border-dashed border-border text-sm text-muted-foreground">
+      No data yet
     </div>
   );
 }

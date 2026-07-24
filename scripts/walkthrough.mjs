@@ -30,6 +30,9 @@
  *     1. cd backend && npx wrangler dev --config wrangler.test.toml --port 8787
  *        (the *test* config: ~3s boot, fully offline — it drops the [ai] and [[vectorize]]
  *         bindings, which have no local emulation and always dial out to Cloudflare.)
+ *        NOTE: the offline config has no AI. To drive the Phase 5 RAG/generation legs locally,
+ *        boot the mixed-mode config instead — `npm run dev:remote` (wrangler.dev.toml): local
+ *        storage but real Workers AI + the staging Vectorize index. Needs `wrangler login`.
  *     2. cd frontend && npx vite --port 5173   (5173 is the Worker's CORS allow-list, FRONTEND_URL.)
  *     3. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --local --password ChangeMe123
  *     4. node scripts/walkthrough.mjs --app http://localhost:5173 \
@@ -247,8 +250,8 @@ function makeGuidancePdf(lines) {
  * anywhere in this system, so the only way an account becomes usable is that someone who was
  * handed a temporary password changes it. Both staff accounts start here.
  */
-async function activateStaff(page, email, newPassword, who) {
-  await page.goto(`${APP}/login`);
+async function activateStaff(page, email, newPassword, who, door) {
+  await page.goto(`${APP}${door}`);
   await page.locator('#email').fill(email);
   await page.locator('#password').fill(TEMP_PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
@@ -263,9 +266,11 @@ async function activateStaff(page, email, newPassword, who) {
   await page.locator('#password_confirmation').fill(newPassword);
   await page.getByRole('button', { name: 'Update password' }).click();
 
-  // Changing a password revokes every session (§38), so the client must be signed out.
-  await page.waitForURL('**/login', { timeout: 30_000 });
-  check(`[${who}] rotating the password revokes the session and returns to /login`, true);
+  // Changing a password revokes every session (§38), so the client must be signed out — and
+  // signed out *at this role's own door*, since each door refuses the other roles and
+  // /admin-login is unlinked. Landing an admin on /login would be a lockout.
+  await page.waitForURL((u) => u.pathname === door, { timeout: 30_000 });
+  check(`[${who}] rotating the password revokes the session and returns to ${door}`, true);
 
   // The temp password must now be dead.
   await page.locator('#email').fill(email);
@@ -274,14 +279,16 @@ async function activateStaff(page, email, newPassword, who) {
   await page.waitForTimeout(3000);
   check(
     `[${who}] the old temporary password no longer works`,
-    page.url().includes('/login'),
+    page.url().includes(door),
     page.url().replace(APP, ''),
   );
 
   await page.locator('#email').fill(email);
   await page.locator('#password').fill(newPassword);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await page.waitForURL((u) => !u.pathname.includes('/login'), { timeout: 30_000 });
+  await page.waitForURL((u) => u.pathname !== door && !u.pathname.includes('change-password'), {
+    timeout: 30_000,
+  });
   check(
     `[${who}] the rotated password signs in and clears the gate`,
     !page.url().includes('change-password'),
@@ -306,7 +313,7 @@ const adminCtx = await browser.newContext({ viewport: { width: 1280, height: 900
 const admin = await adminCtx.newPage();
 instrument(admin, 'admin');
 
-await activateStaff(admin, 'admin@careerlinkai.online', ADMIN_PASSWORD, 'admin');
+await activateStaff(admin, 'admin@careerlinkai.online', ADMIN_PASSWORD, 'admin', '/admin-login');
 
 // The instruments (D13). Reached over HTTP rather than through a .sql seed on purpose: §57 requires
 // RIASEC and SCCT to be published **through the real AssessmentBuilderService**, so they pass the
@@ -408,7 +415,13 @@ const counselorCtx = await browser.newContext({ viewport: { width: 1280, height:
 const counselor = await counselorCtx.newPage();
 instrument(counselor, 'counselor');
 
-await activateStaff(counselor, 'counselor@careerlinkai.online', COUNSELOR_PASSWORD, 'counselor');
+await activateStaff(
+  counselor,
+  'counselor@careerlinkai.online',
+  COUNSELOR_PASSWORD,
+  'counselor',
+  '/login',
+);
 
 await counselor.goto(`${APP}/counselor/classes`);
 await counselor.getByRole('button', { name: 'New class' }).click();

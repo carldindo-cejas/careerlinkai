@@ -28,9 +28,9 @@ export function StudentAccessLayout() {
         </FadeIn>
 
         <p className="text-center text-xs text-muted-foreground">
-          Staff member?{' '}
+          Counselor?{' '}
           <Link to={paths.login} className="font-medium text-primary hover:underline">
-            Sign in here
+            Log in here
           </Link>
         </p>
       </div>
@@ -39,10 +39,10 @@ export function StudentAccessLayout() {
       <div className="relative hidden flex-col justify-center overflow-hidden bg-sidebar p-10 lg:flex">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -top-40 -right-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(139,92,246,0.28),transparent_65%)]"
+          className="pointer-events-none absolute -top-40 -right-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(89,128,166,0.32),transparent_65%)]"
         />
         <FadeIn delay={0.05} className="mx-auto w-full max-w-xl">
-          <h1 className="text-3xl font-bold tracking-tight text-white">
+          <h1 className="text-3xl font-bold tracking-tight text-sidebar-active-foreground">
             Find where your strengths point.
           </h1>
           <p className="mt-3 max-w-md text-sidebar-foreground">
@@ -52,7 +52,7 @@ export function StudentAccessLayout() {
           <img
             src={artUrl}
             alt="Senior high school students taking the RIASEC assessment on laptops and tablets"
-            className="mt-8 w-full rounded-2xl bg-white/95 object-contain p-2"
+            className="mt-8 w-full rounded-none border border-sidebar-border bg-background object-contain p-2"
           />
         </FadeIn>
       </div>

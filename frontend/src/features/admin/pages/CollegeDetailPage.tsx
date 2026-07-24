@@ -39,7 +39,7 @@ export function CollegeDetailPage() {
   if (isPending) {
     return (
       <div className="flex justify-center py-12" role="status">
-        <Loader2 className="size-6 animate-spin text-slate-400" aria-hidden="true" />
+        <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
         <span className="sr-only">Loading college…</span>
       </div>
     );
@@ -56,7 +56,7 @@ export function CollegeDetailPage() {
     <div className="flex flex-col gap-6">
       <Link
         to={paths.adminColleges}
-        className="inline-flex w-fit items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800"
+        className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="size-4" aria-hidden="true" />
         All colleges
@@ -65,11 +65,11 @@ export function CollegeDetailPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-xl font-semibold text-slate-900">{college.name}</h1>
+            <h1 className="text-xl font-semibold text-foreground">{college.name}</h1>
             <Badge tone={isArchived ? 'neutral' : 'success'}>{college.status}</Badge>
           </div>
           {college.description ? (
-            <p className="mt-1 text-sm text-slate-500">{college.description}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{college.description}</p>
           ) : null}
         </div>
 
@@ -113,9 +113,9 @@ export function CollegeDetailPage() {
       </div>
 
       <div className="flex items-center justify-between gap-4">
-        <h2 className="text-base font-semibold text-slate-900">
+        <h2 className="text-base font-semibold text-foreground">
           Programs
-          <span className="ml-2 text-sm font-normal text-slate-500">
+          <span className="ml-2 text-sm font-normal text-muted-foreground">
             {programs.length === 0
               ? 'none yet'
               : `${programs.length} ${programs.length === 1 ? 'program' : 'programs'}`}
@@ -195,7 +195,7 @@ function ProgramCard({ collegeId, program, onEdit, onDelete }: ProgramCardProps)
         <div className="flex items-start justify-between gap-3">
           <div>
             <CardTitle>
-              <span className="font-mono text-sm tracking-wide text-slate-500">{program.code}</span>
+              <span className="font-mono text-sm tracking-wide text-muted-foreground">{program.code}</span>
               <span className="ml-2">{program.name}</span>
             </CardTitle>
             <CardDescription>

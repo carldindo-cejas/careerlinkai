@@ -1,16 +1,24 @@
 import type { HTMLAttributes } from 'react';
 
+import { Corners } from '@/components/ui/blueprint';
 import { cn } from '@/components/ui/cn';
 
-export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+/**
+ * A card in the Industry system is a transparent line-drawing: a hairline border and four corner
+ * registration marks, no surface fill and no shadow. The frame does the work the fill used to.
+ */
+export function Card({ className, children, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn(
-        'rounded-xl border border-border bg-card text-card-foreground shadow-sm',
+        'relative rounded-none border border-border bg-transparent text-card-foreground',
         className,
       )}
       {...props}
-    />
+    >
+      <Corners />
+      {children}
+    </div>
   );
 }
 
@@ -19,7 +27,9 @@ export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElemen
 }
 
 export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
-  return <h2 className={cn('text-lg font-semibold tracking-tight', className)} {...props} />;
+  return (
+    <h2 className={cn('text-lg font-semibold uppercase tracking-tight', className)} {...props} />
+  );
 }
 
 export function CardDescription({ className, ...props }: HTMLAttributes<HTMLParagraphElement>) {

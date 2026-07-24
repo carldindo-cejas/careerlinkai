@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-import type { User } from '@/types/user';
+import type { User, UserRole } from '@/types/user';
 
 /**
  * Global auth state (FULLPLAN §36 — Zustand owns the current user, token and role
@@ -13,6 +13,16 @@ import type { User } from '@/types/user';
 interface AuthState {
   token: string | null;
   user: User | null;
+  /**
+   * The role of the last signed-in user, kept across `clear()`.
+   *
+   * Not an authorization input — nothing is ever granted on the strength of it, and it
+   * survives precisely because it is inert. It exists so the app can still answer "which
+   * door does this person go back to" *after* the session it would have read that from is
+   * gone: rotating a password revokes the token, and the redirect that follows happens when
+   * `user` is already null (§38).
+   */
+  lastRole: UserRole | null;
   setToken: (token: string) => void;
   setUser: (user: User | null) => void;
   clear: () => void;
@@ -23,8 +33,9 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       token: null,
       user: null,
+      lastRole: null,
       setToken: (token) => set({ token }),
-      setUser: (user) => set({ user }),
+      setUser: (user) => set(user ? { user, lastRole: user.role } : { user }),
       clear: () => set({ token: null, user: null }),
     }),
     {

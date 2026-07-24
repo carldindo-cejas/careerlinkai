@@ -89,10 +89,10 @@ export function StudentAccessPage() {
               {...register('class_code')}
             />
             {errors.class_code ? (
-              <p className="text-sm text-red-600">{errors.class_code.message}</p>
+              <p className="text-sm text-destructive">{errors.class_code.message}</p>
             ) : null}
             {serverError?.fieldError('class_code') ? (
-              <p className="text-sm text-red-600">{serverError.fieldError('class_code')}</p>
+              <p className="text-sm text-destructive">{serverError.fieldError('class_code')}</p>
             ) : null}
           </div>
 
@@ -108,7 +108,7 @@ export function StudentAccessPage() {
               {...register('username')}
             />
             {errors.username ? (
-              <p className="text-sm text-red-600">{errors.username.message}</p>
+              <p className="text-sm text-destructive">{errors.username.message}</p>
             ) : null}
           </div>
 
