@@ -1,17 +1,29 @@
 # CareerLinkAI — Development Guidelines
 
-## The One Rule
+## The Decision Rule
 
-**`FULLPLAN.md` is the single source of truth.** This file does not duplicate it — earlier versions
-of these `.claude/` docs restated the architecture, drifted out of sync, and became actively
-dangerous (they specified auto-increment primary keys where the plan mandates UUIDs).
+**`FULLPLAN.md` is the primary design reference, but it is no longer an unquestionable single source
+of truth.** It captures the system as originally planned and remains the default when nothing better
+is on the table. But the project has grown past a frozen plan: new requirements arrive through user
+prompts, and some of them improve on what FULLPLAN specifies.
 
-This file therefore contains only: (a) the working agreement, and (b) invariants that must never be
-violated. **Every concrete detail — schema, endpoints, formulas — is looked up in FULLPLAN.md, never
-recalled from memory and never restated here.**
+When a user prompt and FULLPLAN.md **agree** (or FULLPLAN is silent and the prompt is sound), follow
+the prompt and keep the design consistent with FULLPLAN's conventions.
 
-If FULLPLAN.md conflicts with anything in this file, FULLPLAN.md wins. If FULLPLAN.md is silent or
-ambiguous, ask — do not invent.
+When they **differ or collide**, do not reflexively defer to FULLPLAN. Instead:
+
+1. Analyze whether the user prompt genuinely improves the system — think about the *future* of the
+   system, not just the immediate task: maintainability, scalability, data integrity, and consistency
+   with the existing architecture.
+2. If the prompt is a clear improvement, choose it — even where it overrides FULLPLAN — and note the
+   deviation so FULLPLAN can be reconciled later.
+3. If you doubt which is better, or the trade-off is genuinely balanced, **ask the user**
+   (AskUserQuestion) rather than guessing.
+
+This file still contains: (a) the working agreement, and (b) invariants that must never be violated.
+Concrete details — schema, endpoints, formulas — are looked up in FULLPLAN.md as a reference, not
+recalled from memory, but FULLPLAN's specifics can be extended or superseded when a prompt improves
+the system.
 
 ## Project Overview
 
@@ -54,8 +66,11 @@ policies → services → routes/API → frontend. Finish one layer before start
 - Only work on the phase that was explicitly requested. Never skip ahead. Never start the next phase
   automatically — stop and wait.
 - Before coding, state: goal · files affected · dependencies · risks · step-by-step plan.
-- Never invent tables, rename fields, change API contracts, or alter the folder structure.
-- Never simplify the architecture because it is easier. If it seems wrong, ask first.
+- Do not invent tables, rename fields, change API contracts, or alter the folder structure *on a
+  whim*. Extending the schema or the API is allowed when a user prompt calls for it and the change
+  improves the system — but keep it consistent with the existing conventions (UUID PKs, `TEXT`+`CHECK`
+  enums, the response envelope, module layout) and record the deviation from FULLPLAN.
+- Never simplify the architecture just because it is easier. If a change seems wrong, ask first.
 - After each task, report: files created · files modified · what remains · suggested next task.
 
 ## Non-Negotiable Invariants

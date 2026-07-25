@@ -1,4 +1,5 @@
-import type { Career, College, Program } from '@/db/schema';
+import type { Career, College, EmploymentOutlook, Program } from '@/db/schema';
+import type { ResolvedLocation, ResolvedPlace } from '@/modules/catalog/academic-catalog-service';
 
 /**
  * Catalog response shaping (FULLPLAN §17). These are the contract: the frontend's `College`,
@@ -9,25 +10,50 @@ import type { Career, College, Program } from '@/db/schema';
  * cannot leak through these.
  */
 
+export interface SerializedEmploymentOutlook {
+  id: string;
+  name: string;
+  display_order: number;
+}
+
+export function serializeEmploymentOutlook(
+  outlook: EmploymentOutlook,
+): SerializedEmploymentOutlook {
+  return { id: outlook.id, name: outlook.name, display_order: outlook.displayOrder };
+}
+
 export interface SerializedCareer {
   id: string;
   title: string;
   description: string | null;
-  salary_range: string | null;
-  employment_outlook: string | null;
+  /** Raw monthly PHP amounts (migration 0013); the client formats the thousands separators. */
+  salary_min: number | null;
+  salary_max: number | null;
+  employment_outlook_id: string | null;
+  /**
+   * The resolved outlook `{ id, name }`, when the caller loaded the lookup. Absent (null) where it
+   * did not — the recommendation module serializes careers without joining the four-row table, and a
+   * card that shows a career's title and Holland code does not need its demand label.
+   */
+  employment_outlook: { id: string; name: string } | null;
   typical_riasec_code: string | null;
   status: string;
   created_at: string | null;
   updated_at: string | null;
 }
 
-export function serializeCareer(career: Career): SerializedCareer {
+export function serializeCareer(
+  career: Career,
+  extra: { outlook?: EmploymentOutlook | null } = {},
+): SerializedCareer {
   return {
     id: career.id,
     title: career.title,
     description: career.description,
-    salary_range: career.salaryRange,
-    employment_outlook: career.employmentOutlook,
+    salary_min: career.salaryMin,
+    salary_max: career.salaryMax,
+    employment_outlook_id: career.employmentOutlookId,
+    employment_outlook: extra.outlook ? { id: extra.outlook.id, name: extra.outlook.name } : null,
     typical_riasec_code: career.typicalRiasecCode,
     status: career.status,
     created_at: career.createdAt,
@@ -70,7 +96,9 @@ export function serializeProgram(program: Program, careers?: Career[]): Serializ
     description: program.description,
     recommended_strand: program.recommendedStrand,
     status: program.status,
-    ...(careers !== undefined ? { careers: careers.map(serializeCareer) } : {}),
+    // The mapping chips show a career's title and status, not its salary or outlook, so the careers
+    // here are serialized without the outlook lookup (`employment_outlook` comes out null).
+    ...(careers !== undefined ? { careers: careers.map((career) => serializeCareer(career)) } : {}),
     created_at: program.createdAt,
     updated_at: program.updatedAt,
   };
@@ -81,6 +109,17 @@ export interface SerializedCollege {
   name: string;
   description: string | null;
   status: string;
+  /**
+   * The school address (migration 0012). Each level is the resolved `{ id, name }` place or null,
+   * present wherever the caller loaded the location; when it did not, all four are null. The raw ids
+   * are carried alongside so the edit form's cascading dropdowns can prefill without a second read.
+   */
+  region: ResolvedPlace | null;
+  province: ResolvedPlace | null;
+  town: ResolvedPlace | null;
+  barangay: ResolvedPlace | null;
+  /** A validated Google Maps URL, or null. The details page shows the button only when present. */
+  map_link: string | null;
   /** On the list endpoint only — the count, never the programs themselves. */
   programs_count?: number;
   /** On `GET /admin/colleges/{id}` only, which nests them (§20). */
@@ -97,13 +136,24 @@ export interface SerializedCollege {
  */
 export function serializeCollege(
   college: College,
-  extra: { programsCount?: number; programs?: SerializedProgram[] } = {},
+  extra: {
+    programsCount?: number;
+    programs?: SerializedProgram[];
+    location?: ResolvedLocation;
+  } = {},
 ): SerializedCollege {
+  const location = extra.location;
+
   return {
     id: college.id,
     name: college.name,
     description: college.description,
     status: college.status,
+    region: location?.region ?? null,
+    province: location?.province ?? null,
+    town: location?.town ?? null,
+    barangay: location?.barangay ?? null,
+    map_link: college.mapLink,
     ...(extra.programsCount !== undefined ? { programs_count: extra.programsCount } : {}),
     ...(extra.programs !== undefined ? { programs: extra.programs } : {}),
     created_at: college.createdAt,

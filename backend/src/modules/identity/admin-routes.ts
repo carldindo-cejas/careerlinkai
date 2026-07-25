@@ -9,6 +9,7 @@ import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
 import {
   CounselorManagementService,
+  type CounselorStudentView,
   type CounselorView,
 } from '@/modules/identity/counselor-management-service';
 import {
@@ -17,6 +18,35 @@ import {
   updateCounselorSchema,
 } from '@/modules/identity/schemas';
 import { serializeUser, type SerializedUser } from '@/modules/identity/serializers';
+import {
+  serializeCareerRecommendation,
+  serializeProgramRecommendation,
+} from '@/modules/recommendation/serializers';
+
+/** The top five is what the table expands to; the engine ranks ten, so slice here (§27). */
+const TOP_RECOMMENDATIONS = 5;
+
+/**
+ * One student row of the counselor detail page: the profile signals the table columns show, the
+ * latest Holland Code, and the top-five career/program recommendations the row expands to reveal.
+ * The catalog rows inside are serialized by the recommendation module's own serializers — the same
+ * "borrow the shape of the thing being recommended" rule (§10).
+ */
+function serializeCounselorStudent(student: CounselorStudentView) {
+  const set = student.recommendations;
+
+  return {
+    id: student.id,
+    name: student.name,
+    grade_level: student.gradeLevel,
+    strand: student.strand,
+    holland_code: student.hollandCode,
+    top_careers: (set?.careers ?? []).slice(0, TOP_RECOMMENDATIONS).map(serializeCareerRecommendation),
+    top_programs: (set?.programs ?? [])
+      .slice(0, TOP_RECOMMENDATIONS)
+      .map(serializeProgramRecommendation),
+  };
+}
 
 /**
  * The Identity module's `/admin` router (FULLPLAN §20 "Counselor management", Phase 6) —
@@ -82,6 +112,34 @@ adminIdentityRoutes.post('/counselors', async (c) => {
       'Counselor account created. Share the temporary password securely — it is shown only once.',
     ),
     201,
+  );
+});
+
+/**
+ * `GET /admin/counselors/{id}/students` (prompt-driven) — the counselor detail page: every student
+ * enrolled in one of this counselor's classes, with their Holland Code and top recommendations.
+ *
+ * Admin-only like the rest of this group; a non-counselor id 404s (the service's `find`). Unlike the
+ * counselor's *own* `/counselor/students/{id}/recommendations`, no per-student ownership check is
+ * needed here — an admin may see every student, and the roster is scoped to *this counselor's*
+ * classes by the query itself.
+ */
+adminIdentityRoutes.get('/counselors/:id/students', async (c) => {
+  const { user, profile, students } = await service(c).studentsFor(c.req.param('id'));
+
+  return c.json(
+    successEnvelope(
+      {
+        counselor: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          specialization: profile.specialization,
+        },
+        students: students.map(serializeCounselorStudent),
+      },
+      'Counselor students retrieved successfully.',
+    ),
   );
 });
 

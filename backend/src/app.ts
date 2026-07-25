@@ -12,6 +12,7 @@ import {
   counselorAssessmentRoutes,
   studentRoutes,
 } from '@/modules/assessment/routes';
+import { adminAddressRoutes } from '@/modules/address/routes';
 import { generationRoutes } from '@/modules/ai/generation-routes';
 import { adminAiRoutes } from '@/modules/ai/routes';
 import { builderRoutes } from '@/modules/assessment/builder-routes';
@@ -92,6 +93,9 @@ export function createApp() {
   api.route('/student', studentRecommendationRoutes);
   api.route('/counselor', counselorRecommendationRoutes);
   api.route('/admin', adminRoutes);
+  // v1.5 (migration 0011): the Philippine address hierarchy — its own /admin router, same
+  // one-module-one-router rule as everything else on this prefix.
+  api.route('/admin', adminAddressRoutes);
   api.route('/admin', adminAssessmentRoutes);
   // Phase 5a: the AI/Knowledge module's own /admin router — same one-module-one-router rule.
   api.route('/admin', adminAiRoutes);

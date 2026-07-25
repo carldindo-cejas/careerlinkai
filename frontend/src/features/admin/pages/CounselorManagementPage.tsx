@@ -1,5 +1,6 @@
-import { Copy, UserPlus } from 'lucide-react';
+import { ChevronRight, Copy, UserPlus } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -13,6 +14,7 @@ import {
   useDeleteCounselor,
   useUpdateCounselor,
 } from '@/features/admin/hooks/usePlatformAdmin';
+import { counselorDetailPath } from '@/routes/paths';
 import { ApiRequestError } from '@/types/api';
 import type { ManagedCounselor } from '@/types/platform';
 
@@ -307,29 +309,46 @@ function CounselorRow({ counselor }: { counselor: ManagedCounselor }) {
   return (
     <Card>
       <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-3 p-5">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-foreground">{counselor.name}</span>
-            <Badge tone={counselor.status === 'active' ? 'success' : 'warning'}>
-              {counselor.status}
-            </Badge>
-            {counselor.must_change_password ? (
-              <Badge tone="neutral" className="normal-case">
-                awaiting first sign-in
+        {/*
+          The row is clickable: it opens the counselor detail page — their assigned students, each
+          with a Holland Code and top recommendations. The action buttons sit outside this link, so
+          "Suspend"/"Remove" never also navigate.
+        */}
+        <Link
+          to={counselorDetailPath(counselor.id)}
+          className="group flex min-w-0 flex-1 items-start gap-2"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-foreground group-hover:underline">
+                {counselor.name}
+              </span>
+              <Badge tone={counselor.status === 'active' ? 'success' : 'warning'}>
+                {counselor.status}
               </Badge>
-            ) : null}
+              {counselor.must_change_password ? (
+                <Badge tone="neutral" className="normal-case">
+                  awaiting first sign-in
+                </Badge>
+              ) : null}
+            </div>
+            <p className="mt-0.5 truncate text-sm text-muted-foreground">
+              {counselor.email}
+              {counselor.counselor_profile?.specialization
+                ? ` · ${counselor.counselor_profile.specialization}`
+                : ''}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {counselor.classes_count} {counselor.classes_count === 1 ? 'class' : 'classes'} ·{' '}
+              {counselor.students_count} active{' '}
+              {counselor.students_count === 1 ? 'student' : 'students'}
+            </p>
           </div>
-          <p className="mt-0.5 truncate text-sm text-muted-foreground">
-            {counselor.email}
-            {counselor.counselor_profile?.specialization
-              ? ` · ${counselor.counselor_profile.specialization}`
-              : ''}
-          </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {counselor.classes_count} {counselor.classes_count === 1 ? 'class' : 'classes'} ·{' '}
-            {counselor.students_count} active {counselor.students_count === 1 ? 'student' : 'students'}
-          </p>
-        </div>
+          <ChevronRight
+            className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
+            aria-hidden="true"
+          />
+        </Link>
 
         <div className="flex items-center gap-2">
           <Button

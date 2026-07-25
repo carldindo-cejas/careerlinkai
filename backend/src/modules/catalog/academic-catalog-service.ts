@@ -2,12 +2,18 @@ import { and, asc, count, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
 import {
+  barangays,
   careers,
   colleges,
+  employmentOutlooks,
   programCareers,
   programs,
+  provinces,
+  regions,
+  towns,
   type Career,
   type College,
+  type EmploymentOutlook,
   type Program,
   type User,
 } from '@/db/schema';
@@ -39,6 +45,32 @@ import { AuditService } from '@/modules/platform/audit-service';
  */
 
 const MODULE = 'AcademicCatalog';
+
+/** One resolved place in a college's address — the id the form needs, and the name a human reads. */
+export interface ResolvedPlace {
+  id: string;
+  name: string;
+}
+
+/**
+ * A college's school address, resolved from its four FKs to displayable names (migration 0012).
+ * Each level is independently nullable: a college may record its region and province but not yet its
+ * town. Built by `resolveLocations` in one batch per level, never one query per college.
+ */
+export interface ResolvedLocation {
+  region: ResolvedPlace | null;
+  province: ResolvedPlace | null;
+  town: ResolvedPlace | null;
+  barangay: ResolvedPlace | null;
+}
+
+/** The address ids as they arrive from the schema — optional (leave), null (clear), or an id (set). */
+interface AddressInput {
+  region_id?: string | null | undefined;
+  province_id?: string | null | undefined;
+  town_id?: string | null | undefined;
+  barangay_id?: string | null | undefined;
+}
 
 export class AcademicCatalogService {
   private readonly audit: AuditService;
@@ -93,6 +125,8 @@ export class AcademicCatalogService {
   ): Promise<College> {
     await this.assertCollegeNameFree(input.name);
 
+    const address = await this.validateCollegeAddress(input);
+
     const timestamp = now();
 
     const college: College = {
@@ -101,6 +135,11 @@ export class AcademicCatalogService {
       description: input.description ?? null,
       // Always `active`. Archiving is an explicit PATCH, not something a create does quietly.
       status: 'active',
+      regionId: address.regionId,
+      provinceId: address.provinceId,
+      townId: address.townId,
+      barangayId: address.barangayId,
+      mapLink: input.map_link ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
       deletedAt: null,
@@ -137,10 +176,31 @@ export class AcademicCatalogService {
       await this.assertCollegeNameFree(input.name, existing.id);
     }
 
+    // The address is edited as a **unit**: an admin who touches any level re-submits the whole
+    // chain (the cascading dropdowns clear their children when a parent changes), so a partial
+    // update would leave an orphaned town under a region that no longer contains it. If none of the
+    // four keys is present, the address is left exactly as it was.
+    const addressTouched =
+      input.region_id !== undefined ||
+      input.province_id !== undefined ||
+      input.town_id !== undefined ||
+      input.barangay_id !== undefined;
+
+    const address = addressTouched ? await this.validateCollegeAddress(input) : null;
+
     const changes = {
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.status !== undefined ? { status: input.status } : {}),
+      ...(address !== null
+        ? {
+            regionId: address.regionId,
+            provinceId: address.provinceId,
+            townId: address.townId,
+            barangayId: address.barangayId,
+          }
+        : {}),
+      ...(input.map_link !== undefined ? { mapLink: input.map_link } : {}),
       updatedAt: now(),
     };
 
@@ -369,6 +429,7 @@ export class AcademicCatalogService {
     ipAddress: string | null,
   ): Promise<Career> {
     await this.assertCareerTitleFree(input.title);
+    await this.assertOutlookExists(input.employment_outlook_id ?? null);
 
     const timestamp = now();
 
@@ -376,8 +437,11 @@ export class AcademicCatalogService {
       id: uuid(),
       title: input.title,
       description: input.description ?? null,
-      salaryRange: input.salary_range ?? null,
-      employmentOutlook: input.employment_outlook ?? null,
+      // Two numbers, not a string (migration 0013). The schema has already checked `min < max` and
+      // positivity; both are present or both absent.
+      salaryMin: input.salary_min ?? null,
+      salaryMax: input.salary_max ?? null,
+      employmentOutlookId: input.employment_outlook_id ?? null,
       // Already validated *and* normalized to canonical uppercase by the schema (§13.3).
       typicalRiasecCode: input.typical_riasec_code,
       status: 'active',
@@ -413,12 +477,17 @@ export class AcademicCatalogService {
       await this.assertCareerTitleFree(input.title, existing.id);
     }
 
+    if (input.employment_outlook_id !== undefined) {
+      await this.assertOutlookExists(input.employment_outlook_id);
+    }
+
     const changes = {
       ...(input.title !== undefined ? { title: input.title } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
-      ...(input.salary_range !== undefined ? { salaryRange: input.salary_range } : {}),
-      ...(input.employment_outlook !== undefined
-        ? { employmentOutlook: input.employment_outlook }
+      ...(input.salary_min !== undefined ? { salaryMin: input.salary_min } : {}),
+      ...(input.salary_max !== undefined ? { salaryMax: input.salary_max } : {}),
+      ...(input.employment_outlook_id !== undefined
+        ? { employmentOutlookId: input.employment_outlook_id }
         : {}),
       ...(input.typical_riasec_code !== undefined
         ? { typicalRiasecCode: input.typical_riasec_code }
@@ -664,6 +733,181 @@ export class AcademicCatalogService {
       );
 
     return rows.map((row) => row.career);
+  }
+
+  // --- Address & employment outlook (migrations 0012, 0013) ----------------------------
+
+  /** The employment-outlook lookup that populates the careers dropdown, in display order. */
+  async listEmploymentOutlooks(): Promise<EmploymentOutlook[]> {
+    return this.db
+      .select()
+      .from(employmentOutlooks)
+      .orderBy(asc(employmentOutlooks.displayOrder), asc(employmentOutlooks.name));
+  }
+
+  /**
+   * Every outlook keyed by id — one query for the whole (four-row) table, so serializing a page of
+   * careers resolves each one's outlook name from memory rather than with a query per career (§20).
+   */
+  async outlooksById(): Promise<Map<string, EmploymentOutlook>> {
+    const rows = await this.listEmploymentOutlooks();
+
+    return new Map(rows.map((row) => [row.id, row]));
+  }
+
+  /**
+   * Resolve each college's four address FKs to displayable `{ id, name }` places — **one query per
+   * level for the whole list**, never one per college (§20's N+1 rule; the same shape as
+   * `careersFor`/`programCounts`). A soft-deleted place is still resolved here: the college genuinely
+   * still sits there, and only *setting* a new address (`validateCollegeAddress`) requires a live row.
+   */
+  async resolveLocations(list: College[]): Promise<Map<string, ResolvedLocation>> {
+    const distinct = (pick: (college: College) => string | null): string[] => [
+      ...new Set(list.map(pick).filter((value): value is string => value !== null)),
+    ];
+
+    const regionIds = distinct((college) => college.regionId);
+    const provinceIds = distinct((college) => college.provinceId);
+    const townIds = distinct((college) => college.townId);
+    const barangayIds = distinct((college) => college.barangayId);
+
+    const [regionRows, provinceRows, townRows, barangayRows] = await Promise.all([
+      regionIds.length
+        ? this.db.select({ id: regions.id, name: regions.name }).from(regions).where(inArray(regions.id, regionIds))
+        : Promise.resolve([] as ResolvedPlace[]),
+      provinceIds.length
+        ? this.db.select({ id: provinces.id, name: provinces.name }).from(provinces).where(inArray(provinces.id, provinceIds))
+        : Promise.resolve([] as ResolvedPlace[]),
+      townIds.length
+        ? this.db.select({ id: towns.id, name: towns.name }).from(towns).where(inArray(towns.id, townIds))
+        : Promise.resolve([] as ResolvedPlace[]),
+      barangayIds.length
+        ? this.db.select({ id: barangays.id, name: barangays.name }).from(barangays).where(inArray(barangays.id, barangayIds))
+        : Promise.resolve([] as ResolvedPlace[]),
+    ]);
+
+    const toMap = (rows: ResolvedPlace[]) => new Map(rows.map((row) => [row.id, row]));
+    const regionMap = toMap(regionRows);
+    const provinceMap = toMap(provinceRows);
+    const townMap = toMap(townRows);
+    const barangayMap = toMap(barangayRows);
+
+    const located = new Map<string, ResolvedLocation>();
+
+    for (const college of list) {
+      located.set(college.id, {
+        region: college.regionId ? (regionMap.get(college.regionId) ?? null) : null,
+        province: college.provinceId ? (provinceMap.get(college.provinceId) ?? null) : null,
+        town: college.townId ? (townMap.get(college.townId) ?? null) : null,
+        barangay: college.barangayId ? (barangayMap.get(college.barangayId) ?? null) : null,
+      });
+    }
+
+    return located;
+  }
+
+  /** One college's resolved address — the single-row form of `resolveLocations`. */
+  async resolveLocation(college: College): Promise<ResolvedLocation> {
+    const located = await this.resolveLocations([college]);
+
+    return located.get(college.id)!;
+  }
+
+  /**
+   * Validate a school-address chain (migration 0012). The chain must be **contiguous** (no province
+   * without its region) and **correctly parented** (the chosen province actually belongs to the
+   * chosen region), and every id must name a **live** row. Returns the four ids normalised to
+   * `regionId`/… so the caller can drop them straight onto the college row.
+   *
+   * Only a live-row lookup can answer parentage, which is why this is a Service rule rather than a
+   * schema one — the same reason the catalog's uniqueness checks live here. Errors are keyed by
+   * field so the cascading dropdowns can point at the level that is wrong.
+   */
+  private async validateCollegeAddress(
+    input: AddressInput,
+  ): Promise<{
+    regionId: string | null;
+    provinceId: string | null;
+    townId: string | null;
+    barangayId: string | null;
+  }> {
+    const regionId = input.region_id ?? null;
+    const provinceId = input.province_id ?? null;
+    const townId = input.town_id ?? null;
+    const barangayId = input.barangay_id ?? null;
+
+    // Contiguity first — a child without its parent is a form the dropdowns should never submit, and
+    // reporting it before any lookup keeps the messages precise.
+    const gaps: Record<string, string[]> = {};
+    if (provinceId && !regionId) gaps.region_id = ['Select a region first.'];
+    if (townId && !provinceId) gaps.province_id = ['Select a province first.'];
+    if (barangayId && !townId) gaps.town_id = ['Select a town or municipality first.'];
+    if (Object.keys(gaps).length > 0) {
+      throw ApiError.validation(gaps);
+    }
+
+    const errors: Record<string, string[]> = {};
+
+    if (regionId) {
+      const region = await this.db.query.regions.findFirst({ where: eq(regions.id, regionId) });
+      if (region?.deletedAt !== null) {
+        errors.region_id = ['That region is no longer available.'];
+      }
+    }
+
+    if (provinceId) {
+      const province = await this.db.query.provinces.findFirst({
+        where: eq(provinces.id, provinceId),
+      });
+      if (province?.deletedAt !== null) {
+        errors.province_id = ['That province is no longer available.'];
+      } else if (regionId && province.regionId !== regionId) {
+        errors.province_id = ['That province is not in the selected region.'];
+      }
+    }
+
+    if (townId) {
+      const town = await this.db.query.towns.findFirst({ where: eq(towns.id, townId) });
+      if (town?.deletedAt !== null) {
+        errors.town_id = ['That town or municipality is no longer available.'];
+      } else if (provinceId && town.provinceId !== provinceId) {
+        errors.town_id = ['That town or municipality is not in the selected province.'];
+      }
+    }
+
+    if (barangayId) {
+      const barangay = await this.db.query.barangays.findFirst({
+        where: eq(barangays.id, barangayId),
+      });
+      if (barangay?.deletedAt !== null) {
+        errors.barangay_id = ['That barangay is no longer available.'];
+      } else if (townId && barangay.townId !== townId) {
+        errors.barangay_id = ['That barangay is not in the selected town or municipality.'];
+      }
+    }
+
+    if (Object.keys(errors).length > 0) {
+      throw ApiError.validation(errors);
+    }
+
+    return { regionId, provinceId, townId, barangayId };
+  }
+
+  /** A non-null employment-outlook id must name a real row; `null` (no outlook) is always valid. */
+  private async assertOutlookExists(id: string | null): Promise<void> {
+    if (id === null) {
+      return;
+    }
+
+    const found = await this.db.query.employmentOutlooks.findFirst({
+      where: eq(employmentOutlooks.id, id),
+    });
+
+    if (!found) {
+      throw ApiError.validation({
+        employment_outlook_id: ['That employment outlook is not available.'],
+      });
+    }
   }
 
   // --- internals -----------------------------------------------------------------------

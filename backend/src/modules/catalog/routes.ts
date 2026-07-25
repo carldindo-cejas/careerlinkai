@@ -21,8 +21,10 @@ import {
 import {
   serializeCareer,
   serializeCollege,
+  serializeEmploymentOutlook,
   serializeProgram,
 } from '@/modules/catalog/serializers';
+import type { Career } from '@/db/schema';
 
 /**
  * The `/admin` route group (FULLPLAN §20) — its first mount, and for now the academic catalog
@@ -57,17 +59,41 @@ function listQuery(c: Context<AppEnv>) {
   return parseQuery(c, listCatalogQuerySchema, ['page', 'per_page']);
 }
 
+/**
+ * Serialize one career with its employment-outlook name resolved (migration 0013). The lookup is
+ * four rows, so fetching it whole to name one career's outlook is cheaper than a targeted join.
+ */
+async function serializeCareerWithOutlook(
+  service: AcademicCatalogService,
+  career: Career,
+): Promise<ReturnType<typeof serializeCareer>> {
+  const outlooks = await service.outlooksById();
+
+  return serializeCareer(career, {
+    outlook: career.employmentOutlookId
+      ? (outlooks.get(career.employmentOutlookId) ?? null)
+      : null,
+  });
+}
+
 // --- Colleges --------------------------------------------------------------------------
 
 adminRoutes.get('/colleges', async (c) => {
   const query = listQuery(c);
-  const page = await catalog(c).listColleges(query.page, query.per_page);
+  const service = catalog(c);
+  const page = await service.listColleges(query.page, query.per_page);
+
+  // One query per address level for the whole page, not one per college (§20's N+1 rule).
+  const locations = await service.resolveLocations(page.items.map((row) => row.college));
 
   return c.json(
     successEnvelope(
       {
         items: page.items.map((row) =>
-          serializeCollege(row.college, { programsCount: row.programsCount }),
+          serializeCollege(row.college, {
+            programsCount: row.programsCount,
+            location: locations.get(row.college.id),
+          }),
         ),
         pagination: page.pagination,
       },
@@ -78,9 +104,14 @@ adminRoutes.get('/colleges', async (c) => {
 
 adminRoutes.post('/colleges', async (c) => {
   const input = await parseBody(c, createCollegeSchema);
-  const college = await catalog(c).createCollege(requireUser(c), input, clientIp(c));
+  const service = catalog(c);
+  const college = await service.createCollege(requireUser(c), input, clientIp(c));
+  const location = await service.resolveLocation(college);
 
-  return c.json(successEnvelope(serializeCollege(college), 'College created successfully.'), 201);
+  return c.json(
+    successEnvelope(serializeCollege(college, { location }), 'College created successfully.'),
+    201,
+  );
 });
 
 /**
@@ -93,10 +124,12 @@ adminRoutes.get('/colleges/:id', async (c) => {
   const service = catalog(c);
   const college = await service.findCollege(c.req.param('id'));
   const rows = await service.listPrograms(college.id);
+  const location = await service.resolveLocation(college);
 
   return c.json(
     successEnvelope(
       serializeCollege(college, {
+        location,
         programs: rows.map((row) => serializeProgram(row.program, row.careers)),
       }),
       'College retrieved successfully.',
@@ -106,14 +139,13 @@ adminRoutes.get('/colleges/:id', async (c) => {
 
 adminRoutes.patch('/colleges/:id', async (c) => {
   const input = await parseBody(c, updateCollegeSchema);
-  const college = await catalog(c).updateCollege(
-    requireUser(c),
-    c.req.param('id'),
-    input,
-    clientIp(c),
-  );
+  const service = catalog(c);
+  const college = await service.updateCollege(requireUser(c), c.req.param('id'), input, clientIp(c));
+  const location = await service.resolveLocation(college);
 
-  return c.json(successEnvelope(serializeCollege(college), 'College updated successfully.'));
+  return c.json(
+    successEnvelope(serializeCollege(college, { location }), 'College updated successfully.'),
+  );
 });
 
 /** Soft delete, cascading to the college's programs (§20). 204. */
@@ -176,13 +208,41 @@ adminRoutes.delete('/programs/:id', async (c) => {
 // Global, not nested under a college — the same "Software Engineer" is the destination of
 // programs at many institutions, which is exactly what `program_careers` exists to express.
 
-adminRoutes.get('/careers', async (c) => {
-  const query = listQuery(c);
-  const page = await catalog(c).listCareers(query.page, query.per_page);
+/**
+ * The employment-outlook lookup that populates the careers dropdown (migration 0013). Read-only:
+ * the four values are seeded reference data, not something the admin edits one at a time.
+ */
+adminRoutes.get('/employment-outlooks', async (c) => {
+  const outlooks = await catalog(c).listEmploymentOutlooks();
 
   return c.json(
     successEnvelope(
-      { items: page.items.map(serializeCareer), pagination: page.pagination },
+      outlooks.map(serializeEmploymentOutlook),
+      'Employment outlooks retrieved successfully.',
+    ),
+  );
+});
+
+adminRoutes.get('/careers', async (c) => {
+  const query = listQuery(c);
+  const service = catalog(c);
+  const page = await service.listCareers(query.page, query.per_page);
+
+  // The four-row outlook lookup, fetched once, names every career's outlook without a per-row query.
+  const outlooks = await service.outlooksById();
+
+  return c.json(
+    successEnvelope(
+      {
+        items: page.items.map((career) =>
+          serializeCareer(career, {
+            outlook: career.employmentOutlookId
+              ? (outlooks.get(career.employmentOutlookId) ?? null)
+              : null,
+          }),
+        ),
+        pagination: page.pagination,
+      },
       'Careers retrieved successfully.',
     ),
   );
@@ -190,21 +250,23 @@ adminRoutes.get('/careers', async (c) => {
 
 adminRoutes.post('/careers', async (c) => {
   const input = await parseBody(c, createCareerSchema);
-  const career = await catalog(c).createCareer(requireUser(c), input, clientIp(c));
+  const service = catalog(c);
+  const career = await service.createCareer(requireUser(c), input, clientIp(c));
 
-  return c.json(successEnvelope(serializeCareer(career), 'Career created successfully.'), 201);
+  return c.json(
+    successEnvelope(await serializeCareerWithOutlook(service, career), 'Career created successfully.'),
+    201,
+  );
 });
 
 adminRoutes.patch('/careers/:id', async (c) => {
   const input = await parseBody(c, updateCareerSchema);
-  const career = await catalog(c).updateCareer(
-    requireUser(c),
-    c.req.param('id'),
-    input,
-    clientIp(c),
-  );
+  const service = catalog(c);
+  const career = await service.updateCareer(requireUser(c), c.req.param('id'), input, clientIp(c));
 
-  return c.json(successEnvelope(serializeCareer(career), 'Career updated successfully.'));
+  return c.json(
+    successEnvelope(await serializeCareerWithOutlook(service, career), 'Career updated successfully.'),
+  );
 });
 
 adminRoutes.delete('/careers/:id', async (c) => {

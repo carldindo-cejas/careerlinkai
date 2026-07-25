@@ -2,6 +2,7 @@ import { httpClient, unwrap } from '@/services/httpClient';
 import type { ApiSuccess } from '@/types/api';
 import type { Paginated } from '@/types/class';
 import type {
+  CounselorStudents,
   CreateCounselorPayload,
   CreatedCounselor,
   ManagedCounselor,
@@ -35,5 +36,15 @@ export const counselorManagementApi = {
 
   async remove(id: string): Promise<void> {
     await httpClient.delete(`/admin/counselors/${id}`);
+  },
+
+  /**
+   * The counselor detail page (prompt-driven): every student in this counselor's classes, with
+   * their Holland Code and top career/program recommendations. Bounded roster, returned whole.
+   */
+  students(id: string): Promise<CounselorStudents> {
+    return unwrap(
+      httpClient.get<ApiSuccess<CounselorStudents>>(`/admin/counselors/${id}/students`),
+    );
   },
 };

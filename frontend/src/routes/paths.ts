@@ -17,6 +17,8 @@ export const paths = {
   resetPassword: '/reset-password',
 
   adminDashboard: '/admin',
+  // v1.5 (backend migration 0011): the Philippine address hierarchy for cascading dropdowns.
+  adminAddresses: '/admin/addresses',
   adminColleges: '/admin/colleges',
   adminCollegeDetail: '/admin/colleges/:collegeId',
   adminCareers: '/admin/careers',
@@ -25,6 +27,8 @@ export const paths = {
   adminAiPolicy: '/admin/ai-policy',
   // Phase 6 (§20, §37): counselor management and the audit-log viewer.
   adminCounselors: '/admin/counselors',
+  // Prompt-driven: a counselor's assigned students, with their Holland Code and top recommendations.
+  adminCounselorDetail: '/admin/counselors/:counselorId',
   adminAuditLog: '/admin/audit-log',
   // Phase 5b (§31, §35): the builder + AI generator, in the admin shell.
   adminAssessmentTemplates: '/admin/assessment-templates',
@@ -71,6 +75,10 @@ export function resultPath(attemptId: string): string {
 
 export function collegeDetailPath(collegeId: string): string {
   return `/admin/colleges/${collegeId}`;
+}
+
+export function counselorDetailPath(counselorId: string): string {
+  return `/admin/counselors/${counselorId}`;
 }
 
 /**

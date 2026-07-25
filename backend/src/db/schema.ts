@@ -251,6 +251,19 @@ export const colleges = sqliteTable(
     name: text('name').notNull(),
     description: text('description'),
     status: text('status').$type<CatalogStatus>().notNull().default('active'),
+    /**
+     * The school's normalized address (migration 0012). Four FKs into the §0011 hierarchy rather
+     * than free text — the same reason `colleges` itself stopped being a text column (§13.3): a
+     * pasted "Q.C." and "Quezon City" are one place one row apart. All four are nullable (a college
+     * may be entered before its location is known) and cascade to NULL rather than deleting the
+     * college if a place is ever hard-deleted. `ON DELETE SET NULL` lives in the migration.
+     */
+    regionId: text('region_id').references(() => regions.id, { onDelete: 'set null' }),
+    provinceId: text('province_id').references(() => provinces.id, { onDelete: 'set null' }),
+    townId: text('town_id').references(() => towns.id, { onDelete: 'set null' }),
+    barangayId: text('barangay_id').references(() => barangays.id, { onDelete: 'set null' }),
+    /** A validated Google Maps URL for the campus (migration 0012). Nullable — "no map available". */
+    mapLink: text('map_link'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: timestamp('deleted_at'),
@@ -258,6 +271,10 @@ export const colleges = sqliteTable(
   (table) => [
     index('colleges_status_index').on(table.status),
     index('colleges_name_index').on(table.name),
+    index('colleges_region_id_index').on(table.regionId),
+    index('colleges_province_id_index').on(table.provinceId),
+    index('colleges_town_id_index').on(table.townId),
+    index('colleges_barangay_id_index').on(table.barangayId),
   ],
 );
 
@@ -286,14 +303,44 @@ export const programs = sqliteTable(
   ],
 );
 
+/**
+ * The employment-outlook lookup (migration 0013) — a small closed set (Low/Moderate/High Demand,
+ * Emerging Field) promoted out of what used to be a free-text column on `careers`, for the same
+ * reason colleges were promoted in v1.1: a picker backed by a table cannot drift the way typed
+ * prose does. Seeded by the migration itself since it is fixed reference data the dropdown must
+ * find even in a fresh test database; no soft delete, because there is nothing here to retire.
+ */
+export const employmentOutlooks = sqliteTable(
+  'employment_outlooks',
+  {
+    id: text('id').primaryKey().notNull(),
+    name: text('name').notNull(),
+    /** Display order for the dropdown — Low → Moderate → High → Emerging, not alphabetical. */
+    displayOrder: integer('display_order').notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [uniqueIndex('employment_outlooks_name_unique').on(table.name)],
+);
+
 export const careers = sqliteTable(
   'careers',
   {
     id: text('id').primaryKey().notNull(),
     title: text('title').notNull(),
     description: text('description'),
-    salaryRange: text('salary_range'),
-    employmentOutlook: text('employment_outlook'),
+    /**
+     * Salary as two numbers, not one string (migration 0013): raw monthly PHP amounts, so the UI
+     * can format `40000` as `40,000` while the database keeps a value that can actually be compared
+     * and ranged. Both nullable — a career may have no salary on file — but the Service enforces
+     * `min < max` and positive values whenever they are present (§17).
+     */
+    salaryMin: integer('salary_min'),
+    salaryMax: integer('salary_max'),
+    /** FK → `employment_outlooks` (migration 0013), replacing the old free-text column. NULL valid. */
+    employmentOutlookId: text('employment_outlook_id').references(() => employmentOutlooks.id, {
+      onDelete: 'set null',
+    }),
     /** Up to three distinct RIASEC letters, dominant first (`lib/holland.ts`). NULL is valid. */
     typicalRiasecCode: text('typical_riasec_code'),
     status: text('status').$type<CatalogStatus>().notNull().default('active'),
@@ -304,6 +351,7 @@ export const careers = sqliteTable(
   (table) => [
     index('careers_status_index').on(table.status),
     index('careers_title_index').on(table.title),
+    index('careers_employment_outlook_id_index').on(table.employmentOutlookId),
   ],
 );
 
@@ -330,6 +378,109 @@ export const programCareers = sqliteTable(
     uniqueIndex('program_careers_program_career_unique').on(table.programId, table.careerId),
     index('program_careers_program_id_index').on(table.programId),
     index('program_careers_career_id_index').on(table.careerId),
+  ],
+);
+
+// --- Philippine Addresses (v1.5, prompt-driven — migration 0011) ----------------------
+
+/**
+ * A normalized address hierarchy — Region → Province → Town/Municipality → Barangay — powering
+ * cascading dropdowns across the system. Not in FULLPLAN's original 28; added under the Decision
+ * Rule (a prompt may extend the schema when it improves the system and keeps the conventions).
+ *
+ * The live-uniqueness rule at each level is a **partial** unique index (`WHERE deleted_at IS NULL`,
+ * `COLLATE NOCASE`) — see migration 0011's header for why that improves on the catalog's
+ * plain-index-plus-pre-check. Drizzle is a query builder here, not a migration generator, so the
+ * `COLLATE NOCASE` lives in the SQL; the `.where()` below mirrors the partial predicate so the
+ * shape is documented in one more place.
+ */
+export const regions = sqliteTable(
+  'regions',
+  {
+    id: text('id').primaryKey().notNull(),
+    /** Optional PSGC code — nullable, never unique (often absent from a pasted list). */
+    code: text('code'),
+    name: text('name').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at'),
+  },
+  (table) => [
+    uniqueIndex('regions_name_live_unique')
+      .on(table.name)
+      .where(sql`${table.deletedAt} is null`),
+    index('regions_name_index').on(table.name),
+    index('regions_code_index').on(table.code),
+  ],
+);
+
+export const provinces = sqliteTable(
+  'provinces',
+  {
+    id: text('id').primaryKey().notNull(),
+    /** From the route, never the body — a province cannot be re-parented to another region. */
+    regionId: text('region_id')
+      .notNull()
+      .references(() => regions.id, { onDelete: 'cascade' }),
+    code: text('code'),
+    name: text('name').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at'),
+  },
+  (table) => [
+    uniqueIndex('provinces_region_name_live_unique')
+      .on(table.regionId, table.name)
+      .where(sql`${table.deletedAt} is null`),
+    index('provinces_region_id_index').on(table.regionId),
+    index('provinces_name_index').on(table.name),
+    index('provinces_code_index').on(table.code),
+  ],
+);
+
+export const towns = sqliteTable(
+  'towns',
+  {
+    id: text('id').primaryKey().notNull(),
+    provinceId: text('province_id')
+      .notNull()
+      .references(() => provinces.id, { onDelete: 'cascade' }),
+    code: text('code'),
+    name: text('name').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at'),
+  },
+  (table) => [
+    uniqueIndex('towns_province_name_live_unique')
+      .on(table.provinceId, table.name)
+      .where(sql`${table.deletedAt} is null`),
+    index('towns_province_id_index').on(table.provinceId),
+    index('towns_name_index').on(table.name),
+    index('towns_code_index').on(table.code),
+  ],
+);
+
+export const barangays = sqliteTable(
+  'barangays',
+  {
+    id: text('id').primaryKey().notNull(),
+    townId: text('town_id')
+      .notNull()
+      .references(() => towns.id, { onDelete: 'cascade' }),
+    code: text('code'),
+    name: text('name').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at'),
+  },
+  (table) => [
+    uniqueIndex('barangays_town_name_live_unique')
+      .on(table.townId, table.name)
+      .where(sql`${table.deletedAt} is null`),
+    index('barangays_town_id_index').on(table.townId),
+    index('barangays_name_index').on(table.name),
+    index('barangays_code_index').on(table.code),
   ],
 );
 
@@ -887,7 +1038,12 @@ export type ClassStudent = typeof classStudents.$inferSelect;
 export type College = typeof colleges.$inferSelect;
 export type Program = typeof programs.$inferSelect;
 export type Career = typeof careers.$inferSelect;
+export type EmploymentOutlook = typeof employmentOutlooks.$inferSelect;
 export type ProgramCareer = typeof programCareers.$inferSelect;
+export type Region = typeof regions.$inferSelect;
+export type Province = typeof provinces.$inferSelect;
+export type Town = typeof towns.$inferSelect;
+export type Barangay = typeof barangays.$inferSelect;
 export type AssessmentTemplate = typeof assessmentTemplates.$inferSelect;
 export type AssessmentVersion = typeof assessmentVersions.$inferSelect;
 export type AssessmentDimension = typeof assessmentDimensions.$inferSelect;

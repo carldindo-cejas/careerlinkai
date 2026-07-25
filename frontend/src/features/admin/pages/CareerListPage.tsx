@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CareerForm } from '@/features/admin/components/CareerForm';
 import { useCareers, useDeleteCareer, useUpdateCareer } from '@/features/admin/hooks/useCatalog';
-import { describeHollandCode, type Career } from '@/types/catalog';
+import { describeHollandCode, formatSalaryRange, type Career } from '@/types/catalog';
 
 /**
  * The careers in the catalog (FULLPLAN §57, Phase 2).
@@ -118,8 +118,9 @@ function CareerRow({ career, onEdit }: { career: Career; onEdit: () => void }) {
           </div>
 
           <p className="mt-0.5 truncate text-sm text-muted-foreground">
-            {[career.employment_outlook, career.salary_range].filter(Boolean).join(' · ') ||
-              'No outlook or salary recorded'}
+            {[career.employment_outlook?.name, formatSalaryRange(career.salary_min, career.salary_max)]
+              .filter(Boolean)
+              .join(' · ') || 'No outlook or salary recorded'}
           </p>
         </div>
 

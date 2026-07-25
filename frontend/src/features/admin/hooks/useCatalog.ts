@@ -18,7 +18,20 @@ export const catalogKeys = {
   colleges: ['colleges'] as const,
   college: (id: string) => ['colleges', id] as const,
   careers: ['careers'] as const,
+  employmentOutlooks: ['employment-outlooks'] as const,
 };
+
+/**
+ * The employment-outlook lookup (backend migration 0013). Reference data with a long stale time —
+ * the four values do not change while an admin is filling in a career form.
+ */
+export function useEmploymentOutlooks() {
+  return useQuery({
+    queryKey: catalogKeys.employmentOutlooks,
+    queryFn: () => catalogApi.listEmploymentOutlooks(),
+    staleTime: 60 * 60 * 1000,
+  });
+}
 
 // Colleges -----------------------------------------------------------------
 

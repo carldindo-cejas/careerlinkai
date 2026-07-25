@@ -21,8 +21,8 @@ describe('POST /admin/careers', () => {
       token,
       body: {
         title: `Software Engineer ${Date.now()}`,
-        salary_range: 'PHP 30,000 - 80,000/mo',
-        employment_outlook: 'High demand',
+        salary_min: 30000,
+        salary_max: 80000,
         typical_riasec_code: 'IEC',
         status: 'archived',
       },
@@ -30,7 +30,8 @@ describe('POST /admin/careers', () => {
 
     expect(response.status).toBe(201);
     expect(response.body.data).toMatchObject({
-      salary_range: 'PHP 30,000 - 80,000/mo',
+      salary_min: 30000,
+      salary_max: 80000,
       typical_riasec_code: 'IEC',
       // Not accepted at creation — archiving is an explicit PATCH.
       status: 'active',

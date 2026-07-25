@@ -48,6 +48,19 @@ export type AuditAction =
   // a grade change is — someone will one day ask why a program's ranking moved.
   | 'PROGRAM_CAREER_LINKED'
   | 'PROGRAM_CAREER_UNLINKED'
+  // Address hierarchy (v1.5, migration 0011). Bulk imports are recorded as a single row carrying
+  // the count and the names, not one row per inserted place — a paste of forty barangays is one
+  // administrative act, and forty audit rows would bury the log rather than document it. A delete
+  // records how many descendants the cascade took with it, for the same "why did these disappear"
+  // reason the catalog's cascade delete is audited.
+  | 'REGIONS_BULK_IMPORTED'
+  | 'PROVINCES_BULK_IMPORTED'
+  | 'TOWNS_BULK_IMPORTED'
+  | 'BARANGAYS_BULK_IMPORTED'
+  | 'REGION_DELETED'
+  | 'PROVINCE_DELETED'
+  | 'TOWN_DELETED'
+  | 'BARANGAY_DELETED'
   // Assessment (§13.4, §21, §25). `ASSESSMENT_PUBLISHED` is the one §13.8 names by example, and
   // it is the one that matters most: publishing is the irreversible act — the version freezes,
   // and every attempt taken against it forever after is scored by what was confirmed that day.

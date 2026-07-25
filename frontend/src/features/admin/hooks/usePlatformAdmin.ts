@@ -17,6 +17,7 @@ export const platformAdminKeys = {
   dashboard: ['admin', 'dashboard'] as const,
   auditLogs: (filters: AuditLogFilters) => ['admin', 'audit-logs', filters] as const,
   counselors: (params: Record<string, unknown>) => ['admin', 'counselors', params] as const,
+  counselorStudents: (id: string) => ['admin', 'counselors', id, 'students'] as const,
 };
 
 export function useAdminDashboard() {
@@ -41,6 +42,15 @@ export function useCounselors(params: { page?: number; search?: string; status?:
     queryKey: platformAdminKeys.counselors(params),
     queryFn: () => counselorManagementApi.list(params),
     placeholderData: (previous) => previous,
+  });
+}
+
+/** One counselor's assigned students, with their Holland Code and top recommendations (§20). */
+export function useCounselorStudents(id: string) {
+  return useQuery({
+    queryKey: platformAdminKeys.counselorStudents(id),
+    queryFn: () => counselorManagementApi.students(id),
+    enabled: id !== '',
   });
 }
 

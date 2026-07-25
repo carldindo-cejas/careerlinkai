@@ -5,6 +5,7 @@ import {
   FileText,
   GraduationCap,
   LayoutDashboard,
+  MapPin,
   ScrollText,
   Users,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import { paths } from '@/routes/paths';
  */
 const nav: AppNavItem[] = [
   { to: paths.adminDashboard, label: 'Dashboard', icon: LayoutDashboard, end: true },
+  { to: paths.adminAddresses, label: 'Addresses', icon: MapPin },
   { to: paths.adminColleges, label: 'Colleges', icon: GraduationCap },
   { to: paths.adminCareers, label: 'Careers', icon: Briefcase },
   { to: paths.adminAssessmentTemplates, label: 'Assessments', icon: BookOpen },

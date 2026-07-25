@@ -1,11 +1,13 @@
 import { Route, Routes } from 'react-router-dom';
 
+import { AddressPage } from '@/features/admin/pages/AddressPage';
 import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage';
 import { AiPolicyPage } from '@/features/admin/pages/AiPolicyPage';
 import { AuditLogPage } from '@/features/admin/pages/AuditLogPage';
 import { CareerListPage } from '@/features/admin/pages/CareerListPage';
 import { CollegeDetailPage } from '@/features/admin/pages/CollegeDetailPage';
 import { CollegeListPage } from '@/features/admin/pages/CollegeListPage';
+import { CounselorDetailPage } from '@/features/admin/pages/CounselorDetailPage';
 import { CounselorManagementPage } from '@/features/admin/pages/CounselorManagementPage';
 import { KnowledgeListPage } from '@/features/admin/pages/KnowledgeListPage';
 import { AdminLoginPage } from '@/features/auth/pages/AdminLoginPage';
@@ -82,6 +84,7 @@ export function AppRoutes() {
       <Route element={<ProtectedRoute allow={['admin']} />}>
         <Route element={<AdminLayout />}>
           <Route path={paths.adminDashboard} element={<AdminDashboardPage />} />
+          <Route path={paths.adminAddresses} element={<AddressPage />} />
           <Route path={paths.adminColleges} element={<CollegeListPage />} />
           <Route path={paths.adminCollegeDetail} element={<CollegeDetailPage />} />
           <Route path={paths.adminCareers} element={<CareerListPage />} />
@@ -93,6 +96,8 @@ export function AppRoutes() {
           <Route path={paths.adminAssessmentTemplate} element={<TemplateBuilderPage />} />
           {/* Phase 6 (§20, §37): counselor accounts and the audit trail. */}
           <Route path={paths.adminCounselors} element={<CounselorManagementPage />} />
+          {/* Prompt-driven: one counselor's students, Holland codes, and top recommendations. */}
+          <Route path={paths.adminCounselorDetail} element={<CounselorDetailPage />} />
           <Route path={paths.adminAuditLog} element={<AuditLogPage />} />
         </Route>
       </Route>

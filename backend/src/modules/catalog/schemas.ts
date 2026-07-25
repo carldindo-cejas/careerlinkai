@@ -1,7 +1,34 @@
 import { z } from 'zod';
 
 import { CATALOG_STATUSES, PROGRAM_STATUSES, STRANDS } from '@/db/enums';
+import { isGoogleMapsUrl } from '@/lib/google-maps';
 import { parseHollandCode } from '@/lib/holland';
+
+/**
+ * An optional foreign-key field: a non-empty id, `null` to clear it, or absent to leave it. The
+ * *existence and parentage* of the id is checked in the Service against live rows (a schema cannot
+ * know whether a barangay belongs to the chosen town) — this only guarantees the shape.
+ */
+const optionalId = z.string().trim().min(1).nullable();
+
+/**
+ * A Google Maps URL, or nothing. `''` normalises to `null` (a valid "no map"), a non-maps link is a
+ * 422 with a message, and — crucially — an **absent** field stays `undefined` rather than becoming
+ * `null`. That distinction is load-bearing on PATCH: a status-only update must not silently wipe the
+ * map link, so the Service only writes `map_link` when the key was actually present. The `.optional()`
+ * *outside* the transform is what preserves `undefined`; a `.nullish()` *inside* it would run the
+ * transform on the absent value and coerce it to `null`. The authority is `lib/google-maps.ts`.
+ */
+const googleMapsLink = z
+  .string()
+  .trim()
+  .max(2000)
+  .refine((value) => value.length === 0 || isGoogleMapsUrl(value), {
+    message: 'Enter a valid Google Maps link (e.g. https://maps.app.goo.gl/…).',
+  })
+  .transform((value) => (value.length === 0 ? null : value))
+  .nullable()
+  .optional();
 
 /**
  * Academic catalog validation (FULLPLAN §17, §13.3).
@@ -17,9 +44,24 @@ import { parseHollandCode } from '@/lib/holland';
  * college or career is always `active`; archiving one is an explicit PATCH, not something a
  * create call can do in passing. Programs are the exception — see `createProgramSchema`.
  */
+/**
+ * The school-address fields (migration 0012). All four are optional — a college can be entered
+ * before its location is — and each is an id into the §0011 hierarchy. The Service validates that
+ * the chain is contiguous (no province without its region) and correctly parented (the province
+ * actually belongs to the region), because only a live-row lookup can know that.
+ */
+const collegeAddress = {
+  region_id: optionalId.optional(),
+  province_id: optionalId.optional(),
+  town_id: optionalId.optional(),
+  barangay_id: optionalId.optional(),
+};
+
 export const createCollegeSchema = z.object({
   name: z.string().trim().min(1, 'A college name is required.').max(200),
   description: z.string().trim().nullish(),
+  ...collegeAddress,
+  map_link: googleMapsLink,
 });
 
 export const updateCollegeSchema = z
@@ -27,6 +69,8 @@ export const updateCollegeSchema = z
     name: z.string().trim().min(1, 'A college name is required.').max(200),
     description: z.string().trim().nullable(),
     status: z.enum(CATALOG_STATUSES),
+    ...collegeAddress,
+    map_link: googleMapsLink,
   })
   .partial();
 
@@ -97,24 +141,72 @@ const hollandCode = z
     return result.value;
   });
 
-export const createCareerSchema = z.object({
-  title: z.string().trim().min(1, 'A career title is required.').max(150),
-  description: z.string().trim().nullish(),
-  salary_range: z.string().trim().max(100).nullish(),
-  employment_outlook: z.string().trim().max(100).nullish(),
-  typical_riasec_code: hollandCode,
-});
+/**
+ * A single salary bound: a positive whole number of pesos, or nothing. The `min < max` and
+ * both-or-neither rules are cross-field, so they live in the object-level refinement below rather
+ * than here. A hard ceiling keeps a fat-fingered `4000000000` out of an INTEGER column.
+ */
+const salaryAmount = z
+  .number({ message: 'Enter a whole peso amount.' })
+  .int('Enter a whole peso amount.')
+  .positive('Salary must be a positive amount.')
+  .max(100_000_000, 'That salary looks too large.')
+  .nullable();
+
+/**
+ * The two cross-field salary rules (§17), applied to whichever create/update shape carries them:
+ * a career declares both bounds or neither, and the maximum must exceed the minimum. A lone bound
+ * is a half-finished range, so it is refused with the message pointing at the missing field.
+ */
+function refineSalary(
+  value: { salary_min?: number | null; salary_max?: number | null },
+  ctx: z.RefinementCtx,
+): void {
+  const hasMin = value.salary_min !== undefined && value.salary_min !== null;
+  const hasMax = value.salary_max !== undefined && value.salary_max !== null;
+
+  if (hasMin !== hasMax) {
+    ctx.addIssue({
+      code: 'custom',
+      path: [hasMin ? 'salary_max' : 'salary_min'],
+      message: 'Enter both a minimum and a maximum salary, or leave both blank.',
+    });
+
+    return;
+  }
+
+  if (hasMin && hasMax && value.salary_min! >= value.salary_max!) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['salary_max'],
+      message: 'Maximum salary must be greater than the minimum.',
+    });
+  }
+}
+
+export const createCareerSchema = z
+  .object({
+    title: z.string().trim().min(1, 'A career title is required.').max(150),
+    description: z.string().trim().nullish(),
+    salary_min: salaryAmount.optional(),
+    salary_max: salaryAmount.optional(),
+    employment_outlook_id: optionalId.optional(),
+    typical_riasec_code: hollandCode,
+  })
+  .superRefine(refineSalary);
 
 export const updateCareerSchema = z
   .object({
     title: z.string().trim().min(1, 'A career title is required.').max(150),
     description: z.string().trim().nullable(),
-    salary_range: z.string().trim().max(100).nullable(),
-    employment_outlook: z.string().trim().max(100).nullable(),
+    salary_min: salaryAmount,
+    salary_max: salaryAmount,
+    employment_outlook_id: optionalId,
     typical_riasec_code: hollandCode,
     status: z.enum(CATALOG_STATUSES),
   })
-  .partial();
+  .partial()
+  .superRefine(refineSalary);
 
 export const attachCareerSchema = z.object({
   career_id: z.string().trim().min(1, 'A career is required.'),

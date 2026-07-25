@@ -376,6 +376,119 @@ export class RecommendationService {
     return row;
   }
 
+  /**
+   * The current recommendation set for **many** students at once, hydrated — the counselor
+   * students view (§20). Because `generateFor` replaces a student's rows wholesale
+   * (delete-then-insert scoped to the student), every row a student has *is* their current set, so
+   * this needs no "latest result" subquery: select all their rows, ranked, and hydrate the catalog
+   * in two queries for the whole cohort rather than per student (the N+1 §27's inline generation
+   * was bitten by — see `scorableCareersForMany`).
+   */
+  async setsForStudents(studentIds: string[]): Promise<Map<string, RecommendationSet>> {
+    const result = new Map<string, RecommendationSet>();
+
+    if (studentIds.length === 0) {
+      return result;
+    }
+
+    const rows = await this.db
+      .select()
+      .from(recommendations)
+      .where(inArray(recommendations.studentId, studentIds))
+      .orderBy(asc(recommendations.ranking));
+
+    if (rows.length === 0) {
+      return result;
+    }
+
+    const careerById = await this.careersById(
+      rows
+        .filter((row) => row.matchType === 'CAREER')
+        .map((row) => row.targetCareerId)
+        .filter((id): id is string => id !== null),
+    );
+    const programById = await this.programsById(
+      rows
+        .filter((row) => row.matchType === 'PROGRAM')
+        .map((row) => row.targetProgramId)
+        .filter((id): id is string => id !== null),
+    );
+
+    const byStudent = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = byStudent.get(row.studentId) ?? [];
+      list.push(row);
+      byStudent.set(row.studentId, list);
+    }
+
+    for (const [studentId, studentRows] of byStudent) {
+      const careerRows = studentRows.filter((row) => row.matchType === 'CAREER');
+      const programRows = studentRows.filter((row) => row.matchType === 'PROGRAM');
+
+      result.set(studentId, {
+        assessmentResultId: studentRows[0]!.assessmentResultId,
+        generatedAt: studentRows[0]!.createdAt,
+        careers: careerRows.flatMap((recommendation) => {
+          const career = careerById.get(recommendation.targetCareerId!);
+
+          return career === undefined ? [] : [{ recommendation, career }];
+        }),
+        programs: programRows.flatMap((recommendation) => {
+          const found = programById.get(recommendation.targetProgramId!);
+
+          return found === undefined ? [] : [{ recommendation, ...found }];
+        }),
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * The latest **SCORED RIASEC** Holland Code (`assessment_results.result_code`) per student — the
+   * "IAS" that the counselor students table shows even for a student who has no recommendations yet
+   * (they need SCCT too). One query for the whole cohort; newest attempt per student wins.
+   */
+  async hollandCodesForStudents(studentIds: string[]): Promise<Map<string, string | null>> {
+    const codes = new Map<string, string | null>();
+
+    if (studentIds.length === 0) {
+      return codes;
+    }
+
+    const rows = await this.db
+      .select({
+        studentId: assessmentAttempts.studentId,
+        resultCode: assessmentResults.resultCode,
+      })
+      .from(assessmentResults)
+      .innerJoin(assessmentAttempts, eq(assessmentResults.attemptId, assessmentAttempts.id))
+      .innerJoin(
+        assessmentVersions,
+        eq(assessmentAttempts.assessmentVersionId, assessmentVersions.id),
+      )
+      .innerJoin(
+        assessmentTemplates,
+        eq(assessmentVersions.assessmentTemplateId, assessmentTemplates.id),
+      )
+      .where(
+        and(
+          inArray(assessmentAttempts.studentId, studentIds),
+          eq(assessmentAttempts.status, 'SCORED'),
+          eq(assessmentTemplates.category, 'RIASEC'),
+        ),
+      )
+      .orderBy(desc(assessmentAttempts.submittedAt));
+
+    for (const row of rows) {
+      if (!codes.has(row.studentId)) {
+        codes.set(row.studentId, row.resultCode ?? null);
+      }
+    }
+
+    return codes;
+  }
+
   /** The current rank-1 rows of each type — what the queued explanation job pre-explains. */
   async topRecommendationsFor(studentId: string): Promise<Recommendation[]> {
     const [newest] = await this.db

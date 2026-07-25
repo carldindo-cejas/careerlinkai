@@ -15,7 +15,9 @@ function career(overrides: Partial<Career> = {}): Career {
     id: '44444444-4444-4444-8444-444444444444',
     title: 'Software Engineer',
     description: null,
-    salary_range: null,
+    salary_min: null,
+    salary_max: null,
+    employment_outlook_id: null,
     employment_outlook: null,
     typical_riasec_code: 'IEC',
     status: 'active',
@@ -41,6 +43,8 @@ describe('CareerForm', () => {
   beforeEach(() => {
     vi.mocked(catalogApi.createCareer).mockReset();
     vi.mocked(catalogApi.updateCareer).mockReset();
+    // The form loads the employment-outlook lookup on mount; an empty list is enough here.
+    vi.mocked(catalogApi.listEmploymentOutlooks).mockResolvedValue([]);
   });
 
   it('creates a career with its Holland code', async () => {
@@ -56,8 +60,9 @@ describe('CareerForm', () => {
       expect(catalogApi.createCareer).toHaveBeenCalledWith({
         title: 'Software Engineer',
         description: undefined,
-        salary_range: undefined,
-        employment_outlook: undefined,
+        salary_min: null,
+        salary_max: null,
+        employment_outlook_id: null,
         typical_riasec_code: 'IEC',
       });
     });

@@ -1,8 +1,10 @@
 # CareerLinkAI — Quick Reference
 
-Lookup aid only. **`FULLPLAN.md` is authoritative** — when this file and the plan disagree, the plan
-is right and this file is a bug. Nothing here is a substitute for reading the relevant Part before
-implementing it.
+Lookup aid only. **`FULLPLAN.md` is the primary reference, not an unquestionable authority** — it
+describes the system as planned and is the default when nothing better is proposed. When a user prompt
+differs from the plan, weigh whether the prompt improves the system's future (maintainability,
+scalability, integrity) and choose accordingly; ask if in doubt. See `.claude/instructions.md` → *The
+Decision Rule*. Nothing here is a substitute for reading the relevant Part before implementing it.
 
 > **v1.3:** the backend is a TypeScript Cloudflare Worker. The Laravel implementation of Phases 0–3
 > is retired and being ported (Phase 3.5); do not extend it.
@@ -11,7 +13,7 @@ implementing it.
 
 ```
 careerlinkai_v1/
-├── FULLPLAN.md                  # Master project plan — SOURCE OF TRUTH
+├── FULLPLAN.md                  # Master project plan — primary reference (extensible per prompt)
 ├── .claude/                     # Working agreement + this lookup aid
 ├── backend/                     # Cloudflare Worker (TypeScript, Hono)
 │   ├── wrangler.toml            # Bindings: DB, STORAGE, VECTORIZE, AI, QUEUE_*, KV + [vars]
@@ -198,7 +200,7 @@ an identity, not what that identity can see. Details + the full compensating-con
 
 ## ✅ Always
 
-- Look it up in FULLPLAN before implementing — never from memory
+- Look it up in FULLPLAN before implementing — never from memory (but a sound user prompt may extend or override it)
 - `authorize(...)` on every handler touching a specific record
 - Validate server-side via the endpoint's Zod schema before anything reaches a Service
 - Inject active `ai_policies` into every prompt

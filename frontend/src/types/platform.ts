@@ -1,4 +1,5 @@
 import type { Paginated } from '@/types/class';
+import type { CareerRecommendation, ProgramRecommendation } from '@/types/recommendation';
 import type { User } from '@/types/user';
 
 /**
@@ -143,4 +144,32 @@ export interface UpdateCounselorPayload {
   employee_number?: string | null;
   specialization?: string | null;
   bio?: string | null;
+}
+
+// --- Counselor detail: the assigned-students view (prompt-driven, admin) ------------------
+
+/**
+ * One row of the counselor detail page. The top career/program are `top_careers[0]` /
+ * `top_programs[0]` (the table shows them by default); the rest fill the expand-to-top-five section.
+ * A recommended college is `top_programs[i].college` — a join, resolved server-side (§13.6).
+ */
+export interface CounselorStudentRow {
+  id: string;
+  name: string;
+  grade_level: string | null;
+  strand: string | null;
+  /** Latest SCORED RIASEC Holland Code, e.g. "IAS". Null until the student has scored one. */
+  holland_code: string | null;
+  top_careers: CareerRecommendation[];
+  top_programs: ProgramRecommendation[];
+}
+
+export interface CounselorStudents {
+  counselor: {
+    id: string;
+    name: string;
+    email: string | null;
+    specialization: string | null;
+  };
+  students: CounselorStudentRow[];
 }

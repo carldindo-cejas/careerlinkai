@@ -1,4 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 
@@ -7,24 +8,29 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { useCreateCareer, useUpdateCareer } from '@/features/admin/hooks/useCatalog';
+import { useCreateCareer, useEmploymentOutlooks, useUpdateCareer } from '@/features/admin/hooks/useCatalog';
 import { ApiRequestError } from '@/types/api';
-import { describeHollandCode, RIASEC_LETTERS, RIASEC_NAMES, type Career } from '@/types/catalog';
+import {
+  describeHollandCode,
+  formatThousands,
+  RIASEC_LETTERS,
+  RIASEC_NAMES,
+  type Career,
+} from '@/types/catalog';
 
 /**
- * Add or edit a career (FULLPLAN §57, Phase 2).
+ * Add or edit a career (FULLPLAN §57, Phase 2; numeric salary + outlook FK, backend migration 0013).
  *
- * The Holland code is the field that matters. §27 reads it positionally — the first letter
- * is weighted 0.5, the second 0.3, the third 0.2 — so the *order* is part of the data, not
- * a formatting choice, and the form says so.
+ * The Holland code is the field that matters for matching. §27 reads it positionally — the first
+ * letter is weighted 0.5, the second 0.3, the third 0.2 — so the *order* is part of the data.
+ *
+ * Salary is two raw numbers, formatted with thousands separators as the admin types (`40000` shows
+ * as `40,000`) but sent as plain integers; the employment outlook is a dropdown backed by the
+ * seeded lookup, not free text.
  */
 
-/**
- * The same three constraints the server's HollandCode rule enforces, checked here so the
- * admin finds out while typing rather than on submit. The server is still the authority:
- * this is a convenience, not the guarantee.
- */
 const hollandCode = z
   .string()
   .trim()
@@ -39,12 +45,24 @@ const hollandCode = z
 const careerSchema = z.object({
   title: z.string().min(1, 'Give the career a title.').max(150),
   description: z.string().max(2000).optional(),
-  salary_range: z.string().max(100).optional(),
-  employment_outlook: z.string().max(100).optional(),
   typical_riasec_code: hollandCode,
 });
 
 type CareerValues = z.infer<typeof careerSchema>;
+
+/** `"40,000"` / `"40000"` → `40000`; an empty or all-separator string → null. */
+function parseAmount(display: string): number | null {
+  const digits = display.replace(/[^\d]/g, '');
+
+  return digits.length === 0 ? null : Number(digits);
+}
+
+/** Re-format a raw entry with thousands separators, preserving an empty box as empty. */
+function formatAmount(display: string): string {
+  const amount = parseAmount(display);
+
+  return amount === null ? '' : formatThousands(amount);
+}
 
 export interface CareerFormProps {
   career?: Career;
@@ -57,7 +75,16 @@ export function CareerForm({ career, onSaved, onCancel }: CareerFormProps) {
 
   const createCareer = useCreateCareer();
   const updateCareer = useUpdateCareer();
+  const outlooks = useEmploymentOutlooks();
   const mutation = isEditing ? updateCareer : createCareer;
+
+  const [salaryMin, setSalaryMin] = useState(
+    career?.salary_min != null ? formatThousands(career.salary_min) : '',
+  );
+  const [salaryMax, setSalaryMax] = useState(
+    career?.salary_max != null ? formatThousands(career.salary_max) : '',
+  );
+  const [outlookId, setOutlookId] = useState(career?.employment_outlook_id ?? '');
 
   const {
     register,
@@ -69,8 +96,6 @@ export function CareerForm({ career, onSaved, onCancel }: CareerFormProps) {
     defaultValues: {
       title: career?.title ?? '',
       description: career?.description ?? '',
-      salary_range: career?.salary_range ?? '',
-      employment_outlook: career?.employment_outlook ?? '',
       typical_riasec_code: career?.typical_riasec_code ?? '',
     },
   });
@@ -78,18 +103,31 @@ export function CareerForm({ career, onSaved, onCancel }: CareerFormProps) {
   const code = watch('typical_riasec_code');
   const codeMeaning = describeHollandCode((code ?? '').toUpperCase());
 
+  const minValue = parseAmount(salaryMin);
+  const maxValue = parseAmount(salaryMax);
+
+  // The same two rules the server enforces (§17), checked here so the admin sees them while typing.
+  const salaryError =
+    (minValue === null) !== (maxValue === null)
+      ? 'Enter both a minimum and a maximum salary, or leave both blank.'
+      : minValue !== null && maxValue !== null && minValue >= maxValue
+        ? 'Maximum salary must be greater than the minimum.'
+        : null;
+
   const serverError = mutation.error instanceof ApiRequestError ? mutation.error : null;
   const generalError =
     serverError && Object.keys(serverError.errors).length === 0 ? serverError.message : null;
 
   const onSubmit = handleSubmit((values) => {
+    if (salaryError) return;
+
     const payload = {
       title: values.title,
       description: values.description || undefined,
-      salary_range: values.salary_range || undefined,
-      employment_outlook: values.employment_outlook || undefined,
-      // An empty box means "no Holland code", which is a valid career — it just cannot be
-      // RIASEC-matched. That is null, not "".
+      salary_min: minValue,
+      salary_max: maxValue,
+      employment_outlook_id: outlookId === '' ? null : outlookId,
+      // An empty box means "no Holland code" — a valid career that just cannot be RIASEC-matched.
       typical_riasec_code: values.typical_riasec_code || null,
     };
 
@@ -154,20 +192,55 @@ export function CareerForm({ career, onSaved, onCancel }: CareerFormProps) {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="career-salary">Salary range</Label>
+              <Label htmlFor="career-salary-min">Minimum salary (₱ / mo)</Label>
               <Input
-                id="career-salary"
-                placeholder="PHP 40,000 - 120,000/mo"
-                {...register('salary_range')}
+                id="career-salary-min"
+                inputMode="numeric"
+                placeholder="40,000"
+                value={salaryMin}
+                onChange={(event) => setSalaryMin(formatAmount(event.target.value))}
+                aria-invalid={Boolean(salaryError ?? serverError?.fieldError('salary_min'))}
               />
-              <FieldError message={serverError?.fieldError('salary_range')} />
+              <FieldError message={serverError?.fieldError('salary_min')} />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="career-salary-max">Maximum salary (₱ / mo)</Label>
+              <Input
+                id="career-salary-max"
+                inputMode="numeric"
+                placeholder="120,000"
+                value={salaryMax}
+                onChange={(event) => setSalaryMax(formatAmount(event.target.value))}
+                aria-invalid={Boolean(salaryError ?? serverError?.fieldError('salary_max'))}
+              />
+              <FieldError message={serverError?.fieldError('salary_max')} />
             </div>
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="career-outlook">Employment outlook</Label>
-              <Input id="career-outlook" placeholder="High demand" {...register('employment_outlook')} />
-              <FieldError message={serverError?.fieldError('employment_outlook')} />
+              <Select
+                id="career-outlook"
+                value={outlookId}
+                disabled={outlooks.isPending}
+                onChange={(event) => setOutlookId(event.target.value)}
+                aria-invalid={Boolean(serverError?.fieldError('employment_outlook_id'))}
+              >
+                <option value="">
+                  {outlooks.isPending ? 'Loading…' : 'No outlook'}
+                </option>
+                {(outlooks.data ?? []).map((outlook) => (
+                  <option key={outlook.id} value={outlook.id}>
+                    {outlook.name}
+                  </option>
+                ))}
+              </Select>
+              <FieldError message={serverError?.fieldError('employment_outlook_id')} />
             </div>
+
+            {salaryError ? (
+              <p className="text-sm text-destructive sm:col-span-3">{salaryError}</p>
+            ) : null}
 
             <div className="flex flex-col gap-1.5 sm:col-span-3">
               <Label htmlFor="career-description">Description</Label>
@@ -179,7 +252,7 @@ export function CareerForm({ career, onSaved, onCancel }: CareerFormProps) {
           <RiasecLegend />
 
           <div className="flex gap-2">
-            <Button type="submit" loading={mutation.isPending}>
+            <Button type="submit" loading={mutation.isPending} disabled={Boolean(salaryError)}>
               {mutation.isPending ? 'Saving…' : isEditing ? 'Save career' : 'Add career'}
             </Button>
             <Button type="button" variant="secondary" onClick={onCancel}>

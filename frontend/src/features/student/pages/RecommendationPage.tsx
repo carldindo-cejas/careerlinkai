@@ -9,6 +9,7 @@ import {
   useMyRecommendations,
 } from '@/features/student/hooks/useRecommendations';
 import { paths } from '@/routes/paths';
+import { formatSalaryRange } from '@/types/catalog';
 import type { CareerRecommendation, ProgramRecommendation } from '@/types/recommendation';
 
 /**
@@ -207,13 +208,16 @@ function CareerCard({ recommendation }: { recommendation: CareerRecommendation }
       <CardContent className="flex flex-col gap-3">
         <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
 
-        {career.salary_range || career.employment_outlook ? (
-          <p className="text-sm text-muted-foreground">
-            {career.salary_range}
-            {career.salary_range && career.employment_outlook ? ' · ' : null}
-            {career.employment_outlook}
-          </p>
-        ) : null}
+        {(() => {
+          const parts = [
+            formatSalaryRange(career.salary_min, career.salary_max),
+            career.employment_outlook?.name,
+          ].filter(Boolean);
+
+          return parts.length > 0 ? (
+            <p className="text-sm text-muted-foreground">{parts.join(' · ')}</p>
+          ) : null;
+        })()}
 
         <ExplainMore recommendationId={recommendation.id} />
       </CardContent>

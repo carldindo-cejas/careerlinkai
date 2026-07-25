@@ -6,6 +6,7 @@ import type {
   CreateCareerPayload,
   CreateCollegePayload,
   CreateProgramPayload,
+  EmploymentOutlook,
   Program,
   UpdateCareerPayload,
   UpdateCollegePayload,
@@ -69,6 +70,13 @@ export const catalogApi = {
         // The mapping picker needs the whole catalog in one list, not page one of it.
         params: { per_page: 100 },
       }),
+    );
+  },
+
+  /** The employment-outlook lookup (backend migration 0013) that populates the careers dropdown. */
+  listEmploymentOutlooks(): Promise<EmploymentOutlook[]> {
+    return unwrap(
+      httpClient.get<ApiSuccess<EmploymentOutlook[]>>('/admin/employment-outlooks'),
     );
   },
 

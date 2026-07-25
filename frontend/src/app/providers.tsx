@@ -3,6 +3,7 @@ import { useState, type ReactNode } from 'react';
 import { BrowserRouter } from 'react-router-dom';
 
 import { createQueryClient } from '@/app/queryClient';
+import { Toaster } from '@/components/ui/Toaster';
 
 export interface AppProvidersProps {
   children: ReactNode;
@@ -21,6 +22,7 @@ export function AppProviders({ children }: AppProvidersProps) {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>{children}</BrowserRouter>
+      <Toaster />
     </QueryClientProvider>
   );
 }

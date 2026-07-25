@@ -6,6 +6,7 @@ import {
   classStudents,
   classes,
   counselorProfiles,
+  studentProfiles,
   users,
   type CounselorProfile,
   type User,
@@ -19,6 +20,10 @@ import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
 import { revokeAllTokensForUser } from '@/lib/tokens';
 import type { CreateCounselorInput, UpdateCounselorInput } from '@/modules/identity/schemas';
 import { AuditService } from '@/modules/platform/audit-service';
+import {
+  RecommendationService,
+  type RecommendationSet,
+} from '@/modules/recommendation/recommendation-service';
 
 /**
  * Counselor management (FULLPLAN §20 "Counselor management", Phase 6) — the admin's four
@@ -91,6 +96,20 @@ export interface CounselorListFilters {
   status?: UserStatus;
 }
 
+/**
+ * One row of the counselor students table (§20, prompt-driven): a student assigned to the
+ * counselor, their profile signals, their latest RIASEC Holland Code, and their current
+ * recommendation set (hydrated — the table shows the top of each and expands to the top five).
+ */
+export interface CounselorStudentView {
+  id: string;
+  name: string;
+  gradeLevel: string | null;
+  strand: string | null;
+  hollandCode: string | null;
+  recommendations: RecommendationSet | null;
+}
+
 export class CounselorManagementService {
   private readonly audit: AuditService;
 
@@ -147,6 +166,80 @@ export class CounselorManagementService {
       filters.page,
       filters.perPage,
     );
+  }
+
+  /**
+   * The counselor's assigned students, each with their profile signals, latest Holland Code, and
+   * hydrated recommendation set (§20 "Counselor management", prompt-driven students view).
+   *
+   * "Assigned" means enrolled (active) in one of the counselor's live classes — the same
+   * relationship §4 grants a counselor read access over. A student in two of the counselor's
+   * classes appears once (`selectDistinct`). The roster is bounded (a counselor's classes hold
+   * tens of students, not thousands), so it is returned whole and the table search/sort/paginate
+   * happens client-side; the expensive part — hydrating every student's recommendations — is done
+   * in a fixed handful of queries here (`setsForStudents`, `hollandCodesForStudents`), never per
+   * student.
+   */
+  async studentsFor(
+    counselorId: string,
+  ): Promise<{ user: User; profile: CounselorProfile; students: CounselorStudentView[] }> {
+    const { user, profile } = await this.find(counselorId);
+
+    const enrolled = await this.db
+      .selectDistinct({ studentId: classStudents.studentId })
+      .from(classStudents)
+      .innerJoin(classes, eq(classStudents.classId, classes.id))
+      .where(
+        and(
+          eq(classes.counselorId, user.id),
+          isNull(classes.deletedAt),
+          eq(classStudents.status, 'active'),
+        ),
+      );
+
+    const studentIds = enrolled.map((row) => row.studentId);
+
+    if (studentIds.length === 0) {
+      return { user, profile, students: [] };
+    }
+
+    const profileRows = await this.db
+      .select({
+        id: users.id,
+        name: users.name,
+        firstName: studentProfiles.firstName,
+        lastName: studentProfiles.lastName,
+        gradeLevel: studentProfiles.gradeLevel,
+        strand: studentProfiles.strand,
+      })
+      .from(users)
+      .leftJoin(studentProfiles, eq(studentProfiles.userId, users.id))
+      .where(and(inArray(users.id, studentIds), isNull(users.deletedAt)));
+
+    const recommendation = new RecommendationService(this.db);
+    const [hollandCodes, sets] = await Promise.all([
+      recommendation.hollandCodesForStudents(studentIds),
+      recommendation.setsForStudents(studentIds),
+    ]);
+
+    const students = profileRows
+      .map((row): CounselorStudentView => {
+        // Prefer the profile's own name; fall back to the account name (a student who joined with a
+        // username but has not completed their profile).
+        const profileName = [row.firstName, row.lastName].filter(Boolean).join(' ').trim();
+
+        return {
+          id: row.id,
+          name: profileName.length > 0 ? profileName : row.name,
+          gradeLevel: row.gradeLevel,
+          strand: row.strand,
+          hollandCode: hollandCodes.get(row.id) ?? null,
+          recommendations: sets.get(row.id) ?? null,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return { user, profile, students };
   }
 
   /**

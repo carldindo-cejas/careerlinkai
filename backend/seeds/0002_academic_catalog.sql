@@ -40,17 +40,19 @@ INSERT OR IGNORE INTO colleges (id, name, description, status, created_at, updat
 -- `typical_riasec_code` is read **positionally** by §27, weighting [0.5, 0.3, 0.2] — the first
 -- letter is the dominant type, so the order of these letters is data, not formatting.
 
-INSERT OR IGNORE INTO careers (id, title, description, salary_range, employment_outlook, typical_riasec_code, status, created_at, updated_at) VALUES
-('ca111111-1111-4111-8111-111111111111', 'Software Engineer', 'Designs, builds and maintains software systems.', 'PHP 40,000 - 120,000/mo', 'High demand', 'IEC', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('ca222222-2222-4222-8222-222222222222', 'Data Analyst', 'Turns raw data into decisions using statistics and visualisation.', 'PHP 35,000 - 90,000/mo', 'High demand', 'ICE', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('ca333333-3333-4333-8333-333333333333', 'Civil Engineer', 'Plans and supervises infrastructure projects.', 'PHP 30,000 - 80,000/mo', 'Stable demand', 'RIC', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('ca444444-4444-4444-8444-444444444444', 'Registered Nurse', 'Delivers direct patient care in clinical settings.', 'PHP 25,000 - 60,000/mo', 'High demand, strong overseas market', 'SIR', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('ca555555-5555-4555-8555-555555555555', 'Accountant', 'Prepares and audits financial records.', 'PHP 28,000 - 75,000/mo', 'Stable demand', 'CEI', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('ca666666-6666-4666-8666-666666666666', 'Graphic Designer', 'Creates visual communication for brands and products.', 'PHP 22,000 - 60,000/mo', 'Moderate demand', 'AER', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('ca777777-7777-4777-8777-777777777777', 'Marketing Manager', 'Owns brand strategy and go-to-market execution.', 'PHP 45,000 - 130,000/mo', 'Stable demand', 'ESA', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('ca888888-8888-4888-8888-888888888888', 'Teacher', 'Plans and delivers instruction; assesses learning.', 'PHP 25,000 - 55,000/mo', 'Stable demand', 'SAE', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('ca999999-9999-4999-8999-999999999999', 'Architect', 'Designs buildings and oversees their construction.', 'PHP 30,000 - 90,000/mo', 'Moderate demand', 'ARI', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-('caaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Journalist', 'Researches, writes and reports news stories.', 'PHP 22,000 - 60,000/mo', 'Declining print, growing digital', 'AES', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+-- Salary is now two raw integer columns (migration 0013); employment outlook is an FK into the
+-- seeded `employment_outlooks` lookup (e0000001…4 = Low / Moderate / High / Emerging).
+INSERT OR IGNORE INTO careers (id, title, description, salary_min, salary_max, employment_outlook_id, typical_riasec_code, status, created_at, updated_at) VALUES
+('ca111111-1111-4111-8111-111111111111', 'Software Engineer', 'Designs, builds and maintains software systems.', 40000, 120000, 'e0000003-0000-4000-8000-000000000003', 'IEC', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('ca222222-2222-4222-8222-222222222222', 'Data Analyst', 'Turns raw data into decisions using statistics and visualisation.', 35000, 90000, 'e0000003-0000-4000-8000-000000000003', 'ICE', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('ca333333-3333-4333-8333-333333333333', 'Civil Engineer', 'Plans and supervises infrastructure projects.', 30000, 80000, 'e0000002-0000-4000-8000-000000000002', 'RIC', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('ca444444-4444-4444-8444-444444444444', 'Registered Nurse', 'Delivers direct patient care in clinical settings.', 25000, 60000, 'e0000003-0000-4000-8000-000000000003', 'SIR', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('ca555555-5555-4555-8555-555555555555', 'Accountant', 'Prepares and audits financial records.', 28000, 75000, 'e0000002-0000-4000-8000-000000000002', 'CEI', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('ca666666-6666-4666-8666-666666666666', 'Graphic Designer', 'Creates visual communication for brands and products.', 22000, 60000, 'e0000002-0000-4000-8000-000000000002', 'AER', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('ca777777-7777-4777-8777-777777777777', 'Marketing Manager', 'Owns brand strategy and go-to-market execution.', 45000, 130000, 'e0000002-0000-4000-8000-000000000002', 'ESA', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('ca888888-8888-4888-8888-888888888888', 'Teacher', 'Plans and delivers instruction; assesses learning.', 25000, 55000, 'e0000002-0000-4000-8000-000000000002', 'SAE', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('ca999999-9999-4999-8999-999999999999', 'Architect', 'Designs buildings and oversees their construction.', 30000, 90000, 'e0000002-0000-4000-8000-000000000002', 'ARI', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+('caaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Journalist', 'Researches, writes and reports news stories.', 22000, 60000, 'e0000004-0000-4000-8000-000000000004', 'AES', 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
 -- --- Programs -------------------------------------------------------------------------
 --
