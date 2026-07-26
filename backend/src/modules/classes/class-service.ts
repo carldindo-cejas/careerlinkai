@@ -1,7 +1,9 @@
-import { and, count, desc, eq, isNull } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
 import { classes, type ClassRoom, type User } from '@/db/schema';
+import { applyGlobalAssignments } from '@/events/apply-global-assignments';
+import { dispatch } from '@/events/dispatcher';
 import { studentJoinCodeTtlDays } from '@/lib/config';
 import { uuid } from '@/lib/crypto';
 import { daysFromNow, now } from '@/lib/datetime';
@@ -69,6 +71,40 @@ export class ClassService {
   }
 
   /**
+   * Every `active` class in the system, **unauthorized** — the caller must authorize the act.
+   *
+   * This exists for the Assessment module's global assignment (§11: a module may not query another
+   * module's tables, so it goes through this Service). It deliberately returns only `active`
+   * classes: `draft` classes accept no joins and `archived` ones are finished, so fanning an
+   * assessment out to either would create assignments nobody can ever start.
+   *
+   * Unpaginated on purpose — the caller needs the whole set to write one row per class, and a page
+   * of it would silently assign an assessment to the first twenty classes and call that "global".
+   */
+  async listActive(): Promise<ClassRoom[]> {
+    return this.db
+      .select()
+      .from(classes)
+      .where(and(eq(classes.status, 'active'), isNull(classes.deletedAt)))
+      .orderBy(desc(classes.createdAt));
+  }
+
+  /**
+   * Several class rows by id, **unauthorized** — as `findById`, in bulk, so a caller that must
+   * authorize twenty classes reads them in one query rather than twenty.
+   */
+  async findManyByIds(ids: string[]): Promise<ClassRoom[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .select()
+      .from(classes)
+      .where(and(inArray(classes.id, ids), isNull(classes.deletedAt)));
+  }
+
+  /**
    * The raw class row, **unauthorized** — the caller must authorize it themselves.
    *
    * This exists for the Assessment module (§11: a module may not query another module's tables,
@@ -112,6 +148,22 @@ export class ClassService {
       newValues: { name: classRoom.name, academic_year: classRoom.academicYear },
       ipAddress,
     });
+
+    /**
+     * **A class created after a global assignment still gets it** (v1.5, migration 0014).
+     *
+     * Through an event rather than a direct call, for two reasons that both matter: the Class module
+     * may not query the Assessment module's tables (§11), and this must not be able to fail class
+     * creation — `dispatch()` logs and absorbs a throwing listener, so the counselor gets the class
+     * they asked for either way, and an administrator re-running "Assign globally" is the recovery.
+     *
+     * There is no notification fan-out here, and none is missing: a class has no roster at creation.
+     * Students join afterwards and see the assignment on their dashboard the moment they do.
+     */
+    await dispatch(
+      { type: 'ClassCreated', classId: classRoom.id, counselorId: user.id },
+      [applyGlobalAssignments(this.db)],
+    );
 
     return classRoom;
   }

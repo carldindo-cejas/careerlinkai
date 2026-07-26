@@ -1,12 +1,15 @@
 import type {
   AssessmentDimension,
   AssessmentQuestion,
+  AssessmentScoring,
   AssessmentTemplate,
+  AssessmentType,
   AssessmentVersion,
   QuestionOption,
   StudentProfile,
 } from '@/db/schema';
 import type { ScoredDimension } from '@/lib/scoring';
+import type { AssessmentListRow } from '@/modules/assessment/assessment-admin-service';
 import type {
   AssignmentView,
   AttemptWithContent,
@@ -97,6 +100,8 @@ export function serializeAssignment(view: AssignmentView) {
     id: view.assignment.id,
     class_id: view.assignment.classId,
     status: view.assignment.status,
+    /** Migration 0014 — the act that wrote this row, so a class can see "assigned to everyone". */
+    scope: view.assignment.scope,
     deadline: view.assignment.deadline,
     created_at: view.assignment.createdAt,
     assessment: {
@@ -171,11 +176,109 @@ export function serializeResult(view: ResultView, dimensions: AssessmentDimensio
   };
 }
 
+// --- The taxonomy (migration 0014) ------------------------------------------------------------
+
+/**
+ * One assessment type, **with the ids of every scoring method it permits**.
+ *
+ * `allowed_scoring_ids` is the client's whole copy of the compatibility matrix, and shipping it
+ * inside the type list is the point: the scoring multi-select has to re-filter the instant the type
+ * changes, and a request per change would put a round trip inside a keystroke. It is ids rather
+ * than whole rows because the scoring lookup is fetched once alongside this and joined in the UI —
+ * sending fifteen nested copies of the same rows would be twelve times the payload for no
+ * information.
+ */
+export function serializeAssessmentType(type: AssessmentType, allowedScoringIds: string[]) {
+  return {
+    id: type.id,
+    code: type.code,
+    name: type.name,
+    description: type.description,
+    order_number: type.orderNumber,
+    allowed_scoring_ids: allowedScoringIds,
+  };
+}
+
+export function serializeAssessmentScoring(scoring: AssessmentScoring) {
+  return {
+    id: scoring.id,
+    code: scoring.code,
+    name: scoring.name,
+    description: scoring.description,
+    order_number: scoring.orderNumber,
+  };
+}
+
+/**
+ * One row of the administrator's assessment table.
+ *
+ * Everything the table renders is already resolved here — the type, the scoring methods, every
+ * version, whether one of them is published, how it is assigned. That is deliberate and is the
+ * counterpart to `AssessmentAdminService`'s grouped lookups: a row that made the client fetch its
+ * own versions would put the N+1 back on the other side of the wire.
+ *
+ * **`assignment.scope` is `null` for "not assigned", not `'CLASS'` with a zero count.** The three
+ * states the column shows are genuinely three, and collapsing the third into a count of zero is how
+ * a table ends up saying "Specific classes (0)".
+ */
+export function serializeAssessmentRow(row: AssessmentListRow) {
+  return {
+    id: row.template.id,
+    title: row.template.title,
+    description: row.template.description,
+    category: row.template.category,
+    ownership: row.template.ownership,
+    /** `ARCHIVED` | `ACTIVE` | `DRAFT` — the stored column, for the Archive/Restore action. */
+    status: row.template.status,
+    /**
+     * The **derived** status the Status column shows: is anything actually publishable. An archived
+     * assessment reports `is_archived` separately, because "archived" and "has a published version"
+     * are independent facts and one badge cannot carry both.
+     */
+    is_published: row.publishedVersion !== undefined,
+    is_archived: row.template.status === 'ARCHIVED',
+    type:
+      row.type === null
+        ? null
+        : { id: row.type.id, code: row.type.code, name: row.type.name },
+    scorings: row.scorings.map((scoring) => ({
+      id: scoring.id,
+      code: scoring.code,
+      name: scoring.name,
+    })),
+    versions: row.versions.map((version) => ({
+      id: version.id,
+      version_number: version.versionNumber,
+      status: version.status,
+    })),
+    published_version:
+      row.publishedVersion === undefined
+        ? null
+        : {
+            id: row.publishedVersion.id,
+            version_number: row.publishedVersion.versionNumber,
+            duration_minutes: row.publishedVersion.durationMinutes,
+            question_count: row.questionCount,
+          },
+    assignment: {
+      scope: row.assignment.scope,
+      class_count: row.assignment.classCount,
+    },
+    /** Permanently false for RIASEC and SCCT (§5) — the UI mirrors the rule it cannot enforce. */
+    ai_generatable: row.template.category === 'CUSTOM',
+    created_at: row.template.createdAt,
+    updated_at: row.template.updatedAt,
+  };
+}
+
 export function serializeTemplate(
   template: AssessmentTemplate,
   assignableVersion: AssessmentVersion | undefined,
   questionCount: number,
   dimensions?: AssessmentDimension[],
+  /** Migration 0014 — resolved by the caller, which already batched them for the whole list. */
+  type?: AssessmentType | null,
+  scorings?: AssessmentScoring[],
 ) {
   return {
     id: template.id,
@@ -184,6 +287,16 @@ export function serializeTemplate(
     description: template.description,
     ownership: template.ownership,
     status: template.status,
+    assessment_type_id: template.assessmentTypeId,
+    type:
+      type === undefined || type === null
+        ? null
+        : { id: type.id, code: type.code, name: type.name },
+    scorings: (scorings ?? []).map((scoring) => ({
+      id: scoring.id,
+      code: scoring.code,
+      name: scoring.name,
+    })),
     /** NULL when nothing is publishable yet — the UI says so rather than offering a dead button. */
     assignable_version:
       assignableVersion === undefined

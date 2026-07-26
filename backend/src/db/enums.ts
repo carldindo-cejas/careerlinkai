@@ -80,6 +80,16 @@ export const ASSIGNMENT_STATUSES = ['ACTIVE', 'CLOSED'] as const;
 export type AssignmentStatus = (typeof ASSIGNMENT_STATUSES)[number];
 
 /**
+ * Migration 0014 — **how** an assignment came to exist, not who it reaches.
+ *
+ * Every assignment still names exactly one class either way, so enrollment, authorization and the
+ * §44 fan-out are untouched. `GLOBAL` marks the rows written by one administrative act across every
+ * active class; `CLASS` marks the ordinary pick-a-class assignment a counselor makes.
+ */
+export const ASSIGNMENT_SCOPES = ['GLOBAL', 'CLASS'] as const;
+export type AssignmentScope = (typeof ASSIGNMENT_SCOPES)[number];
+
+/**
  * §24 — the two scoring algorithms, selected by `assessment_versions.scoring_config.algorithm`.
  *
  * These are the *whole* extension point: §24 is one engine with two configurations precisely so

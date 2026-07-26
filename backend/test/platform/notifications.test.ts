@@ -4,7 +4,12 @@ import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import { createDatabase } from '@/db/client';
-import { aiRequests, assessmentQuestions, knowledgeDocuments, notifications } from '@/db/schema';
+import {
+  aiRequests,
+  assessmentQuestions,
+  knowledgeDocuments,
+  notifications,
+} from '@/db/schema';
 import {
   notifyAssessmentDraftGenerated,
   notifyKnowledgeDocumentProcessed,
@@ -18,6 +23,7 @@ import type { VectorStore } from '@/modules/ai/vector-store';
 import { NotificationService } from '@/modules/platform/notification-service';
 import {
   api,
+  assessmentTaxonomyBody,
   classWithStudent,
   createClass,
   createStaffUser,
@@ -190,12 +196,20 @@ describe('§44: "New assessment assigned" — the fan-out at assignment creation
     // A one-question ungraded CUSTOM assessment, published through the real gate.
     const template = await api('POST', '/assessment-templates', {
       token: counselorToken,
-      body: { category: 'CUSTOM', title: 'Semester Reflection' },
+      body: {
+        category: 'CUSTOM',
+        title: 'Semester Reflection',
+        ...(await assessmentTaxonomyBody()),
+      },
     });
-    const version = await api('POST', `/assessment-templates/${template.body.data.id}/versions`, {
-      token: counselorToken,
-      body: {},
-    });
+    const version = await api(
+      'POST',
+      `/assessment-templates/${template.body.data.id}/versions`,
+      {
+        token: counselorToken,
+        body: {},
+      },
+    );
     await api('POST', `/assessment-versions/${version.body.data.id}/questions`, {
       token: counselorToken,
       body: {
@@ -211,10 +225,14 @@ describe('§44: "New assessment assigned" — the fan-out at assignment creation
         ],
       },
     });
-    const published = await api('POST', `/assessment-versions/${version.body.data.id}/publish`, {
-      token: counselorToken,
-      body: {},
-    });
+    const published = await api(
+      'POST',
+      `/assessment-versions/${version.body.data.id}/publish`,
+      {
+        token: counselorToken,
+        body: {},
+      },
+    );
     expect(published.status).toBe(200);
 
     const deadline = new Date(Date.now() + 7 * 86_400_000).toISOString();
@@ -253,12 +271,20 @@ describe('§44: "New assessment assigned" — the fan-out at assignment creation
 
     const template = await api('POST', '/assessment-templates', {
       token,
-      body: { category: 'CUSTOM', title: 'Open Reflection' },
+      body: {
+        category: 'CUSTOM',
+        title: 'Open Reflection',
+        ...(await assessmentTaxonomyBody()),
+      },
     });
-    const version = await api('POST', `/assessment-templates/${template.body.data.id}/versions`, {
-      token,
-      body: {},
-    });
+    const version = await api(
+      'POST',
+      `/assessment-templates/${template.body.data.id}/versions`,
+      {
+        token,
+        body: {},
+      },
+    );
     await api('POST', `/assessment-versions/${version.body.data.id}/questions`, {
       token,
       body: {
@@ -274,7 +300,10 @@ describe('§44: "New assessment assigned" — the fan-out at assignment creation
         ],
       },
     });
-    await api('POST', `/assessment-versions/${version.body.data.id}/publish`, { token, body: {} });
+    await api('POST', `/assessment-versions/${version.body.data.id}/publish`, {
+      token,
+      body: {},
+    });
 
     await api('POST', `/counselor/classes/${classRoom.id}/assignments`, {
       token,
@@ -297,12 +326,20 @@ describe('§44: "Your {assessment title} results are ready." — fired from subm
 
     const template = await api('POST', '/assessment-templates', {
       token: counselorToken,
-      body: { category: 'CUSTOM', title: 'Study Habits Check' },
+      body: {
+        category: 'CUSTOM',
+        title: 'Study Habits Check',
+        ...(await assessmentTaxonomyBody()),
+      },
     });
-    const version = await api('POST', `/assessment-templates/${template.body.data.id}/versions`, {
-      token: counselorToken,
-      body: {},
-    });
+    const version = await api(
+      'POST',
+      `/assessment-templates/${template.body.data.id}/versions`,
+      {
+        token: counselorToken,
+        body: {},
+      },
+    );
     await api('POST', `/assessment-versions/${version.body.data.id}/questions`, {
       token: counselorToken,
       body: {
@@ -377,12 +414,16 @@ describe('the remaining §44 listeners', () => {
 
     const template = await api('POST', '/assessment-templates', {
       token,
-      body: { category: 'CUSTOM', title: 'Grit Scale' },
+      body: { category: 'CUSTOM', title: 'Grit Scale', ...(await assessmentTaxonomyBody()) },
     });
-    const version = await api('POST', `/assessment-templates/${template.body.data.id}/versions`, {
-      token,
-      body: {},
-    });
+    const version = await api(
+      'POST',
+      `/assessment-templates/${template.body.data.id}/versions`,
+      {
+        token,
+        body: {},
+      },
+    );
 
     // The rows the generation job would have written: one ai_requests row, two questions
     // referencing it. Written directly because Workers AI has no local emulation — the §31
@@ -460,7 +501,9 @@ describe('the remaining §44 listeners', () => {
     });
     await env.STORAGE.put(
       `knowledge/${documentId}/extracted.txt`,
-      'Careers in software engineering reward investigative and analytical interests. '.repeat(50),
+      'Careers in software engineering reward investigative and analytical interests. '.repeat(
+        50,
+      ),
     );
 
     const embedder: WorkersAiClient = {

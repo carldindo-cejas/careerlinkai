@@ -319,6 +319,9 @@ adminRoutes.delete('/programs/:id/careers/:careerId', async (c) => {
  */
 export const publicCatalogRoutes = new Hono<AppEnv>();
 
+/** How many programs a public college card previews before it collapses the rest into "+N more". */
+const PUBLIC_PROGRAM_PREVIEW = 3;
+
 publicCatalogRoutes.get('/programs/public', async (c) => {
   const collegesWithPrograms = await catalog(c).publicCatalog();
 
@@ -337,6 +340,81 @@ publicCatalogRoutes.get('/programs/public', async (c) => {
         })),
       },
       'Programs retrieved successfully.',
+    ),
+  );
+});
+
+/**
+ * `GET /colleges/public` (prompt-driven, v1.5) — the public Colleges page. Every active college with
+ * its resolved school address, its Google Maps link (null when none), and a **capped** preview of its
+ * programs alongside the true total, so the card can render "2–3 programs, +N more" without shipping
+ * the whole list. `?region_id=` scopes the list to one region (the page's filter). Reuses the same
+ * `serializeCollege`/`serializeProgram` allow-lists as the admin surface — the frontend's `College`
+ * type already mirrors them — so a public college is just a `College` with a trimmed program list.
+ */
+publicCatalogRoutes.get('/colleges/public', async (c) => {
+  const rawRegion = c.req.query('region_id')?.trim();
+  const regionId = rawRegion === undefined || rawRegion === '' ? undefined : rawRegion;
+  const rows = await catalog(c).publicColleges(regionId);
+
+  return c.json(
+    successEnvelope(
+      {
+        colleges: rows.map(({ college, location, programs: items, programsCount }) =>
+          serializeCollege(college, {
+            location,
+            programsCount,
+            programs: items.slice(0, PUBLIC_PROGRAM_PREVIEW).map((program) => serializeProgram(program)),
+          }),
+        ),
+      },
+      'Colleges retrieved successfully.',
+    ),
+  );
+});
+
+/** The region options for the public Colleges filter — only regions that actually have a college. */
+publicCatalogRoutes.get('/regions/public', async (c) => {
+  const regions = await catalog(c).publicCollegeRegions();
+
+  return c.json(successEnvelope({ regions }, 'Regions retrieved successfully.'));
+});
+
+/**
+ * `GET /careers/public` (prompt-driven, v1.5) — the public Careers page. Every active career with its
+ * employment-outlook name resolved and its raw salary bounds (the client formats the separators). The
+ * outlook and salary filters the page offers run client-side over this list; the server just hands
+ * over the whole thin set.
+ */
+publicCatalogRoutes.get('/careers/public', async (c) => {
+  const service = catalog(c);
+  const careerRows = await service.publicCareers();
+  const outlooks = await service.outlooksById();
+
+  return c.json(
+    successEnvelope(
+      {
+        careers: careerRows.map((career) =>
+          serializeCareer(career, {
+            outlook: career.employmentOutlookId
+              ? (outlooks.get(career.employmentOutlookId) ?? null)
+              : null,
+          }),
+        ),
+      },
+      'Careers retrieved successfully.',
+    ),
+  );
+});
+
+/** The employment-outlook options for the public Careers filter (the same four-row lookup). */
+publicCatalogRoutes.get('/employment-outlooks/public', async (c) => {
+  const outlooks = await catalog(c).listEmploymentOutlooks();
+
+  return c.json(
+    successEnvelope(
+      outlooks.map(serializeEmploymentOutlook),
+      'Employment outlooks retrieved successfully.',
     ),
   );
 });

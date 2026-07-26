@@ -1,80 +1,46 @@
-import { useQuery } from '@tanstack/react-query';
 import {
   ArrowRight,
   BookOpenCheck,
   Compass,
-  GraduationCap,
   KeyRound,
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 
-import artUrl from '@/assets/careerlinkai_art.png';
-import { Logo } from '@/components/brand/Logo';
 import { FadeIn } from '@/components/motion/FadeIn';
 import { Blueprint, Corners } from '@/components/ui/blueprint';
-import { catalogApi } from '@/services/catalogApi';
-import { homePathForRole, paths } from '@/routes/paths';
-import { useAuthStore } from '@/stores/authStore';
+import { CollegeCard } from '@/features/public/components/CollegeCard';
+import { usePublicColleges } from '@/features/public/hooks/usePublicCatalog';
+import { paths } from '@/routes/paths';
 
 /**
- * The public landing page (post-Phase-6 design pass).
+ * The public home page (prompt-driven, v1.5 — the post-Phase-6 landing, restructured).
  *
  * Two audiences, two doors, stated plainly: students join with a class code (no account, no
- * password — §38), staff sign in. Everything on this page is either true of the running
- * system or rendered from it — the program browser is the live `GET /programs/public`
- * catalog, not marketing copy.
+ * password — §38), staff sign in. The nav and footer now live in `PublicLayout`, shared with the
+ * Colleges and Careers pages; this page owns only its content. The `careerlinkai_art` hero plate is
+ * gone (per the prompt), and the old "Programs" browser is now a Colleges preview linking to the
+ * dedicated Colleges page.
  */
-export function LandingPage() {
-  const user = useAuthStore((state) => state.user);
+export function HomePage() {
+  const location = useLocation();
+
+  // The nav's "How It Works" is a hash link (`/#how-it-works`). React Router doesn't scroll to a hash
+  // on its own, so do it here — whether we arrived from another page or the hash changed in place.
+  useEffect(() => {
+    if (location.hash) {
+      const target = document.getElementById(location.hash.slice(1));
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }, [location.hash]);
 
   return (
-    <div className="min-h-screen bg-sidebar text-sidebar-active-foreground">
-      {/* --- Nav ------------------------------------------------------------------- */}
-      <header className="sticky top-0 z-40 border-b border-sidebar-border bg-sidebar/80 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-          <Logo wordmarkClassName="text-sidebar-active-foreground" />
-
-          <nav className="hidden items-center gap-6 text-sm text-sidebar-foreground md:flex">
-            <a href="#how-it-works" className="transition-colors hover:text-sidebar-active-foreground">
-              How it works
-            </a>
-            <a href="#programs" className="transition-colors hover:text-sidebar-active-foreground">
-              Programs
-            </a>
-          </nav>
-
-          <div className="flex items-center gap-2">
-            {user ? (
-              <Link
-                to={homePathForRole(user.role)}
-                className="inline-flex h-9 items-center gap-1.5 rounded-none bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-[#4d7196]"
-              >
-                Go to my dashboard
-                <ArrowRight className="size-4" aria-hidden="true" />
-              </Link>
-            ) : (
-              <>
-                <Link
-                  to={paths.login}
-                  className="hidden h-9 items-center rounded-none px-4 text-sm font-medium text-sidebar-foreground transition-colors hover:text-sidebar-active-foreground sm:inline-flex"
-                >
-                  Counselor Login
-                </Link>
-                <Link
-                  to={paths.studentAccess}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-none bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-[#4d7196]"
-                >
-                  Join your class
-                </Link>
-              </>
-            )}
-          </div>
-        </div>
-      </header>
-
+    <>
       {/* --- Hero ------------------------------------------------------------------ */}
       <section className="relative overflow-hidden">
         <div
@@ -93,10 +59,7 @@ export function LandingPage() {
             </p>
             <h1 className="text-4xl font-bold leading-tight tracking-tight sm:text-5xl">
               Know where your strengths point{' '}
-              {/* Mono scheme: the emphasis is the single steel accent, not a two-hue gradient. */}
-              <span className="text-primary">
-                before you choose a college.
-              </span>
+              <span className="text-primary">before you choose a college.</span>
             </h1>
             <p className="mx-auto mt-5 max-w-2xl text-base text-sidebar-foreground sm:text-lg">
               CareerLinkAI matches your RIASEC interests and career confidence to real careers,
@@ -115,32 +78,21 @@ export function LandingPage() {
                 <ArrowRight className="size-4" aria-hidden="true" />
               </Link>
               <Link
-                to={paths.login}
+                to={paths.publicColleges}
                 className="inline-flex h-11 items-center rounded-none border border-sidebar-border px-6 text-base font-medium text-sidebar-active-foreground transition-colors hover:bg-sidebar-active"
               >
-                Counselor Login
+                Explore colleges
               </Link>
             </div>
             <p className="mt-3 text-xs text-sidebar-muted">
               Students need no account and no password — just the code your counselor gave you.
             </p>
           </FadeIn>
-
-          <FadeIn delay={0.15} className="mx-auto mt-12 max-w-4xl">
-            {/* The hero figure is a framed plate: hairline border, registration marks, no shadow. */}
-            <Blueprint className="border-sidebar-border bg-background p-3">
-              <img
-                src={artUrl}
-                alt="Senior high school students reviewing their career recommendations on laptops and tablets"
-                className="w-full rounded-none object-contain"
-              />
-            </Blueprint>
-          </FadeIn>
         </div>
       </section>
 
       {/* --- How it works ------------------------------------------------------------ */}
-      <section id="how-it-works" className="bg-background text-foreground">
+      <section id="how-it-works" className="scroll-mt-20 bg-background text-foreground">
         <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
           <div className="mx-auto max-w-2xl text-center">
             <h2 className="text-3xl font-bold tracking-tight">Three steps to a direction</h2>
@@ -192,25 +144,9 @@ export function LandingPage() {
         </div>
       </section>
 
-      {/* --- Program browser ---------------------------------------------------------- */}
-      <ProgramBrowser />
-
-      {/* --- Footer -------------------------------------------------------------------- */}
-      <footer className="border-t border-sidebar-border">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 py-8 text-sm text-sidebar-muted sm:flex-row sm:px-6">
-          <Logo wordmarkClassName="text-sidebar-active-foreground" />
-          <p>Career &amp; college guidance for Senior High School.</p>
-          <div className="flex gap-4">
-            <Link to={paths.studentAccess} className="hover:text-sidebar-active-foreground">
-              Join a class
-            </Link>
-            <Link to={paths.login} className="hover:text-sidebar-active-foreground">
-              Counselor Login
-            </Link>
-          </div>
-        </div>
-      </footer>
-    </div>
+      {/* --- Colleges preview --------------------------------------------------------- */}
+      <CollegesPreview />
+    </>
   );
 }
 
@@ -253,59 +189,48 @@ function ValueCard({ icon, title, body }: { icon: ReactNode; title: string; body
 }
 
 /**
- * The live catalog (GET /programs/public). Rendered only when it has content — an empty
- * or failed fetch collapses the section entirely rather than showing an empty promise.
+ * A live preview of the college catalog (prompt-driven, v1.5) — the home page's replacement for the
+ * old program browser, renamed to Colleges. Shows the first few institutions and links to the full
+ * Colleges page. Collapses entirely when the catalog is empty rather than showing an empty promise.
  */
-function ProgramBrowser() {
-  const { data } = useQuery({
-    queryKey: ['public', 'programs'],
-    queryFn: () => catalogApi.publicPrograms(),
-    staleTime: 5 * 60 * 1000,
-  });
+const HOME_COLLEGE_PREVIEW = 3;
 
-  if (!data || data.colleges.length === 0) {
+function CollegesPreview() {
+  const { data } = usePublicColleges(null);
+
+  if (!data || data.length === 0) {
     return null;
   }
 
-  const programCount = data.colleges.reduce((sum, college) => sum + college.programs.length, 0);
+  const preview = data.slice(0, HOME_COLLEGE_PREVIEW);
 
   return (
-    <section id="programs" className="border-t border-border bg-background text-foreground">
+    <section className="border-t border-border bg-background text-foreground">
       <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-bold tracking-tight">
-            {programCount} programs across {data.colleges.length}{' '}
-            {data.colleges.length === 1 ? 'institution' : 'institutions'}
+            {data.length} {data.length === 1 ? 'college' : 'colleges'} in the catalog
           </h2>
           <p className="mt-3 text-muted-foreground">
-            The catalog your recommendations are drawn from — curated by your school&apos;s
+            The institutions your recommendations are drawn from — curated by your school&apos;s
             administrators, matched to you by the engine.
           </p>
         </div>
 
-        <div className="mt-10 grid gap-6 sm:grid-cols-2">
-          {data.colleges.map((college) => (
-            <Blueprint key={college.id} className="p-6">
-              <div className="flex items-center gap-2.5">
-                <GraduationCap className="size-5 text-primary" aria-hidden="true" />
-                <h3 className="font-semibold">{college.name}</h3>
-              </div>
-              <ul className="mt-3 flex flex-wrap gap-2">
-                {college.programs.map((program) => (
-                  <li
-                    key={program.id}
-                    className="rounded-none bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground/80"
-                    title={program.name}
-                  >
-                    {program.code}
-                    <span className="ml-1.5 font-normal text-muted-foreground">
-                      {program.name}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </Blueprint>
+        <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {preview.map((college) => (
+            <CollegeCard key={college.id} college={college} />
           ))}
+        </div>
+
+        <div className="mt-10 flex justify-center">
+          <Link
+            to={paths.publicColleges}
+            className="inline-flex h-11 items-center gap-2 rounded-none border border-border px-6 text-base font-medium text-foreground transition-colors hover:bg-secondary"
+          >
+            View all colleges
+            <ArrowRight className="size-4" aria-hidden="true" />
+          </Link>
         </div>
       </div>
     </section>

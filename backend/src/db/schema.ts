@@ -7,6 +7,7 @@ import type {
   AiRequestType,
   AssessmentCategory,
   AssessmentOwnership,
+  AssignmentScope,
   AssignmentStatus,
   AttemptStatus,
   CatalogStatus,
@@ -484,6 +485,82 @@ export const barangays = sqliteTable(
   ],
 );
 
+// --- Assessment taxonomy (migration 0014) --------------------------------------------
+//
+// Two curated lookups and the matrix that says which pairs of them are meaningful. The matrix is
+// rows rather than a TypeScript map on purpose: the API serves it to the client (so the scoring
+// dropdown filters the moment a type is chosen, with no request) and `AssessmentTaxonomyService`
+// validates against it, so the client's filter and the server's rule are one table read twice
+// instead of two transcriptions that can drift.
+
+/** What kind of instrument this is — Aptitude, Personality, Interest, … (12 seeded rows). */
+export const assessmentTypes = sqliteTable(
+  'assessment_types',
+  {
+    id: text('id').primaryKey().notNull(),
+    /** The stable machine handle (`CAREER_VOCATIONAL`) — what the backfill and tests resolve by. */
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    /** A curated sequence, not an alphabet — the prompt's own listing order. */
+    orderNumber: integer('order_number').notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('assessment_types_code_unique').on(table.code),
+    uniqueIndex('assessment_types_name_unique').on(table.name),
+    index('assessment_types_order_number_index').on(table.orderNumber),
+  ],
+);
+
+/** How an instrument is scored — Likert Scales, T-Scores, IQ Scores, … (15 seeded rows). */
+export const assessmentScorings = sqliteTable(
+  'assessment_scorings',
+  {
+    id: text('id').primaryKey().notNull(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    orderNumber: integer('order_number').notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('assessment_scorings_code_unique').on(table.code),
+    uniqueIndex('assessment_scorings_name_unique').on(table.name),
+    index('assessment_scorings_order_number_index').on(table.orderNumber),
+  ],
+);
+
+/**
+ * The compatibility matrix: one row per **legal** (type, scoring) pair, 80 of them.
+ *
+ * This is the whole of "an Intelligence test may report IQ Scores; a Learning Style inventory may
+ * not" — expressed as data, so both sides of the wire enforce the same thing.
+ */
+export const assessmentTypeScorings = sqliteTable(
+  'assessment_type_scorings',
+  {
+    id: text('id').primaryKey().notNull(),
+    assessmentTypeId: text('assessment_type_id')
+      .notNull()
+      .references(() => assessmentTypes.id, { onDelete: 'cascade' }),
+    assessmentScoringId: text('assessment_scoring_id')
+      .notNull()
+      .references(() => assessmentScorings.id, { onDelete: 'cascade' }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex('assessment_type_scorings_pair_unique').on(
+      table.assessmentTypeId,
+      table.assessmentScoringId,
+    ),
+    index('assessment_type_scorings_type_id_index').on(table.assessmentTypeId),
+    index('assessment_type_scorings_scoring_id_index').on(table.assessmentScoringId),
+  ],
+);
+
 // --- Assessment (§13.4) --------------------------------------------------------------
 
 /**
@@ -502,6 +579,12 @@ export const assessmentTemplates = sqliteTable(
     category: text('category').$type<AssessmentCategory>().notNull(),
     title: text('title').notNull(),
     description: text('description'),
+    /**
+     * Migration 0014. NULL only for templates that predate the taxonomy — the API requires it on
+     * every create and edit, so nothing new can be untyped. See the migration on why the column is
+     * nullable rather than NOT NULL.
+     */
+    assessmentTypeId: text('assessment_type_id').references(() => assessmentTypes.id),
     ownership: text('ownership').$type<AssessmentOwnership>().notNull().default('GLOBAL'),
     status: text('status').$type<TemplateStatus>().notNull().default('DRAFT'),
     createdAt: createdAt(),
@@ -512,6 +595,36 @@ export const assessmentTemplates = sqliteTable(
     index('assessment_templates_creator_id_index').on(table.creatorId),
     index('assessment_templates_category_index').on(table.category),
     index('assessment_templates_status_index').on(table.status),
+    index('assessment_templates_assessment_type_id_index').on(table.assessmentTypeId),
+  ],
+);
+
+/**
+ * The scoring methods one assessment actually uses — **many-to-many, not a second FK**.
+ *
+ * A Personality instrument legitimately reports Likert responses *and* T-Scores *and* a profile;
+ * the matrix above lists up to nine methods for a single type. One column would force the author to
+ * pick the method that fits worst.
+ */
+export const assessmentTemplateScorings = sqliteTable(
+  'assessment_template_scorings',
+  {
+    id: text('id').primaryKey().notNull(),
+    assessmentTemplateId: text('assessment_template_id')
+      .notNull()
+      .references(() => assessmentTemplates.id, { onDelete: 'cascade' }),
+    assessmentScoringId: text('assessment_scoring_id')
+      .notNull()
+      .references(() => assessmentScorings.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex('assessment_template_scorings_pair_unique').on(
+      table.assessmentTemplateId,
+      table.assessmentScoringId,
+    ),
+    index('assessment_template_scorings_template_id_index').on(table.assessmentTemplateId),
+    index('assessment_template_scorings_scoring_id_index').on(table.assessmentScoringId),
   ],
 );
 
@@ -670,6 +783,12 @@ export const assessmentAssignments = sqliteTable(
       .references(() => users.id),
     deadline: timestamp('deadline'),
     status: text('status').$type<AssignmentStatus>().notNull().default('ACTIVE'),
+    /**
+     * Migration 0014 — **the act that wrote this row, not who it reaches.** A GLOBAL assignment is
+     * still one row per class; this is what lets the admin list say "Global" instead of counting
+     * classes and guessing.
+     */
+    scope: text('scope').$type<AssignmentScope>().notNull().default('CLASS'),
     createdAt: createdAt(),
   },
   (table) => [
@@ -677,6 +796,7 @@ export const assessmentAssignments = sqliteTable(
     index('assessment_assignments_class_id_index').on(table.classId),
     index('assessment_assignments_status_index').on(table.status),
     index('assessment_assignments_assigned_by_index').on(table.assignedBy),
+    index('assessment_assignments_scope_index').on(table.scope),
   ],
 );
 
@@ -1044,6 +1164,10 @@ export type Region = typeof regions.$inferSelect;
 export type Province = typeof provinces.$inferSelect;
 export type Town = typeof towns.$inferSelect;
 export type Barangay = typeof barangays.$inferSelect;
+export type AssessmentType = typeof assessmentTypes.$inferSelect;
+export type AssessmentScoring = typeof assessmentScorings.$inferSelect;
+export type AssessmentTypeScoring = typeof assessmentTypeScorings.$inferSelect;
+export type AssessmentTemplateScoring = typeof assessmentTemplateScorings.$inferSelect;
 export type AssessmentTemplate = typeof assessmentTemplates.$inferSelect;
 export type AssessmentVersion = typeof assessmentVersions.$inferSelect;
 export type AssessmentDimension = typeof assessmentDimensions.$inferSelect;

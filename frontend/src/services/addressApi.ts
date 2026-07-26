@@ -7,6 +7,7 @@ import type {
   Province,
   Region,
   Town,
+  UpdateAddressPayload,
 } from '@/types/address';
 import type { ApiSuccess } from '@/types/api';
 import type { Paginated } from '@/types/class';
@@ -15,9 +16,8 @@ import type { Paginated } from '@/types/class';
  * The Philippine address hierarchy (backend migration 0011). Admin only.
  *
  * The nesting mirrors the API's, which mirrors the catalog's: a child is *listed and created under
- * its parent* (from the route, never the body — a place cannot be re-parented) and *deleted by its
- * own id*. There is no per-record update: reference rows are added in bulk and removed, not edited
- * one field at a time.
+ * its parent* (from the route, never the body — a place cannot be re-parented), *edited by its own
+ * id* (name and code only — never its parent), and *deleted by its own id*.
  */
 
 /** Strip `undefined` query params so the request URL stays clean. */
@@ -46,6 +46,10 @@ export const addressApi = {
     return unwrap(httpClient.post<ApiSuccess<BulkResult<Region>>>('/admin/regions/bulk', { items }));
   },
 
+  updateRegion(id: string, payload: UpdateAddressPayload): Promise<Region> {
+    return unwrap(httpClient.patch<ApiSuccess<Region>>(`/admin/regions/${id}`, payload));
+  },
+
   async removeRegion(id: string): Promise<void> {
     await httpClient.delete(`/admin/regions/${id}`);
   },
@@ -67,6 +71,10 @@ export const addressApi = {
         { items },
       ),
     );
+  },
+
+  updateProvince(id: string, payload: UpdateAddressPayload): Promise<Province> {
+    return unwrap(httpClient.patch<ApiSuccess<Province>>(`/admin/provinces/${id}`, payload));
   },
 
   async removeProvince(id: string): Promise<void> {
@@ -91,6 +99,10 @@ export const addressApi = {
     );
   },
 
+  updateTown(id: string, payload: UpdateAddressPayload): Promise<Town> {
+    return unwrap(httpClient.patch<ApiSuccess<Town>>(`/admin/towns/${id}`, payload));
+  },
+
   async removeTown(id: string): Promise<void> {
     await httpClient.delete(`/admin/towns/${id}`);
   },
@@ -111,6 +123,10 @@ export const addressApi = {
         items,
       }),
     );
+  },
+
+  updateBarangay(id: string, payload: UpdateAddressPayload): Promise<Barangay> {
+    return unwrap(httpClient.patch<ApiSuccess<Barangay>>(`/admin/barangays/${id}`, payload));
   },
 
   async removeBarangay(id: string): Promise<void> {

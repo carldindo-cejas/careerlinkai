@@ -14,13 +14,16 @@ import { AdminLoginPage } from '@/features/auth/pages/AdminLoginPage';
 import { ChangePasswordPage } from '@/features/auth/pages/ChangePasswordPage';
 import { ForgotPasswordPage } from '@/features/auth/pages/ForgotPasswordPage';
 import { LoginPage } from '@/features/auth/pages/LoginPage';
-import { LandingPage } from '@/features/landing/LandingPage';
+import { CareersPage } from '@/features/public/CareersPage';
+import { CollegesPage } from '@/features/public/CollegesPage';
+import { HomePage } from '@/features/public/HomePage';
+import { PublicLayout } from '@/features/public/PublicLayout';
 import { ResetPasswordPage } from '@/features/auth/pages/ResetPasswordPage';
 import { ClassDetailPage } from '@/features/counselor/pages/ClassDetailPage';
 import { ClassListPage } from '@/features/counselor/pages/ClassListPage';
 import { CounselorDashboardPage } from '@/features/counselor/pages/CounselorDashboardPage';
 import { TemplateBuilderPage } from '@/features/assessment-builder/pages/TemplateBuilderPage';
-import { TemplateListPage } from '@/features/assessment-builder/pages/TemplateListPage';
+import { AssessmentManagementPage } from '@/features/assessment-builder/pages/AssessmentManagementPage';
 import { AssessmentListPage } from '@/features/student/pages/AssessmentListPage';
 import { AssessmentPlayerPage } from '@/features/student/pages/AssessmentPlayerPage';
 import { RecommendationPage } from '@/features/student/pages/RecommendationPage';
@@ -49,8 +52,16 @@ import { RoleHome } from '@/routes/RoleHome';
 export function AppRoutes() {
   return (
     <Routes>
-      {/* The public landing page (post-Phase-6 design pass) — the two doors, stated plainly. */}
-      <Route path={paths.landing} element={<LandingPage />} />
+      {/*
+        The public, unauthenticated site (prompt-driven, v1.5): Home, Colleges and Careers, all under
+        one shell with the shared nav and footer. The two doors — student class code and staff sign-in
+        — are stated plainly on the home page.
+      */}
+      <Route element={<PublicLayout />}>
+        <Route path={paths.landing} element={<HomePage />} />
+        <Route path={paths.publicColleges} element={<CollegesPage />} />
+        <Route path={paths.publicCareers} element={<CareersPage />} />
+      </Route>
 
       <Route element={<StaffAuthLayout />}>
         <Route path={paths.login} element={<LoginPage />} />
@@ -91,8 +102,9 @@ export function AppRoutes() {
           {/* Phase 5a: what the AI may know, and what it may say (§33, §13.7). */}
           <Route path={paths.adminKnowledge} element={<KnowledgeListPage />} />
           <Route path={paths.adminAiPolicy} element={<AiPolicyPage />} />
-          {/* Phase 5b: the builder + AI generator (§31). Same pages as the counselor shell. */}
-          <Route path={paths.adminAssessmentTemplates} element={<TemplateListPage />} />
+          {/* Phase 5b + v1.5: the assessment table, then the builder + AI generator (§31).
+              Same pages as the counselor shell — scope is enforced server-side, not by routing. */}
+          <Route path={paths.adminAssessmentTemplates} element={<AssessmentManagementPage />} />
           <Route path={paths.adminAssessmentTemplate} element={<TemplateBuilderPage />} />
           {/* Phase 6 (§20, §37): counselor accounts and the audit trail. */}
           <Route path={paths.adminCounselors} element={<CounselorManagementPage />} />
@@ -112,8 +124,8 @@ export function AppRoutes() {
           <Route path={paths.counselorDashboard} element={<CounselorDashboardPage />} />
           <Route path={paths.counselorClasses} element={<ClassListPage />} />
           <Route path={paths.counselorClassDetail} element={<ClassDetailPage />} />
-          {/* Phase 5b: the builder + AI generator (§31) — ownership is enforced server-side. */}
-          <Route path={paths.counselorAssessmentTemplates} element={<TemplateListPage />} />
+          {/* Phase 5b + v1.5: the same assessment table and builder — ownership is server-side. */}
+          <Route path={paths.counselorAssessmentTemplates} element={<AssessmentManagementPage />} />
           <Route path={paths.counselorAssessmentTemplate} element={<TemplateBuilderPage />} />
         </Route>
       </Route>

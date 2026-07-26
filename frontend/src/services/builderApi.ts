@@ -17,15 +17,12 @@ import type {
  * 404s). Nothing here is student-reachable.
  */
 export const builderApi = {
-  createTemplate(payload: { title: string; description?: string | null }): Promise<BuilderTemplate> {
-    return unwrap(
-      httpClient.post<ApiSuccess<BuilderTemplate>>('/assessment-templates', {
-        category: 'CUSTOM',
-        ...payload,
-      }),
-    );
-  },
-
+  /**
+   * Creating an assessment lives in `assessmentAdminApi.create`, not here: since migration 0014 the
+   * request must carry an assessment type and its scoring methods, and those are validated against
+   * the compatibility matrix that the management screen already holds. A second create path here
+   * would be one that always 422s.
+   */
   getTemplate(templateId: string): Promise<BuilderTemplate> {
     return unwrap(
       httpClient.get<ApiSuccess<BuilderTemplate>>(`/assessment-templates/${templateId}`),

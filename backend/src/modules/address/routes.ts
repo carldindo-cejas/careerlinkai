@@ -8,7 +8,7 @@ import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
 import { AddressService } from '@/modules/address/address-service';
-import { bulkImportSchema, listAddressQuerySchema } from '@/modules/address/schemas';
+import { bulkImportSchema, listAddressQuerySchema, updateAddressSchema } from '@/modules/address/schemas';
 import {
   serializeBarangay,
   serializeProvince,
@@ -81,6 +81,13 @@ adminAddressRoutes.post('/regions/bulk', async (c) => {
   );
 });
 
+adminAddressRoutes.patch('/regions/:id', async (c) => {
+  const input = await parseBody(c, updateAddressSchema);
+  const region = await service(c).updateRegion(requireUser(c), c.req.param('id'), input, clientIp(c));
+
+  return c.json(successEnvelope(serializeRegion(region), 'Region updated successfully.'));
+});
+
 adminAddressRoutes.delete('/regions/:id', async (c) => {
   await service(c).deleteRegion(requireUser(c), c.req.param('id'), clientIp(c));
 
@@ -118,6 +125,18 @@ adminAddressRoutes.post('/regions/:regionId/provinces/bulk', async (c) => {
   );
 });
 
+adminAddressRoutes.patch('/provinces/:id', async (c) => {
+  const input = await parseBody(c, updateAddressSchema);
+  const province = await service(c).updateProvince(
+    requireUser(c),
+    c.req.param('id'),
+    input,
+    clientIp(c),
+  );
+
+  return c.json(successEnvelope(serializeProvince(province), 'Province updated successfully.'));
+});
+
 adminAddressRoutes.delete('/provinces/:id', async (c) => {
   await service(c).deleteProvince(requireUser(c), c.req.param('id'), clientIp(c));
 
@@ -150,6 +169,13 @@ adminAddressRoutes.post('/provinces/:provinceId/towns/bulk', async (c) => {
     bulkEnvelope({ created: result.created.map(serializeTown), skipped: result.skipped }, 'towns'),
     201,
   );
+});
+
+adminAddressRoutes.patch('/towns/:id', async (c) => {
+  const input = await parseBody(c, updateAddressSchema);
+  const town = await service(c).updateTown(requireUser(c), c.req.param('id'), input, clientIp(c));
+
+  return c.json(successEnvelope(serializeTown(town), 'Town updated successfully.'));
 });
 
 adminAddressRoutes.delete('/towns/:id', async (c) => {
@@ -187,6 +213,18 @@ adminAddressRoutes.post('/towns/:townId/barangays/bulk', async (c) => {
     ),
     201,
   );
+});
+
+adminAddressRoutes.patch('/barangays/:id', async (c) => {
+  const input = await parseBody(c, updateAddressSchema);
+  const barangay = await service(c).updateBarangay(
+    requireUser(c),
+    c.req.param('id'),
+    input,
+    clientIp(c),
+  );
+
+  return c.json(successEnvelope(serializeBarangay(barangay), 'Barangay updated successfully.'));
 });
 
 adminAddressRoutes.delete('/barangays/:id', async (c) => {

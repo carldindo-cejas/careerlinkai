@@ -9,6 +9,7 @@ import { canAnswerAttempt, canGenerateWithAi } from '@/policies/assessment';
 import {
   answerAll,
   api,
+  assessmentTaxonomy,
   assignVersion,
   classWithStudent,
   createStaffUser,
@@ -168,6 +169,7 @@ describe('the AI exclusion (§5) — checked before ownership', () => {
     const custom = await builder.createTemplate(adminRow, {
       category: 'CUSTOM',
       title: `Custom ${crypto.randomUUID().slice(0, 8)}`,
+      ...(await assessmentTaxonomy()),
     });
 
     expect(canGenerateWithAi(adminRow, custom)).toBe(true);
@@ -180,6 +182,7 @@ describe('the AI exclusion (§5) — checked before ownership', () => {
     const custom = await builder.createTemplate(adminRow, {
       category: 'CUSTOM',
       title: `Someone else's ${crypto.randomUUID().slice(0, 8)}`,
+      ...(await assessmentTaxonomy()),
     });
 
     expect(canGenerateWithAi(counselorRow!, custom)).toBe(false);

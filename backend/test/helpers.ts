@@ -17,6 +17,7 @@ import {
 } from '@/db/schema';
 import { hashPassword } from '@/do/auth-guard';
 import { uuid } from '@/lib/crypto';
+import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
 import { seedAssessmentInstruments } from '@/modules/assessment/instruments';
 import { now } from '@/lib/datetime';
 
@@ -481,6 +482,38 @@ export async function classWithStudent(counselorToken: string, name = 'Juan Dela
   const studentToken = await joinClass(classRoom.join_code, roster[0].username);
 
   return { classRoom, student: roster[0], studentToken };
+}
+
+/**
+ * The taxonomy fields (migration 0014) every assessment now needs, resolved from the reference rows
+ * the migration seeds.
+ *
+ * Resolved by `code` rather than pasted as UUIDs: a test that hard-coded `a55e7001-…-004` would
+ * still pass if the seeded row meant something else, and this way the fixture fails loudly if the
+ * migration ever stops shipping the taxonomy. `Interest` + Likert/Raw is chosen because it is a
+ * *legal* pair under `assessment_type_scorings` — a fixture that used an illegal one would make
+ * every unrelated builder test fail on validation.
+ */
+export async function assessmentTaxonomy(): Promise<{
+  assessmentTypeId: string;
+  scoringIds: string[];
+}> {
+  const taxonomy = new AssessmentTaxonomyService(db());
+
+  return {
+    assessmentTypeId: (await taxonomy.typeByCode('INTEREST')).id,
+    scoringIds: await taxonomy.scoringIdsByCodes(['LIKERT_SCALES', 'RAW_SCORES']),
+  };
+}
+
+/** The same fields in the API's snake_case, for a `POST /assessment-templates` body. */
+export async function assessmentTaxonomyBody(): Promise<{
+  assessment_type_id: string;
+  scoring_ids: string[];
+}> {
+  const { assessmentTypeId, scoringIds } = await assessmentTaxonomy();
+
+  return { assessment_type_id: assessmentTypeId, scoring_ids: scoringIds };
 }
 
 /** Assign a published version to a class and return the assignment. */

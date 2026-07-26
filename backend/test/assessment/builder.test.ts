@@ -14,6 +14,7 @@ import { AiGatewayService, type WorkersAiClient } from '@/modules/ai/ai-gateway-
 import { AssessmentGenerationService } from '@/modules/ai/assessment-generation-service';
 import {
   api,
+  assessmentTaxonomy,
   createStaffUser,
   db,
   login,
@@ -38,6 +39,14 @@ let counselor: StaffUserFixture;
 let counselorToken: string;
 let otherCounselorToken: string;
 let riasecVersionId: string;
+/**
+ * The taxonomy fields (migration 0014) every create/edit body now needs, resolved once.
+ *
+ * Snake_case here because these go over the wire, unlike the Service-level `assessmentTaxonomy()`
+ * fixture's camelCase. Interest + Likert/Raw is a *legal* pair, so it exercises the schema's
+ * required-field rule without tripping the compatibility rule these tests are not about.
+ */
+let taxonomyBody: { assessment_type_id: string; scoring_ids: string[] };
 
 const MAX_QUESTIONS = 50;
 
@@ -50,6 +59,12 @@ beforeAll(async () => {
 
   const seeded = await seedInstruments(admin);
   riasecVersionId = seeded.riasecVersionId!;
+
+  const taxonomy = await assessmentTaxonomy();
+  taxonomyBody = {
+    assessment_type_id: taxonomy.assessmentTypeId,
+    scoring_ids: taxonomy.scoringIds,
+  };
 });
 
 /** One CUSTOM template with dimensions and a DRAFT version, owned by `token`'s user. */
@@ -59,7 +74,7 @@ async function draftFixture(
 ): Promise<{ templateId: string; versionId: string }> {
   const template = await api('POST', '/assessment-templates', {
     token,
-    body: { category: 'CUSTOM', title: `Study Habits ${uuid().slice(0, 8)}` },
+    body: { category: 'CUSTOM', title: `Study Habits ${uuid().slice(0, 8)}`, ...taxonomyBody },
   });
 
   expect(template.status).toBe(201);
@@ -137,7 +152,7 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
   it('a counselor creates a CUSTOM template as COUNSELOR_PRIVATE; an admin creates GLOBAL', async () => {
     const mine = await api('POST', '/assessment-templates', {
       token: counselorToken,
-      body: { category: 'CUSTOM', title: `Mine ${uuid().slice(0, 6)}` },
+      body: { category: 'CUSTOM', title: `Mine ${uuid().slice(0, 6)}`, ...taxonomyBody },
     });
 
     expect(mine.status).toBe(201);
@@ -146,7 +161,7 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
 
     const global = await api('POST', '/assessment-templates', {
       token: adminToken,
-      body: { category: 'CUSTOM', title: `Global ${uuid().slice(0, 6)}` },
+      body: { category: 'CUSTOM', title: `Global ${uuid().slice(0, 6)}`, ...taxonomyBody },
     });
 
     expect(global.status).toBe(201);
@@ -156,7 +171,7 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
   it('refuses a duplicate dimension code with a 422, in the payload and against existing rows (L5)', async () => {
     const template = await api('POST', '/assessment-templates', {
       token: counselorToken,
-      body: { category: 'CUSTOM', title: `Dims ${uuid().slice(0, 8)}` },
+      body: { category: 'CUSTOM', title: `Dims ${uuid().slice(0, 8)}`, ...taxonomyBody },
     });
     const templateId = template.body.data.id as string;
 

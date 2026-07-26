@@ -3,22 +3,31 @@ import { Hono } from 'hono';
 import { createDatabase } from '@/db/client';
 import type { AppEnv } from '@/env';
 import { successEnvelope, ApiError } from '@/lib/envelope';
-import { parseBody } from '@/lib/validation';
+import { clientIp, parseBody, parseQuery } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
+import { AssessmentAdminService } from '@/modules/assessment/assessment-admin-service';
+import { AssessmentAttemptService } from '@/modules/assessment/assessment-attempt-service';
 import {
   AssessmentBuilderService,
   type CreateQuestionInput,
 } from '@/modules/assessment/assessment-builder-service';
+import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
 import {
   addDimensionsSchema,
   addQuestionsSchema,
+  assignAssessmentSchema,
   createTemplateSchema,
   createVersionSchema,
+  listAssessmentsQuerySchema,
   updateQuestionSchema,
+  updateTemplateSchema,
 } from '@/modules/assessment/schemas';
 import {
+  serializeAssessmentRow,
+  serializeAssessmentScoring,
+  serializeAssessmentType,
   serializeAuthorQuestion,
   serializeTemplate,
   serializeVersionSummary,
@@ -50,6 +59,9 @@ export const builderRoutes = new Hono<AppEnv>();
  * `test/app.test.ts` the first time it happened).
  */
 for (const prefix of [
+  '/assessments',
+  '/assessment-types',
+  '/assessment-scorings',
   '/assessment-templates',
   '/assessment-templates/*',
   '/assessment-versions/*',
@@ -60,6 +72,73 @@ for (const prefix of [
   builderRoutes.use(prefix, ensureRole('counselor', 'admin'));
   builderRoutes.use(prefix, ensurePasswordChanged());
 }
+
+// --- The taxonomy (migration 0014) -------------------------------------------------------------
+//
+// Reference data, so there is no per-record policy behind the role gate — the same one-layer
+// authorization the catalog and address groups use (§39). Staff-only rather than public because the
+// list is only ever read while authoring an assessment.
+
+/**
+ * `GET /assessment-types` — the 12 types, **each carrying the scoring ids it permits**.
+ *
+ * The matrix travels with the list on purpose: the create/edit form must re-filter its scoring
+ * multi-select the moment the type changes, and a request per change would put a round trip inside
+ * a keystroke. Two queries serve the whole thing.
+ */
+builderRoutes.get('/assessment-types', async (c) => {
+  const taxonomy = new AssessmentTaxonomyService(createDatabase(c.env.DB));
+  const types = await taxonomy.listTypes();
+
+  return c.json(
+    successEnvelope(
+      types.map(({ type, scoringIds }) => serializeAssessmentType(type, scoringIds)),
+      'Assessment types retrieved.',
+    ),
+  );
+});
+
+builderRoutes.get('/assessment-scorings', async (c) => {
+  const taxonomy = new AssessmentTaxonomyService(createDatabase(c.env.DB));
+
+  return c.json(
+    successEnvelope(
+      (await taxonomy.listScorings()).map(serializeAssessmentScoring),
+      'Assessment scoring methods retrieved.',
+    ),
+  );
+});
+
+/**
+ * `GET /assessments` — the administrator's list: searched, filtered, sorted and paginated on the
+ * **server**, because a table that sorted only the rows it happened to have loaded would be lying
+ * about the other pages.
+ *
+ * Visibility is the same rule as the counselor template list (admin: everything; counselor: the
+ * global instruments plus their own), applied inside the query rather than after it.
+ */
+builderRoutes.get('/assessments', async (c) => {
+  const query = parseQuery(c, listAssessmentsQuerySchema, [
+    'search',
+    'assessment_type_id',
+    'status',
+    'assignment',
+    'page',
+    'per_page',
+    'sort',
+    'direction',
+  ]);
+
+  const admin = new AssessmentAdminService(createDatabase(c.env.DB));
+  const page = await admin.list(requireUser(c), query);
+
+  return c.json(
+    successEnvelope(
+      { items: page.items.map(serializeAssessmentRow), pagination: page.pagination },
+      'Assessments retrieved.',
+    ),
+  );
+});
 
 /** Load a version and its template, authorizing the caller against the template. 404 first. */
 async function authorizedVersion(
@@ -89,38 +168,211 @@ async function authorizedVersion(
 builderRoutes.post('/assessment-templates', async (c) => {
   const input = await parseBody(c, createTemplateSchema);
   const user = requireUser(c);
-  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
 
   const template = await builder.createTemplate(user, {
     category: input.category,
     title: input.title,
     description: input.description ?? null,
     ownership: user.role === 'admin' ? 'GLOBAL' : 'COUNSELOR_PRIVATE',
+    assessmentTypeId: input.assessment_type_id,
+    scoringIds: input.scoring_ids,
   });
 
-  return c.json(successEnvelope(serializeTemplate(template, undefined, 0, []), 'Template created.'), 201);
+  const taxonomy = new AssessmentTaxonomyService(db);
+
+  return c.json(
+    successEnvelope(
+      serializeTemplate(
+        template,
+        undefined,
+        0,
+        [],
+        await taxonomy.findType(input.assessment_type_id),
+        (await taxonomy.scoringsForTemplates([template.id])).get(template.id) ?? [],
+      ),
+      'Assessment created.',
+    ),
+    201,
+  );
 });
 
-/** The builder's working view: the template, its dimensions, and every version. */
+/** The builder's working view: the template, its taxonomy, its dimensions, and every version. */
 builderRoutes.get('/assessment-templates/:templateId', async (c) => {
-  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
   const template = await builder.findTemplate(c.req.param('templateId'));
 
   authorizeManageTemplate(requireUser(c), template);
 
   const dimensions = await builder.dimensionsFor(template.id);
   const versions = await builder.versionsFor(template.id);
+  const taxonomy = new AssessmentTaxonomyService(db);
 
   return c.json(
     successEnvelope(
       {
-        ...serializeTemplate(template, await builder.assignableVersion(template.id), 0, dimensions),
+        ...serializeTemplate(
+          template,
+          await builder.assignableVersion(template.id),
+          0,
+          dimensions,
+          template.assessmentTypeId === null
+            ? null
+            : await taxonomy.findType(template.assessmentTypeId),
+          (await taxonomy.scoringsForTemplates([template.id])).get(template.id) ?? [],
+        ),
         versions: versions.map(serializeVersionSummary),
       },
       'Template retrieved.',
     ),
   );
 });
+
+/**
+ * `PATCH /assessment-templates/{id}` — the title, description, type and scoring methods.
+ *
+ * Permitted after publication, unlike every other write in this router, and the reason is in
+ * `AssessmentBuilderService.updateTemplate`: none of these four fields decides what a delivered
+ * result means. The Service re-validates the type/scoring pair on every save, so an assessment
+ * cannot be walked into an illegal combination one field at a time.
+ */
+builderRoutes.patch('/assessment-templates/:templateId', async (c) => {
+  const input = await parseBody(c, updateTemplateSchema);
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
+  const user = requireUser(c);
+  const template = await builder.findTemplate(c.req.param('templateId'));
+
+  authorizeManageTemplate(user, template);
+
+  const updated = await builder.updateTemplate(user, template, {
+    title: input.title,
+    description: input.description ?? null,
+    assessmentTypeId: input.assessment_type_id,
+    scoringIds: input.scoring_ids,
+  });
+
+  const admin = new AssessmentAdminService(db);
+
+  return c.json(
+    successEnvelope(serializeAssessmentRow(await admin.row(updated)), 'Assessment updated.'),
+  );
+});
+
+/**
+ * Archive / restore. **Idempotent both ways**, so a double-tapped confirmation is a no-op rather
+ * than an error — and neither one touches an assignment that is already open (see the Service).
+ */
+builderRoutes.post('/assessment-templates/:templateId/archive', async (c) => {
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
+  const user = requireUser(c);
+  const template = await builder.findTemplate(c.req.param('templateId'));
+
+  authorizeManageTemplate(user, template);
+
+  const archived = await builder.archiveTemplate(user, template);
+  const admin = new AssessmentAdminService(db);
+
+  return c.json(
+    successEnvelope(serializeAssessmentRow(await admin.row(archived)), 'Assessment archived.'),
+  );
+});
+
+builderRoutes.post('/assessment-templates/:templateId/restore', async (c) => {
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
+  const user = requireUser(c);
+  const template = await builder.findTemplate(c.req.param('templateId'));
+
+  authorizeManageTemplate(user, template);
+
+  const restored = await builder.restoreTemplate(user, template);
+  const admin = new AssessmentAdminService(db);
+
+  return c.json(
+    successEnvelope(serializeAssessmentRow(await admin.row(restored)), 'Assessment restored.'),
+  );
+});
+
+/**
+ * `POST /assessment-templates/{id}/assignments` — assign globally, or to chosen classes.
+ *
+ * The version is optional and defaults to the newest published one: the list offers one Assign
+ * button per assessment, and asking which version at that point would be asking a question whose
+ * only sensible answer the server already holds. A template with nothing published is a **422**,
+ * not a 403 — the caller is permitted to do this, the assessment simply is not ready (the same
+ * distinction `createAssignment` has always drawn).
+ */
+builderRoutes.post('/assessment-templates/:templateId/assignments', async (c) => {
+  const input = await parseBody(c, assignAssessmentSchema);
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
+  const user = requireUser(c);
+  const template = await builder.findTemplate(c.req.param('templateId'));
+
+  authorizeManageTemplate(user, template);
+
+  const version =
+    input.assessment_version_id === undefined
+      ? await builder.assignableVersion(template.id)
+      : await builder.findVersion(input.assessment_version_id);
+
+  if (version?.assessmentTemplateId !== template.id) {
+    throw ApiError.validation(
+      {
+        assessment_version_id: [
+          'This assessment has no published version to assign. Publish one first.',
+        ],
+      },
+      'Nothing to assign.',
+    );
+  }
+
+  const attempts = new AssessmentAttemptService(db, c.env);
+  const result = await attempts.assignToClasses(
+    user,
+    {
+      versionId: version.id,
+      scope: input.scope,
+      classIds: input.scope === 'CLASS' ? input.class_ids : [],
+      deadline: input.deadline ?? null,
+    },
+    clientIp(c),
+  );
+
+  const admin = new AssessmentAdminService(db);
+
+  return c.json(
+    successEnvelope(
+      {
+        assessment: serializeAssessmentRow(await admin.row(template)),
+        assigned_classes: result.assigned,
+        skipped_classes: result.skipped,
+        version_number: result.version.versionNumber,
+      },
+      assignmentMessage(result.assigned, result.skipped, input.scope === 'GLOBAL'),
+    ),
+    201,
+  );
+});
+
+/** "Nothing changed" is a real outcome here, and saying so beats a success message that lies. */
+function assignmentMessage(assigned: number, skipped: number, global: boolean): string {
+  const target = global ? 'every active class' : 'the selected classes';
+
+  if (assigned === 0) {
+    return `Already assigned to ${target} — nothing to add.`;
+  }
+
+  const plural = assigned === 1 ? 'class' : 'classes';
+
+  return skipped === 0
+    ? `Assigned to ${assigned} ${plural}.`
+    : `Assigned to ${assigned} ${plural}; ${skipped} already had it.`;
+}
 
 /**
  * `POST /assessment-templates/{id}/dimensions` — the §31 Mode B prerequisite: the creator

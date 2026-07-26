@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Loader2, Search, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Loader2, Pencil, Search, Trash2 } from 'lucide-react';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -34,6 +34,7 @@ interface AddressTableProps {
   page: number;
   onPageChange: (page: number) => void;
 
+  onEdit: (row: AddressRow) => void;
   onDelete: (row: AddressRow) => void;
   deletingId: string | null;
 }
@@ -52,6 +53,7 @@ export function AddressTable({
   onSort,
   page,
   onPageChange,
+  onEdit,
   onDelete,
   deletingId,
 }: AddressTableProps) {
@@ -138,15 +140,25 @@ export function AddressTable({
                         {row.created_at ? new Date(row.created_at).toLocaleDateString() : '—'}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          loading={deletingId === row.id}
-                          aria-label={`Delete ${row.name}`}
-                          onClick={() => onDelete(row)}
-                        >
-                          <Trash2 className="size-4" aria-hidden="true" />
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`Edit ${row.name}`}
+                            onClick={() => onEdit(row)}
+                          >
+                            <Pencil className="size-4" aria-hidden="true" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            loading={deletingId === row.id}
+                            aria-label={`Delete ${row.name}`}
+                            onClick={() => onDelete(row)}
+                          >
+                            <Trash2 className="size-4" aria-hidden="true" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

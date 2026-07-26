@@ -86,6 +86,25 @@ export type UpdateAssignmentInput = z.infer<typeof updateAssignmentSchema>;
 // --- The builder + generation contracts (Phase 5b, §20/§31) ----------------------------------
 
 /**
+ * The taxonomy fields every assessment now carries (migration 0014).
+ *
+ * **`scoring_ids` is required and non-empty at the schema, while the compatibility rule is not.**
+ * That split is deliberate: "you must choose a scoring method" is a fact about the shape of the
+ * request and belongs here, whereas "Percentage Scores is not valid for an Interest inventory" is a
+ * fact about *rows in `assessment_type_scorings`* — Zod cannot read the database, and duplicating
+ * the matrix here as a hard-coded map is exactly the drift the join table exists to prevent. The
+ * Service checks it (`AssessmentTaxonomyService.assertCompatible`) and answers with the same 422
+ * shape, keyed on `scoring_ids`, so the form does not have to care which layer refused it.
+ */
+const taxonomyFields = {
+  assessment_type_id: z.string().uuid('Choose an assessment type.'),
+  scoring_ids: z
+    .array(z.string().uuid())
+    .min(1, 'Choose at least one scoring method.')
+    .max(15, 'There are only 15 scoring methods.'),
+};
+
+/**
  * `category` is a literal `'CUSTOM'`, not the three-value enum, and that is the point: RIASEC
  * and SCCT are the two globally-curated instruments (§4, seeded through `seed-instruments`), so
  * "create a second RIASEC" is not a request this API can mean. `.strict()` turns the attempt
@@ -96,10 +115,93 @@ export const createTemplateSchema = z
     category: z.literal('CUSTOM'),
     title: z.string().trim().min(1).max(200),
     description: z.string().trim().max(2000).nullable().optional(),
+    ...taxonomyFields,
   })
   .strict();
 
 export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
+
+/**
+ * Editing an assessment's description of itself.
+ *
+ * `category` and `ownership` are deliberately absent: a CUSTOM template cannot become RIASEC (§4),
+ * and re-homing someone's private instrument is not an edit. `.strict()` makes either attempt a 422
+ * rather than a field that is quietly dropped.
+ */
+export const updateTemplateSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    description: z.string().trim().max(2000).nullable().optional(),
+    ...taxonomyFields,
+  })
+  .strict();
+
+export type UpdateTemplateInput = z.infer<typeof updateTemplateSchema>;
+
+// --- The administrator's assessment list (prompt-driven, v1.5) --------------------------------
+
+/** Sortable columns — an allow-list, so `?sort=` can never name an arbitrary column. */
+export const ASSESSMENT_SORTS = ['title', 'type', 'status', 'created_at', 'updated_at'] as const;
+export type AssessmentSort = (typeof ASSESSMENT_SORTS)[number];
+
+/**
+ * The list's `Status` filter, which is **derived rather than stored**: an assessment is "Published"
+ * when some version of it is, and the template's own `status` column only distinguishes archived
+ * from not. Offering the raw column here would let an administrator filter by DRAFT/ACTIVE — two
+ * values that mean nothing on this screen — instead of by the thing the column actually shows.
+ */
+export const ASSESSMENT_STATUS_FILTERS = ['PUBLISHED', 'UNPUBLISHED', 'ARCHIVED'] as const;
+
+/** `UNASSIGNED` is the third real state and is not in the prompt's two — a filter that cannot express it would hide it. */
+export const ASSESSMENT_ASSIGNMENT_FILTERS = ['GLOBAL', 'CLASS', 'UNASSIGNED'] as const;
+
+export const listAssessmentsQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  assessment_type_id: z.string().uuid().optional(),
+  status: z.enum(ASSESSMENT_STATUS_FILTERS).optional(),
+  assignment: z.enum(ASSESSMENT_ASSIGNMENT_FILTERS).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  // Clamped at 100, as §20 clamps the catalog and the address hierarchy.
+  per_page: z.coerce.number().int().min(1).max(100).default(20),
+  sort: z.enum(ASSESSMENT_SORTS).default('title'),
+  direction: z.enum(['asc', 'desc']).default('asc'),
+});
+
+export type ListAssessmentsQuery = z.infer<typeof listAssessmentsQuerySchema>;
+
+/**
+ * Assigning an assessment (prompt-driven, v1.5) — globally, or to particular classes.
+ *
+ * A **discriminated union**, not a scope plus an optional array: `{ scope: 'GLOBAL', class_ids: [...] }`
+ * is an incoherent request, and the two shapes make it unrepresentable rather than merely ignored.
+ * GLOBAL carries no class list at all — its target is "every active class", resolved server-side at
+ * the moment of the act, because a client-supplied list of "all classes" is a snapshot that is wrong
+ * the moment a class is created.
+ *
+ * `assessment_version_id` is optional and defaults to the newest published version: the admin list
+ * offers one Assign button per assessment, and making them name a version there would be asking a
+ * question whose only sensible answer the server already knows.
+ */
+export const assignAssessmentSchema = z
+  .discriminatedUnion('scope', [
+    z
+      .object({
+        scope: z.literal('GLOBAL'),
+        assessment_version_id: z.string().uuid().optional(),
+        deadline: z.string().datetime({ offset: true }).nullable().optional(),
+      })
+      .strict(),
+    z
+      .object({
+        scope: z.literal('CLASS'),
+        class_ids: z.array(z.string().uuid()).min(1, 'Choose at least one class.').max(200),
+        assessment_version_id: z.string().uuid().optional(),
+        deadline: z.string().datetime({ offset: true }).nullable().optional(),
+      })
+      .strict(),
+  ]);
+
+export type AssignAssessmentInput = z.infer<typeof assignAssessmentSchema>;
 
 /** Dimension codes are short author-facing handles ("TM", "FOCUS") — the §31 Mode B vocabulary. */
 export const addDimensionsSchema = z

@@ -33,13 +33,6 @@ export function useVersionReview(versionId: string | null) {
   });
 }
 
-export function useCreateTemplate() {
-  return useMutation({
-    mutationFn: (payload: { title: string; description?: string | null }) =>
-      builderApi.createTemplate(payload),
-  });
-}
-
 export function useAddDimensions(templateId: string) {
   const queryClient = useQueryClient();
 

@@ -4,6 +4,7 @@ import type { Database } from '@/db/client';
 import { assessmentTemplates, type User } from '@/db/schema';
 import { RIASEC_DIMENSION_NAMES } from '@/lib/recommendation';
 import { AssessmentBuilderService } from '@/modules/assessment/assessment-builder-service';
+import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
 
 /**
  * The two globally-curated instruments (FULLPLAN §22, §23, §57).
@@ -210,19 +211,40 @@ export async function seedAssessmentInstruments(
     };
   }
 
-  const riasecVersionId = await seedRiasec(builder, admin);
-  const scctVersionId = await seedScct(builder, admin);
+  /**
+   * The taxonomy rows the two instruments classify themselves under (migration 0014).
+   *
+   * Resolved by `code` rather than pasted as UUIDs — `'INTEREST'` says what the row is, and the
+   * lookup fails loudly if the migration has not run, which is a better failure than seeding an
+   * instrument with a dangling type id. Both pairs are legal under the compatibility matrix
+   * (Interest and Career/Vocational each permit Likert Scales and Raw Scores), so the seeder passes
+   * the same validation an administrator's form does.
+   */
+  const taxonomy = new AssessmentTaxonomyService(db);
+  const scoringIds = await taxonomy.scoringIdsByCodes(['LIKERT_SCALES', 'RAW_SCORES']);
+  const interest = await taxonomy.typeByCode('INTEREST');
+  const vocational = await taxonomy.typeByCode('CAREER_VOCATIONAL');
+
+  const riasecVersionId = await seedRiasec(builder, admin, interest.id, scoringIds);
+  const scctVersionId = await seedScct(builder, admin, vocational.id, scoringIds);
 
   return { riasecVersionId, scctVersionId, created: true };
 }
 
-async function seedRiasec(builder: AssessmentBuilderService, admin: User): Promise<string> {
+async function seedRiasec(
+  builder: AssessmentBuilderService,
+  admin: User,
+  assessmentTypeId: string,
+  scoringIds: string[],
+): Promise<string> {
   const template = await builder.createTemplate(admin, {
     category: 'RIASEC',
     title: RIASEC_TITLE,
     description:
       "Holland's six vocational interest types. Your three strongest types form your Holland Code.",
     ownership: 'GLOBAL',
+    assessmentTypeId,
+    scoringIds,
   });
 
   // `order_number` is **scoring data**: it is the R > I > A > S > E > C tie-break for the Holland
@@ -272,13 +294,20 @@ async function seedRiasec(builder: AssessmentBuilderService, admin: User): Promi
   return published.id;
 }
 
-async function seedScct(builder: AssessmentBuilderService, admin: User): Promise<string> {
+async function seedScct(
+  builder: AssessmentBuilderService,
+  admin: User,
+  assessmentTypeId: string,
+  scoringIds: string[],
+): Promise<string> {
   const template = await builder.createTemplate(admin, {
     category: 'SCCT',
     title: SCCT_TITLE,
     description:
       'Social Cognitive Career Theory: self-efficacy, outcome expectations, and goal orientation.',
     ownership: 'GLOBAL',
+    assessmentTypeId,
+    scoringIds,
   });
 
   await builder.addDimensions(template.id, [

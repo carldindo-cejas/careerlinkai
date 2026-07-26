@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { cn } from '@/components/ui/cn';
+import { AddressEditDialog } from '@/features/admin/components/AddressEditDialog';
 import { AddressTable } from '@/features/admin/components/AddressTable';
 import { BulkImportPanel } from '@/features/admin/components/BulkImportPanel';
 import {
@@ -21,6 +22,11 @@ import {
   useProvinces,
   useRegions,
   useTowns,
+  useUpdateBarangay,
+  useUpdateProvince,
+  useUpdateRegion,
+  useUpdateTown,
+  type UpdateAddressArgs,
 } from '@/features/admin/hooks/useAddresses';
 import { toast } from '@/stores/toastStore';
 import type {
@@ -72,6 +78,10 @@ export function AddressPage() {
   const importProvinces = useImportProvinces(regionId ?? '');
   const importTowns = useImportTowns(provinceId ?? '');
   const importBarangays = useImportBarangays(townId ?? '');
+  const updateRegion = useUpdateRegion();
+  const updateProvince = useUpdateProvince(regionId ?? '');
+  const updateTown = useUpdateTown(provinceId ?? '');
+  const updateBarangay = useUpdateBarangay(townId ?? '');
   const deleteRegion = useDeleteRegion();
   const deleteProvince = useDeleteProvince();
   const deleteTown = useDeleteTown();
@@ -154,6 +164,7 @@ export function AddressPage() {
           noun="region"
           useList={useRegions}
           importMutation={importRegions}
+          updateMutation={updateRegion}
           deleteMutation={deleteRegion}
         />
       ) : null}
@@ -165,6 +176,7 @@ export function AddressPage() {
             noun="province"
             useList={(query) => useProvinces(regionId, query)}
             importMutation={importProvinces}
+            updateMutation={updateProvince}
             deleteMutation={deleteProvince}
           />
         ) : (
@@ -179,6 +191,7 @@ export function AddressPage() {
             noun="town"
             useList={(query) => useTowns(provinceId, query)}
             importMutation={importTowns}
+            updateMutation={updateTown}
             deleteMutation={deleteTown}
           />
         ) : (
@@ -193,6 +206,7 @@ export function AddressPage() {
             noun="barangay"
             useList={(query) => useBarangays(townId, query)}
             importMutation={importBarangays}
+            updateMutation={updateBarangay}
             deleteMutation={deleteBarangay}
           />
         ) : (
@@ -213,6 +227,7 @@ interface LevelSectionProps {
   noun: string;
   useList: (query: AddressListQuery) => UseQueryResult<Paginated<AddressRow>, Error>;
   importMutation: MutationLike<BulkItem[], BulkResult<AddressRow>>;
+  updateMutation: MutationLike<UpdateAddressArgs, AddressRow>;
   deleteMutation: MutationLike<string, void>;
 }
 
@@ -224,11 +239,18 @@ const PER_PAGE = 20;
  * `useList` is passed as a hook and called once here — the query state (search, sort, page) lives
  * in this component, so mounting a fresh section per parent gives each parent its own clean view.
  */
-function LevelSection({ noun, useList, importMutation, deleteMutation }: LevelSectionProps) {
+function LevelSection({
+  noun,
+  useList,
+  importMutation,
+  updateMutation,
+  deleteMutation,
+}: LevelSectionProps) {
   const [searchInput, setSearchInput] = useState('');
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<AddressSort>('name');
   const [direction, setDirection] = useState<SortDirection>('asc');
+  const [editingRow, setEditingRow] = useState<AddressRow | null>(null);
 
   const search = useDebouncedValue(searchInput, 300);
 
@@ -292,8 +314,17 @@ function LevelSection({ noun, useList, importMutation, deleteMutation }: LevelSe
         onSort={onSort}
         page={page}
         onPageChange={setPage}
+        onEdit={setEditingRow}
         onDelete={onDelete}
         deletingId={deleteMutation.isPending ? (deleteMutation.variables ?? null) : null}
+      />
+
+      <AddressEditDialog
+        noun={noun}
+        row={editingRow}
+        onClose={() => setEditingRow(null)}
+        onSave={updateMutation.mutateAsync}
+        isSaving={updateMutation.isPending}
       />
     </div>
   );

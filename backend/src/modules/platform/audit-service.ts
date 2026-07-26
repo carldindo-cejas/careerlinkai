@@ -57,6 +57,13 @@ export type AuditAction =
   | 'PROVINCES_BULK_IMPORTED'
   | 'TOWNS_BULK_IMPORTED'
   | 'BARANGAYS_BULK_IMPORTED'
+  // A place can be renamed (or its PSGC code corrected) after import — a single-field edit, never a
+  // re-parenting, so the row records the old and new name for the same "why did this change" reason
+  // every other catalog edit is audited.
+  | 'REGION_UPDATED'
+  | 'PROVINCE_UPDATED'
+  | 'TOWN_UPDATED'
+  | 'BARANGAY_UPDATED'
   | 'REGION_DELETED'
   | 'PROVINCE_DELETED'
   | 'TOWN_DELETED'
@@ -67,6 +74,17 @@ export type AuditAction =
   // The audit row records how many mappings had been confirmed, so "who let this through the
   // gate" has an answer.
   | 'ASSESSMENT_TEMPLATE_CREATED'
+  // Migration 0014. An edit changes how an assessment is *described* — its title, its type, its
+  // scoring methods — never how an attempt was scored, which is why it is permitted after publish
+  // where nothing else is. The row records the old and new type for exactly that reason: the field
+  // is now a filter and a validation input, so "when did this become a Personality test" is a
+  // question the log should be able to answer.
+  | 'ASSESSMENT_TEMPLATE_UPDATED'
+  // Archiving retires an instrument from the assignable list. Recorded because it is the act that
+  // makes an assessment stop being offered, while deliberately leaving assignments already in
+  // flight alone — so "why can I no longer assign this" has an answer with a name and a date.
+  | 'ASSESSMENT_TEMPLATE_ARCHIVED'
+  | 'ASSESSMENT_TEMPLATE_RESTORED'
   // The §25 act itself (Phase 5b): a human confirming what a question measures. Recorded
   // per mapping because the gate's promise is that *someone looked at each one* — this row
   // is who, and when.

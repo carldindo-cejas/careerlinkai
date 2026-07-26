@@ -1,7 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { addressApi } from '@/services/addressApi';
-import type { AddressListQuery, BulkItem } from '@/types/address';
+import type { AddressListQuery, BulkItem, UpdateAddressPayload } from '@/types/address';
+
+/** The argument every level's update mutation takes: which row, and the new name/code. */
+export interface UpdateAddressArgs {
+  id: string;
+  payload: UpdateAddressPayload;
+}
 
 /**
  * Address hooks (FULLPLAN §36). Components call these; these call `services/addressApi`.
@@ -42,6 +48,17 @@ export function useImportRegions() {
   });
 }
 
+export function useUpdateRegion() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, payload }: UpdateAddressArgs) => addressApi.updateRegion(id, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['addresses', 'regions'] });
+    },
+  });
+}
+
 export function useDeleteRegion() {
   const queryClient = useQueryClient();
 
@@ -70,6 +87,17 @@ export function useImportProvinces(regionId: string) {
 
   return useMutation({
     mutationFn: (items: BulkItem[]) => addressApi.importProvinces(regionId, items),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['addresses', 'provinces', regionId] });
+    },
+  });
+}
+
+export function useUpdateProvince(regionId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, payload }: UpdateAddressArgs) => addressApi.updateProvince(id, payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['addresses', 'provinces', regionId] });
     },
@@ -110,6 +138,17 @@ export function useImportTowns(provinceId: string) {
   });
 }
 
+export function useUpdateTown(provinceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, payload }: UpdateAddressArgs) => addressApi.updateTown(id, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['addresses', 'towns', provinceId] });
+    },
+  });
+}
+
 export function useDeleteTown() {
   const queryClient = useQueryClient();
 
@@ -137,6 +176,17 @@ export function useImportBarangays(townId: string) {
 
   return useMutation({
     mutationFn: (items: BulkItem[]) => addressApi.importBarangays(townId, items),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['addresses', 'barangays', townId] });
+    },
+  });
+}
+
+export function useUpdateBarangay(townId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, payload }: UpdateAddressArgs) => addressApi.updateBarangay(id, payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['addresses', 'barangays', townId] });
     },

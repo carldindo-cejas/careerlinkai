@@ -18,6 +18,7 @@ import { AssessmentBuilderService } from '@/modules/assessment/assessment-builde
 import {
   answerAll,
   api,
+  assessmentTaxonomyBody,
   assignVersion,
   attachCareer,
   classWithStudent,
@@ -422,7 +423,11 @@ describe('the H5 list budgets are O(1) in the number of rows (§45)', () => {
     for (let i = 0; i < 6; i += 1) {
       await api('POST', '/assessment-templates', {
         token: counselorToken,
-        body: { category: 'CUSTOM', title: `Budget Template ${uuid().slice(0, 8)}` },
+        body: {
+          category: 'CUSTOM',
+          title: `Budget Template ${uuid().slice(0, 8)}`,
+          ...(await assessmentTaxonomyBody()),
+        },
       });
     }
 

@@ -35,6 +35,15 @@ export interface BulkItem {
   code?: string;
 }
 
+/**
+ * Editing one place: its name (required) and optional PSGC code. The parent is deliberately absent —
+ * a place cannot be re-parented — mirroring the backend `updateAddressSchema`. `null` clears the code.
+ */
+export interface UpdateAddressPayload {
+  name: string;
+  code?: string | null;
+}
+
 /** What a bulk import returns: the rows created, and the ones skipped as duplicates. */
 export interface BulkResult<TItem extends AddressRow> {
   created: TItem[];

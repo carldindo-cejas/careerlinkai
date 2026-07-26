@@ -3,6 +3,9 @@ import type { UserRole } from '@/types/user';
 export const paths = {
   /** The public landing page (post-Phase-6 design pass) — the only unauthenticated screen beyond the two sign-ins. */
   landing: '/',
+  // The public browse pages (prompt-driven, v1.5). Unauthenticated, linked from the public nav.
+  publicColleges: '/colleges',
+  publicCareers: '/careers',
   /** Counselor login. Admin authentication does not share this route (see adminLogin). */
   login: '/login',
   /**

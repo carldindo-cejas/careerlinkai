@@ -707,6 +707,104 @@ export class AcademicCatalogService {
   }
 
   /**
+   * The public **Colleges** browse (prompt-driven, v1.5): every active college, its resolved school
+   * address and map link, and its active programs. Unlike `publicCatalog` this is college-first, not
+   * program-first — a college with no programs yet still appears (the page lists institutions, not a
+   * flattened program catalog), so it is a plain select over `colleges` with the programs attached in
+   * one grouped query rather than an inner join that would hide the program-less ones.
+   *
+   * `regionId`, when given, scopes the list to one region — the page's region filter, resolved
+   * server-side against the same address table the admin manages. An unknown id simply yields an
+   * empty list. Addresses are resolved in one batch per level (`resolveLocations`), never per college.
+   */
+  async publicColleges(regionId?: string): Promise<
+    { college: College; location: ResolvedLocation; programs: Program[]; programsCount: number }[]
+  > {
+    const collegeRows = await this.db
+      .select()
+      .from(colleges)
+      .where(
+        and(
+          eq(colleges.status, 'active'),
+          isNull(colleges.deletedAt),
+          regionId ? eq(colleges.regionId, regionId) : undefined,
+        ),
+      )
+      .orderBy(asc(colleges.name));
+
+    if (collegeRows.length === 0) {
+      return [];
+    }
+
+    const locations = await this.resolveLocations(collegeRows);
+
+    const programRows = await this.db
+      .select()
+      .from(programs)
+      .where(
+        and(
+          inArray(
+            programs.collegeId,
+            collegeRows.map((college) => college.id),
+          ),
+          eq(programs.status, 'active'),
+          isNull(programs.deletedAt),
+        ),
+      )
+      .orderBy(asc(programs.name));
+
+    const byCollege = new Map<string, Program[]>();
+    for (const program of programRows) {
+      const list = byCollege.get(program.collegeId) ?? [];
+      list.push(program);
+      byCollege.set(program.collegeId, list);
+    }
+
+    return collegeRows.map((college) => {
+      const collegePrograms = byCollege.get(college.id) ?? [];
+
+      return {
+        college,
+        location: locations.get(college.id)!,
+        programs: collegePrograms,
+        programsCount: collegePrograms.length,
+      };
+    });
+  }
+
+  /**
+   * The regions that actually have an active college — the option list for the public Colleges page's
+   * region filter. Scoped to regions with results so the filter never offers a dead choice, and read
+   * straight off the address table the admin manages (the prompt's "using the Address Management
+   * tables"). Distinct, name-ordered, one query.
+   */
+  async publicCollegeRegions(): Promise<ResolvedPlace[]> {
+    return this.db
+      .selectDistinct({ id: regions.id, name: regions.name })
+      .from(colleges)
+      .innerJoin(regions, eq(colleges.regionId, regions.id))
+      .where(
+        and(eq(colleges.status, 'active'), isNull(colleges.deletedAt), isNull(regions.deletedAt)),
+      )
+      .orderBy(asc(regions.name));
+  }
+
+  /**
+   * The public **Careers** browse (prompt-driven, v1.5): every active career, title-ordered. The
+   * employment-outlook and salary filters the page offers are applied client-side over this one thin
+   * list — the whole active career set is tens of rows, not thousands, so a single fetch is cheaper
+   * and gives the "results update as you type" behaviour the prompt asks for without a round trip per
+   * keystroke. The route resolves each career's outlook name from the four-row lookup.
+   */
+  async publicCareers(): Promise<Career[]> {
+    return this.db
+      .select()
+      .from(careers)
+      .where(and(eq(careers.status, 'active'), isNull(careers.deletedAt)))
+      .orderBy(asc(careers.title));
+  }
+
+  /**
    * The careers that count toward a program's §27 RIASEC average: linked, live, and
    * **`active`**.
    *

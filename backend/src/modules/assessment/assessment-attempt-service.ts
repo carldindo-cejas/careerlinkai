@@ -2,6 +2,7 @@ import { and, asc, count, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
 
 import type { Database } from '@/db/client';
+import type { AssignmentScope } from '@/db/enums';
 import {
   assessmentAnswers,
   assessmentAssignments,
@@ -59,6 +60,25 @@ import {
  */
 
 const MODULE = 'Assessment';
+
+/**
+ * **D1 binds at most 100 parameters per statement**, so a multi-row INSERT's ceiling is a row count
+ * *divided by the width of the table* — the same constraint `AssessmentBuilderService` documents at
+ * length. Assigning one instrument to sixty classes is one statement's worth of rows only if the
+ * arithmetic is done; hard-coding a row count would work until someone added a column.
+ */
+const D1_MAX_BOUND_PARAMS = 100;
+
+function chunkRows<T>(rows: T[], columnsPerRow: number): T[][] {
+  const size = Math.max(1, Math.floor(D1_MAX_BOUND_PARAMS / columnsPerRow));
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size));
+  }
+
+  return chunks;
+}
 
 export interface AttemptWithContent {
   attempt: AssessmentAttempt;
@@ -533,6 +553,8 @@ export class AssessmentAttemptService {
       assignedBy: user.id,
       deadline,
       status: 'ACTIVE',
+      /** One class, picked deliberately — the counselor's ordinary act (migration 0014). */
+      scope: 'CLASS',
       createdAt: now(),
     };
 
@@ -594,6 +616,181 @@ export class AssessmentAttemptService {
     }
 
     return view;
+  }
+
+  /**
+   * **Assign one published version to every active class, or to a chosen few, in one act.**
+   *
+   * This is the administrator's counterpart to `createAssignment` — that one is the counselor
+   * assigning to a class they own, and it stays exactly as it was. What is new here is *breadth*,
+   * not a new kind of assignment: a GLOBAL assignment is still one ordinary row per class, so
+   * enrollment, `canStartAttempt`, `authorizeViewAttempt`, the results join and the §44 notification
+   * all keep resolving through a real class. Only `scope` records that one act wrote them all.
+   *
+   * Everything scales with the number of classes rather than with each class in turn:
+   *
+   *   * the target classes are read in **one** query (`listActive` / `findManyByIds`),
+   *   * every class that already holds an ACTIVE assignment for this version is skipped in **one**
+   *     query — re-running a global assignment is a top-up, not a pile of duplicates,
+   *   * the rows are inserted in one chunked `batch()`,
+   *   * the whole act is **one** audit row, because it is one act, and
+   *   * the §44 notification is one roster query and one `sendToMany`.
+   *
+   * A class the caller may not manage is skipped rather than fatal (`canManageAssignment`), which
+   * is what makes the same method safe for a counselor picking classes and an admin assigning to
+   * all of them.
+   */
+  async assignToClasses(
+    user: User,
+    input: {
+      versionId: string;
+      scope: AssignmentScope;
+      /** Ignored (and must be empty) when `scope` is GLOBAL — the target is "every active class". */
+      classIds: string[];
+      deadline: string | null;
+    },
+    ipAddress: string | null,
+  ): Promise<{ assigned: number; skipped: number; version: AssessmentVersion }> {
+    const { version, template } = await this.versionWithTemplate(input.versionId);
+
+    if (version.status !== 'PUBLISHED') {
+      throw ApiError.validation(
+        { assessment_version_id: [`This version is ${version.status}, not PUBLISHED.`] },
+        'Only a published assessment version can be assigned.',
+      );
+    }
+
+    if (template.status === 'ARCHIVED') {
+      throw ApiError.validation(
+        { assessment_version_id: ['This assessment is archived. Restore it before assigning it.'] },
+        'An archived assessment cannot be assigned.',
+      );
+    }
+
+    const candidates =
+      input.scope === 'GLOBAL'
+        ? await this.classes.listActive()
+        : await this.classes.findManyByIds(input.classIds);
+
+    // Ownership, in memory, over rows already loaded — an admin passes every class, a counselor
+    // only their own. A class the caller cannot manage is simply not a target.
+    const manageable = candidates.filter((classRoom) => canManageAssignment(user, classRoom));
+
+    if (manageable.length === 0) {
+      throw ApiError.validation(
+        {
+          class_ids: [
+            input.scope === 'GLOBAL'
+              ? 'There are no active classes to assign this to yet.'
+              : 'None of the selected classes are available to you.',
+          ],
+        },
+        'Nothing to assign.',
+      );
+    }
+
+    // Duplicate prevention, in one query: a class that already has this version open does not get
+    // a second assignment, so the button is safe to press twice and a global re-run tops up the
+    // classes created since the last one.
+    const already = new Set(
+      (
+        await this.db
+          .select({ classId: assessmentAssignments.classId })
+          .from(assessmentAssignments)
+          .where(
+            and(
+              eq(assessmentAssignments.assessmentVersionId, version.id),
+              eq(assessmentAssignments.status, 'ACTIVE'),
+              inArray(
+                assessmentAssignments.classId,
+                manageable.map((classRoom) => classRoom.id),
+              ),
+            ),
+          )
+      ).map((row) => row.classId),
+    );
+
+    const targets = manageable.filter((classRoom) => !already.has(classRoom.id));
+
+    if (targets.length === 0) {
+      return { assigned: 0, skipped: manageable.length, version };
+    }
+
+    const timestamp = now();
+    const rows: AssessmentAssignment[] = targets.map((classRoom) => ({
+      id: uuid(),
+      assessmentVersionId: version.id,
+      classId: classRoom.id,
+      assignedBy: user.id,
+      deadline: input.deadline,
+      status: 'ACTIVE',
+      scope: input.scope,
+      createdAt: timestamp,
+    }));
+
+    // Chunked for the same reason `addQuestions` chunks: D1 binds one parameter per column per row,
+    // so the ceiling is a parameter budget, not a row count. `assessment_assignments` is 7 columns.
+    const statements: BatchItem<'sqlite'>[] = chunkRows(rows, 7).map((batch) =>
+      this.db.insert(assessmentAssignments).values(batch),
+    );
+
+    await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_ASSIGNED',
+      module: MODULE,
+      targetType: 'assessment_version',
+      targetId: version.id,
+      newValues: {
+        scope: input.scope,
+        assessment_template_id: template.id,
+        assigned_classes: rows.length,
+        skipped_classes: manageable.length - rows.length,
+        deadline: input.deadline,
+      },
+      ipAddress,
+    });
+
+    // §44, absorbed on failure for the same reason `createAssignment` absorbs it: the assignments
+    // are already committed, and a notification hiccup must not turn that into a 500.
+    try {
+      const roster = await this.db
+        .select({ studentId: classStudents.studentId })
+        .from(classStudents)
+        .where(
+          and(
+            inArray(
+              classStudents.classId,
+              rows.map((row) => row.classId),
+            ),
+            eq(classStudents.status, 'active'),
+          ),
+        );
+
+      // A student in two of the targeted classes is one person, and should be told once.
+      const recipients = [...new Set(roster.map((row) => row.studentId))];
+
+      await new NotificationService(this.db).sendToMany(recipients, {
+        title: 'New assessment assigned',
+        message:
+          input.deadline === null
+            ? `New assessment assigned: ${template.title}.`
+            : `New assessment assigned: ${template.title}, due ${input.deadline.slice(0, 10)}.`,
+        category: 'CLASS',
+      });
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          message: 'Broadcast assignment notification fan-out failed.',
+          assessment_version_id: version.id,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+
+    return { assigned: rows.length, skipped: manageable.length - rows.length, version };
   }
 
   /**

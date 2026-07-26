@@ -26,6 +26,7 @@ import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError } from '@/lib/envelope';
+import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
 import { AuditService } from '@/modules/platform/audit-service';
 
 /**
@@ -81,6 +82,18 @@ export interface CreateTemplateInput {
   title: string;
   description?: string | null;
   ownership?: AssessmentOwnership;
+  /** Migration 0014 — required by the API on every create; the column is nullable only for history. */
+  assessmentTypeId: string;
+  /** Validated against the type before anything is written. At least one. */
+  scoringIds: string[];
+}
+
+/** Every field of an assessment's *description of itself* is editable; its content is not. */
+export interface UpdateTemplateInput {
+  title: string;
+  description?: string | null;
+  assessmentTypeId: string;
+  scoringIds: string[];
 }
 
 export interface CreateDimensionInput {
@@ -119,20 +132,34 @@ export interface PublishReadiness {
 
 export class AssessmentBuilderService {
   private readonly audit: AuditService;
+  private readonly taxonomy: AssessmentTaxonomyService;
 
   constructor(private readonly db: Database) {
     this.audit = new AuditService(db);
+    this.taxonomy = new AssessmentTaxonomyService(db);
   }
 
   // --- Templates ---------------------------------------------------------------------------
 
+  /**
+   * **The type/scoring combination is validated before the template row is written**, not after.
+   *
+   * The order matters: validating afterwards would leave a template with no scoring methods behind
+   * every rejected save, and the list would fill up with half-created assessments that an
+   * administrator has to clean out by hand. D1 has no interactive transaction spanning the two, so
+   * "check first" is what stands in for one.
+   */
   async createTemplate(user: User, input: CreateTemplateInput): Promise<AssessmentTemplate> {
+    await this.taxonomy.assertCompatible(input.assessmentTypeId, input.scoringIds);
+    await this.assertTitleAvailable(input.title);
+
     const template: AssessmentTemplate = {
       id: uuid(),
       creatorId: user.id,
       category: input.category,
       title: input.title,
       description: input.description ?? null,
+      assessmentTypeId: input.assessmentTypeId,
       ownership: input.ownership ?? 'GLOBAL',
       status: 'DRAFT',
       createdAt: now(),
@@ -141,6 +168,7 @@ export class AssessmentBuilderService {
     };
 
     await this.db.insert(assessmentTemplates).values(template);
+    await this.taxonomy.setTemplateScorings(template.id, input.scoringIds);
 
     await this.audit.write({
       userId: user.id,
@@ -148,10 +176,185 @@ export class AssessmentBuilderService {
       module: MODULE,
       targetType: 'assessment_template',
       targetId: template.id,
-      newValues: { category: template.category, title: template.title },
+      newValues: {
+        category: template.category,
+        title: template.title,
+        assessment_type_id: template.assessmentTypeId,
+        scoring_ids: input.scoringIds,
+      },
     });
 
     return template;
+  }
+
+  /**
+   * Edit what an assessment *says about itself* — its title, description, type and scoring methods.
+   *
+   * Deliberately **not** gated on publication, unlike everything in §12's freeze rules, and the
+   * distinction is worth stating: the freeze exists because a published version's *content* decides
+   * what a delivered result means, and none of these four fields does. Correcting a typo'd title, or
+   * classifying an instrument that predates the taxonomy, changes how the assessment is described,
+   * never how an attempt was scored.
+   *
+   * Changing the type re-validates the scoring set against the new type in the same call, so an
+   * assessment cannot be walked into an illegal combination by editing one field at a time.
+   */
+  async updateTemplate(
+    user: User,
+    template: AssessmentTemplate,
+    input: UpdateTemplateInput,
+  ): Promise<AssessmentTemplate> {
+    await this.taxonomy.assertCompatible(input.assessmentTypeId, input.scoringIds);
+    await this.assertTitleAvailable(input.title, template.id);
+
+    const updated: AssessmentTemplate = {
+      ...template,
+      title: input.title,
+      description: input.description ?? null,
+      assessmentTypeId: input.assessmentTypeId,
+      updatedAt: now(),
+    };
+
+    await this.db
+      .update(assessmentTemplates)
+      .set({
+        title: updated.title,
+        description: updated.description,
+        assessmentTypeId: updated.assessmentTypeId,
+        updatedAt: updated.updatedAt,
+      })
+      .where(eq(assessmentTemplates.id, template.id));
+
+    await this.taxonomy.setTemplateScorings(template.id, input.scoringIds);
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_TEMPLATE_UPDATED',
+      module: MODULE,
+      targetType: 'assessment_template',
+      targetId: template.id,
+      oldValues: { title: template.title, assessment_type_id: template.assessmentTypeId },
+      newValues: {
+        title: updated.title,
+        assessment_type_id: updated.assessmentTypeId,
+        scoring_ids: input.scoringIds,
+      },
+    });
+
+    return updated;
+  }
+
+  /**
+   * Archive an assessment: it disappears from the assignable list and can no longer be assigned.
+   *
+   * **Existing active assignments are left alone, on purpose.** Closing an assignment is not a
+   * status flip — §21 expires every attempt still in progress underneath it — so archiving an
+   * instrument must not quietly end the assessment a class is sitting for this afternoon. Ending
+   * that work stays an explicit act on the assignment itself. Draft versions are archived with the
+   * template, because an editable draft under a retired instrument is a way back in.
+   */
+  async archiveTemplate(user: User, template: AssessmentTemplate): Promise<AssessmentTemplate> {
+    if (template.status === 'ARCHIVED') {
+      return template; // Idempotent — archiving an archived assessment is not an error.
+    }
+
+    const timestamp = now();
+
+    await this.db.batch([
+      this.db
+        .update(assessmentTemplates)
+        .set({ status: 'ARCHIVED', updatedAt: timestamp })
+        .where(eq(assessmentTemplates.id, template.id)),
+      this.db
+        .update(assessmentVersions)
+        .set({ status: 'ARCHIVED' })
+        .where(
+          and(
+            eq(assessmentVersions.assessmentTemplateId, template.id),
+            eq(assessmentVersions.status, 'DRAFT'),
+          ),
+        ),
+    ]);
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_TEMPLATE_ARCHIVED',
+      module: MODULE,
+      targetType: 'assessment_template',
+      targetId: template.id,
+      oldValues: { status: template.status },
+      newValues: { status: 'ARCHIVED' },
+    });
+
+    return { ...template, status: 'ARCHIVED', updatedAt: timestamp };
+  }
+
+  /**
+   * Bring an archived assessment back.
+   *
+   * It returns to `ACTIVE` if it still has a published version and `DRAFT` if it does not — the same
+   * two states `publish()` maintains, so restore lands the row where publishing would have left it
+   * rather than inventing a third condition. Versions archived by `archiveTemplate` are **not**
+   * un-archived: a version's status is its own history (§12), and a draft that was retired is
+   * reopened by creating the next version, which is the rule everywhere else in this file.
+   */
+  async restoreTemplate(user: User, template: AssessmentTemplate): Promise<AssessmentTemplate> {
+    if (template.status !== 'ARCHIVED') {
+      return template;
+    }
+
+    const published = await this.assignableVersion(template.id);
+    const status = published === undefined ? 'DRAFT' : 'ACTIVE';
+    const timestamp = now();
+
+    await this.db
+      .update(assessmentTemplates)
+      .set({ status, updatedAt: timestamp })
+      .where(eq(assessmentTemplates.id, template.id));
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_TEMPLATE_RESTORED',
+      module: MODULE,
+      targetType: 'assessment_template',
+      targetId: template.id,
+      oldValues: { status: template.status },
+      newValues: { status },
+    });
+
+    return { ...template, status, updatedAt: timestamp };
+  }
+
+  /**
+   * Two live assessments must not share a title (case-insensitively).
+   *
+   * A Service pre-check rather than a unique index, exactly as in the catalog (§39): templates are
+   * soft-deleted, and a deleted "Study Habits Survey" keeping its name forever would otherwise block
+   * the real one permanently. The narrow race this leaves — two simultaneous creates of the same
+   * title — produces two rows rather than an error, which is the failure the catalog already accepts
+   * and is visible and fixable in the list, unlike a name nobody can reuse.
+   */
+  private async assertTitleAvailable(title: string, exceptTemplateId?: string): Promise<void> {
+    const clash = await this.db
+      .select({ id: assessmentTemplates.id })
+      .from(assessmentTemplates)
+      .where(
+        and(
+          isNull(assessmentTemplates.deletedAt),
+          sql`LOWER(${assessmentTemplates.title}) = LOWER(${title})`,
+          exceptTemplateId === undefined
+            ? undefined
+            : sql`${assessmentTemplates.id} <> ${exceptTemplateId}`,
+        ),
+      )
+      .limit(1);
+
+    if (clash.length > 0) {
+      throw ApiError.validation(
+        { title: ['An assessment with that title already exists.'] },
+        'Duplicate assessment title.',
+      );
+    }
   }
 
   /**

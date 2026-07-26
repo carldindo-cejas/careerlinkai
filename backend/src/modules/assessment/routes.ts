@@ -11,6 +11,7 @@ import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
 import { AssessmentAttemptService } from '@/modules/assessment/assessment-attempt-service';
 import { AssessmentBuilderService } from '@/modules/assessment/assessment-builder-service';
+import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
 import { seedAssessmentInstruments } from '@/modules/assessment/instruments';
 import {
   createAssignmentSchema,
@@ -184,7 +185,8 @@ counselorAssessmentRoutes.get('/assessment-templates', async (c) => {
 
   const templates = await builder.listTemplatesFor(user);
 
-  // H5: three grouped lookups for the whole list, not three queries per template.
+  // H5: grouped lookups for the whole list, not a handful of queries per template. The two
+  // taxonomy lookups (migration 0014) follow the same rule — one query each, keyed by id.
   const templateIds = templates.map((template) => template.id);
   const versionByTemplate = await builder.assignableVersionsFor(templateIds);
   const questionCountByVersion = await builder.questionCountsFor(
@@ -192,13 +194,28 @@ counselorAssessmentRoutes.get('/assessment-templates', async (c) => {
   );
   const dimensionsByTemplate = await builder.dimensionsForTemplates(templateIds);
 
+  const taxonomy = new AssessmentTaxonomyService(db);
+  const scoringsByTemplate = await taxonomy.scoringsForTemplates(templateIds);
+  const typeById = await taxonomy.typesByIds(
+    templates
+      .map((template) => template.assessmentTypeId)
+      .filter((typeId): typeId is string => typeId !== null),
+  );
+
   const serialized = templates.map((template) => {
     const version = versionByTemplate.get(template.id);
     const questionCount =
       version === undefined ? 0 : (questionCountByVersion.get(version.id) ?? 0);
     const dimensions = dimensionsByTemplate.get(template.id) ?? [];
 
-    return serializeTemplate(template, version, questionCount, dimensions);
+    return serializeTemplate(
+      template,
+      version,
+      questionCount,
+      dimensions,
+      template.assessmentTypeId === null ? null : (typeById.get(template.assessmentTypeId) ?? null),
+      scoringsByTemplate.get(template.id) ?? [],
+    );
   });
 
   return c.json(successEnvelope(serialized, 'Assessment templates retrieved.'));

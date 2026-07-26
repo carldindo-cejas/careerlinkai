@@ -38,6 +38,25 @@ export const bulkImportSchema = z.object({
     .max(1000, 'Import at most 1000 items at a time.'),
 });
 
+/**
+ * Editing one place (prompt-driven, v1.5). Only the fields that are *not* structural are editable:
+ * a name and its optional PSGC code. The parent is deliberately absent — a place cannot be
+ * re-parented, exactly as it cannot on create (that comes from the route), because moving a province
+ * to another region would silently re-home every town and barangay beneath it. `name` is required
+ * (an edit that clears the name is never intended); `code` may be cleared to `null` or omitted to
+ * leave it. Uniqueness is not expressed here — it is the same live-row, parent-scoped lookup the
+ * bulk import uses, checked in the Service and backed by the partial unique index.
+ */
+export const updateAddressSchema = z.object({
+  name: z.string().trim().min(1, 'A name is required.').max(200),
+  code: z
+    .string()
+    .trim()
+    .max(50)
+    .nullish()
+    .transform((value) => (value === undefined || value === '' ? null : value)),
+});
+
 /** Sortable columns — an allow-list, so `?sort=` can never inject an arbitrary column. */
 export const ADDRESS_SORTS = ['name', 'code', 'created_at'] as const;
 export type AddressSort = (typeof ADDRESS_SORTS)[number];
@@ -55,4 +74,5 @@ export const listAddressQuerySchema = z.object({
 });
 
 export type BulkImportInput = z.infer<typeof bulkImportSchema>;
+export type UpdateAddressInput = z.infer<typeof updateAddressSchema>;
 export type ListAddressQuery = z.infer<typeof listAddressQuerySchema>;

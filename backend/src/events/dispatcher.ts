@@ -64,11 +64,32 @@ export interface KnowledgeDocumentProcessedEvent {
   fileName: string;
 }
 
+/**
+ * The fifth event (v1.5, migration 0014) — fired by `ClassService.create`.
+ *
+ * §60 catalogs four events, and this is deliberately a fifth rather than a direct call. A global
+ * assessment assignment must reach classes created after it was made, so *something* has to react to
+ * class creation; the only two ways to arrange that are the Class module calling into the Assessment
+ * module, or an event. The first would put an assessment concern inside class creation and close an
+ * import cycle (`AssessmentAttemptService` already imports `ClassService`). The second is what the
+ * dispatcher is for, and it keeps the failure mode right: a class must still be created if applying
+ * the assignments fails, and `dispatch` guarantees exactly that.
+ *
+ * Recorded as deviation D27 in PROGRESS.md.
+ */
+export interface ClassCreatedEvent {
+  type: 'ClassCreated';
+  classId: string;
+  /** The counselor who created it — the audit actor for whatever the listener writes. */
+  counselorId: string;
+}
+
 export type DomainEvent =
   | AssessmentCompletedEvent
   | RecommendationGeneratedEvent
   | AssessmentDraftGeneratedEvent
-  | KnowledgeDocumentProcessedEvent;
+  | KnowledgeDocumentProcessedEvent
+  | ClassCreatedEvent;
 
 export type Listener<E extends DomainEvent> = (event: E) => Promise<void>;
 

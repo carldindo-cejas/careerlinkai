@@ -8,6 +8,7 @@ import { seedAssessmentInstruments } from '@/modules/assessment/instruments';
 import {
   answerAll,
   api,
+  assessmentTaxonomy,
   assignVersion,
   classWithStudent,
   createStaffUser,
@@ -44,6 +45,7 @@ async function draftWithUnconfirmedMapping() {
   const template = await builder.createTemplate(adminRow, {
     category: 'CUSTOM',
     title: `Custom ${crypto.randomUUID().slice(0, 8)}`,
+    ...(await assessmentTaxonomy()),
   });
 
   await builder.addDimensions(template.id, [
@@ -133,6 +135,7 @@ describe('invariant 3 — the confirmation gate (§25)', () => {
     const template = await builder.createTemplate(adminRow, {
       category: 'CUSTOM',
       title: `Empty ${crypto.randomUUID().slice(0, 8)}`,
+      ...(await assessmentTaxonomy()),
     });
     const version = await builder.createVersion(adminRow, template.id, {
       scoringConfig: { algorithm: 'HOLLAND_CODE_TOP3' },
@@ -211,6 +214,7 @@ describe('invariant 2 — dimensions freeze once any version publishes (§12, v1
     const template = await builder.createTemplate(adminRow, {
       category: 'CUSTOM',
       title: `Draft ${crypto.randomUUID().slice(0, 8)}`,
+      ...(await assessmentTaxonomy()),
     });
 
     await builder.createVersion(adminRow, template.id, {
@@ -240,6 +244,7 @@ describe('assignment (§13.4, §21)', () => {
     const template = await builder.createTemplate(adminRow, {
       category: 'CUSTOM',
       title: `Unpublished ${crypto.randomUUID().slice(0, 8)}`,
+      ...(await assessmentTaxonomy()),
     });
     const version = await builder.createVersion(adminRow, template.id, {
       scoringConfig: { algorithm: 'HOLLAND_CODE_TOP3' },

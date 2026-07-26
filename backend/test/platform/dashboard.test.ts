@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   api,
+  assessmentTaxonomyBody,
   createCareer,
   createClass,
   createCollege,
@@ -29,7 +30,9 @@ describe('authorization', () => {
     expect((await api('GET', '/admin/dashboard', { token: adminToken })).status).toBe(200);
 
     // /counselor/dashboard: counselor or admin (the same rule as every /counselor route).
-    expect((await api('GET', '/counselor/dashboard', { token: counselorToken })).status).toBe(200);
+    expect((await api('GET', '/counselor/dashboard', { token: counselorToken })).status).toBe(
+      200,
+    );
     expect((await api('GET', '/counselor/dashboard', { token: adminToken })).status).toBe(200);
 
     // /student/dashboard: students only — staff are refused.
@@ -171,12 +174,20 @@ describe('GET /student/dashboard', () => {
     // A published one-question CUSTOM assessment, assigned to the class.
     const template = await api('POST', '/assessment-templates', {
       token: counselorToken,
-      body: { category: 'CUSTOM', title: 'Dashboard Fixture' },
+      body: {
+        category: 'CUSTOM',
+        title: 'Dashboard Fixture',
+        ...(await assessmentTaxonomyBody()),
+      },
     });
-    const version = await api('POST', `/assessment-templates/${template.body.data.id}/versions`, {
-      token: counselorToken,
-      body: {},
-    });
+    const version = await api(
+      'POST',
+      `/assessment-templates/${template.body.data.id}/versions`,
+      {
+        token: counselorToken,
+        body: {},
+      },
+    );
     await api('POST', `/assessment-versions/${version.body.data.id}/questions`, {
       token: counselorToken,
       body: {
@@ -227,7 +238,9 @@ describe('GET /student/dashboard', () => {
       token: studentToken,
       body: { question_id: question.id, selected_option_id: question.options[0].id },
     });
-    await api('POST', `/student/attempts/${attempt.body.data.id}/submit`, { token: studentToken });
+    await api('POST', `/student/attempts/${attempt.body.data.id}/submit`, {
+      token: studentToken,
+    });
 
     const after = await api('GET', '/student/dashboard', { token: studentToken });
 

@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, isNull, like, or, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, like, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { AnySQLiteColumn, SQLiteTable } from 'drizzle-orm/sqlite-core';
 
 import type { Database } from '@/db/client';
@@ -15,8 +15,9 @@ import {
 } from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
+import { translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
-import type { BulkImportInput, ListAddressQuery } from '@/modules/address/schemas';
+import type { BulkImportInput, ListAddressQuery, UpdateAddressInput } from '@/modules/address/schemas';
 import type { SerializedBulkResult } from '@/modules/address/serializers';
 import type { AuditAction } from '@/modules/platform/audit-service';
 import { AuditService } from '@/modules/platform/audit-service';
@@ -121,6 +122,27 @@ export class AddressService {
     }));
   }
 
+  /** Rename a region (or fix its PSGC code). Regions have no parent, so uniqueness is global. */
+  async updateRegion(
+    user: User,
+    id: string,
+    input: UpdateAddressInput,
+    ipAddress: string | null,
+  ): Promise<Region> {
+    const existing = await this.findRegion(id);
+
+    return this.updateLevel(
+      REGION_LEVEL,
+      existing,
+      undefined,
+      input,
+      'REGION_UPDATED',
+      'region',
+      user,
+      ipAddress,
+    );
+  }
+
   async deleteRegion(user: User, id: string, ipAddress: string | null): Promise<void> {
     const region = await this.findRegion(id);
     const timestamp = now();
@@ -181,6 +203,27 @@ export class AddressService {
     }), { region_id: region.id });
   }
 
+  /** Rename a province. Uniqueness is scoped to its region — the same rule the bulk import uses. */
+  async updateProvince(
+    user: User,
+    id: string,
+    input: UpdateAddressInput,
+    ipAddress: string | null,
+  ): Promise<Province> {
+    const existing = await this.findProvince(id);
+
+    return this.updateLevel(
+      PROVINCE_LEVEL,
+      existing,
+      eq(provinces.regionId, existing.regionId),
+      input,
+      'PROVINCE_UPDATED',
+      'province',
+      user,
+      ipAddress,
+    );
+  }
+
   async deleteProvince(user: User, id: string, ipAddress: string | null): Promise<void> {
     const province = await this.findProvince(id);
     const timestamp = now();
@@ -238,6 +281,27 @@ export class AddressService {
     }), { province_id: province.id });
   }
 
+  /** Rename a town or municipality. Uniqueness is scoped to its province. */
+  async updateTown(
+    user: User,
+    id: string,
+    input: UpdateAddressInput,
+    ipAddress: string | null,
+  ): Promise<Town> {
+    const existing = await this.findTown(id);
+
+    return this.updateLevel(
+      TOWN_LEVEL,
+      existing,
+      eq(towns.provinceId, existing.provinceId),
+      input,
+      'TOWN_UPDATED',
+      'town',
+      user,
+      ipAddress,
+    );
+  }
+
   async deleteTown(user: User, id: string, ipAddress: string | null): Promise<void> {
     const town = await this.findTown(id);
     const timestamp = now();
@@ -290,6 +354,27 @@ export class AddressService {
       updatedAt: timestamp,
       deletedAt: null,
     }), { town_id: town.id });
+  }
+
+  /** Rename a barangay. Uniqueness is scoped to its town or municipality. */
+  async updateBarangay(
+    user: User,
+    id: string,
+    input: UpdateAddressInput,
+    ipAddress: string | null,
+  ): Promise<Barangay> {
+    const existing = await this.findBarangay(id);
+
+    return this.updateLevel(
+      BARANGAY_LEVEL,
+      existing,
+      eq(barangays.townId, existing.townId),
+      input,
+      'BARANGAY_UPDATED',
+      'barangay',
+      user,
+      ipAddress,
+    );
   }
 
   async deleteBarangay(user: User, id: string, ipAddress: string | null): Promise<void> {
@@ -369,10 +454,26 @@ export class AddressService {
     const rows = survivors.map(buildRow);
 
     if (rows.length > 0) {
-      // `onConflictDoNothing` is the race backstop: the dedupe above wins the common case, but two
-      // admins importing the same list at once both pass it, and the partial unique index is what
-      // actually holds the line. DO NOTHING lets the loser's duplicates drop rather than 500.
-      await this.db.insert(level.table).values(rows).onConflictDoNothing();
+      // **The insert has to be chunked, or it 500s on real D1.** A single multi-row insert binds
+      // one parameter per column *per row*, and D1 caps a statement at 100 bound parameters
+      // (developers.cloudflare.com/d1/platform/limits). A province/town/barangay row is seven
+      // columns, so ~15 pasted places already blows past the cap — the statement is rejected and the
+      // whole import fails. Miniflare enforces no such limit, which is exactly why the hermetic suite
+      // never caught it: the bug only exists on the deployed Worker. `chunkForD1` splits the rows so
+      // every statement stays well under the cap, and `db.batch()` runs them as one implicit
+      // transaction — the same atomicity the cascade delete relies on, so a large paste is all-or-
+      // nothing rather than half-imported.
+      const statements = chunkForD1(rows).map((chunk) =>
+        this.db.insert(level.table).values(chunk).onConflictDoNothing(),
+      );
+
+      // `onConflictDoNothing` is still the race backstop within each chunk: the dedupe above wins the
+      // common case, but two admins importing the same list at once both pass it, and the partial
+      // unique index is what actually holds the line. DO NOTHING lets the loser's duplicates drop
+      // rather than 500.
+      await this.db.batch(
+        statements as [(typeof statements)[number], ...(typeof statements)[number][]],
+      );
 
       await this.audit.write({
         action,
@@ -385,6 +486,80 @@ export class AddressService {
     }
 
     return { created: rows, skipped };
+  }
+
+  /**
+   * The edit path shared by all four levels: check the new name is free among live siblings, apply
+   * the change, and audit it. The parent is never touched — `updateAddressSchema` does not carry one,
+   * so a rename cannot become a re-parenting. `parentScope` is the same predicate the level's list and
+   * import use, so "free" means "no other live place with this name *under the same parent*".
+   */
+  private async updateLevel<TRow extends Region>(
+    level: Level,
+    existing: TRow,
+    parentScope: SQL | undefined,
+    input: UpdateAddressInput,
+    action: AuditAction,
+    targetType: string,
+    user: User,
+    ipAddress: string | null,
+  ): Promise<TRow> {
+    await this.assertNameFree(level, input.name, parentScope, existing.id);
+
+    const changes = { name: input.name, code: input.code, updatedAt: now() };
+
+    try {
+      await this.db.update(level.table).set(changes).where(eq(level.id, existing.id));
+    } catch (error) {
+      // The pre-check wins the common case; the partial unique index is the real guard, and the loser
+      // of a concurrent rename race arrives here — translated to the same field-level 422 rather than
+      // a raw 500 (the codebase-wide isUniqueViolation rule).
+      translateUniqueViolation(error, 'name', 'A place with this name already exists here.');
+    }
+
+    await this.audit.write({
+      action,
+      module: MODULE,
+      userId: user.id,
+      targetType,
+      targetId: existing.id,
+      oldValues: { name: existing.name, code: existing.code },
+      newValues: { name: input.name, code: input.code },
+      ipAddress,
+    });
+
+    return { ...existing, ...changes };
+  }
+
+  /**
+   * "No other live sibling already has this name," case-insensitively — the update-time twin of the
+   * bulk import's dedupe, scoped to the same parent and excluding the row being edited so renaming a
+   * place to the case-variant of its own name (or to itself) is not a false clash.
+   */
+  private async assertNameFree(
+    level: Level,
+    name: string,
+    parentScope: SQL | undefined,
+    exceptId: string,
+  ): Promise<void> {
+    const clash = await this.db
+      .select({ id: level.id })
+      .from(level.table)
+      .where(
+        and(
+          sql`lower(${level.name}) = lower(${name})`,
+          isNull(level.deletedAt),
+          parentScope,
+          ne(level.id, exceptId),
+        ),
+      )
+      .limit(1);
+
+    if (clash.length > 0) {
+      throw ApiError.validation({
+        name: ['A place with this name already exists here.'],
+      });
+    }
   }
 
   /** The live descendant ids one level down — the building block of the cascade soft-delete. */
@@ -450,6 +625,37 @@ export class AddressService {
       ipAddress,
     });
   }
+}
+
+/**
+ * D1 rejects any statement binding more than 100 parameters, and a multi-row insert binds one per
+ * column per row. This splits a set of rows into chunks small enough that `rows × columns` stays
+ * safely under that ceiling, deriving the column count from the row shape (six for a region, seven
+ * for the parented levels) rather than hard-coding it per level. A conservative budget of 90 leaves
+ * head-room for any future column without re-tuning, and the size is floored at one so a single wide
+ * row is still emitted rather than dropped.
+ *
+ * Pure and table-agnostic, like `partitionByName`, so the arithmetic is unit-testable without a
+ * database. The 100-parameter cap is a real, deployed-only limit — see `importLevel` for why the
+ * hermetic suite never surfaced it.
+ */
+// D1's hard cap is 100 bound parameters per statement; 90 leaves head-room for a future column.
+const D1_PARAM_BUDGET = 90;
+
+export function chunkForD1<TRow extends object>(rows: TRow[]): TRow[][] {
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const columnsPerRow = Math.max(1, Object.keys(rows[0]!).length);
+  const maxRows = Math.max(1, Math.floor(D1_PARAM_BUDGET / columnsPerRow));
+
+  const chunks: TRow[][] = [];
+  for (let start = 0; start < rows.length; start += maxRows) {
+    chunks.push(rows.slice(start, start + maxRows));
+  }
+
+  return chunks;
 }
 
 /**
