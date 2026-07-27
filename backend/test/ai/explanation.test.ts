@@ -284,7 +284,7 @@ describe('the §30 pipeline (stubbed model + vector store)', () => {
     const mine = failed.find(
       (request) =>
         (request.inputContext as any)?.recommendation_id === recommendation.id &&
-        String((request.inputContext as any)?.failure_reason).includes('similarity threshold'),
+        String(request.failureReason).includes('similarity threshold'),
     );
 
     expect(mine).toBeDefined();

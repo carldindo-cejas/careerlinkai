@@ -135,3 +135,84 @@ describe('PATCH /student/profile', () => {
     expect(profile.body.data.gwa).toBe('88.00');
   });
 });
+
+/**
+ * The **profiling** block (prompt-driven, v1.6) — what the student dashboard's persistent banner is
+ * computed from, and deliberately a *superset* of `is_complete_for_recommendations` above.
+ *
+ * The two are not redundant, and collapsing them would break one of them. That flag answers a
+ * question about the **engine**: strand and GWA are the two inputs §27 cannot run without. This
+ * answers a question about the **student**: what is still missing from the profile they were asked
+ * to fill in. Grade level is required here and not there because §27 never reads it while the
+ * counselor's roster does — a profile without it is incomplete even though the engine tolerates it.
+ */
+describe('profiling completeness (the dashboard banner)', () => {
+  it('names every missing field, with the label the banner shows', async () => {
+    const { studentToken } = await classWithStudent(counselorToken);
+
+    const response = await api('GET', '/student/profile', { token: studentToken });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.profiling.is_complete).toBe(false);
+    expect(response.body.data.profiling.missing.map((field: any) => field.field)).toEqual([
+      'strand',
+      'grade_level',
+      'gwa',
+    ]);
+    // The label travels with the field so the banner does not carry its own copy of the mapping.
+    expect(response.body.data.profiling.missing[0].label).toBe('Academic track / strand');
+  });
+
+  it('is still incomplete when only the engine’s two inputs are set', async () => {
+    const { studentToken } = await classWithStudent(counselorToken);
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { strand: 'Academic', gwa: 88 },
+    });
+
+    const response = await api('GET', '/student/profile', { token: studentToken });
+
+    // The engine can run…
+    expect(response.body.data.is_complete_for_recommendations).toBe(true);
+    // …and the profile is still missing something the student was asked for.
+    expect(response.body.data.profiling.is_complete).toBe(false);
+    expect(response.body.data.profiling.missing.map((field: any) => field.field)).toEqual([
+      'grade_level',
+    ]);
+  });
+
+  it('clears once every required field is present — the banner disappears on its own', async () => {
+    const { studentToken } = await classWithStudent(counselorToken);
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { strand: 'Academic', grade_level: 'Grade 12', gwa: 88 },
+    });
+
+    const response = await api('GET', '/student/profile', { token: studentToken });
+
+    expect(response.body.data.profiling.is_complete).toBe(true);
+    expect(response.body.data.profiling.missing).toEqual([]);
+  });
+
+  it('returns incomplete again if a required field is cleared', async () => {
+    const { studentToken } = await classWithStudent(counselorToken);
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { strand: 'Academic', grade_level: 'Grade 12', gwa: 88 },
+    });
+
+    // An explicit null clears the field — "not selected" has to mean something (the endpoint is a
+    // PATCH, so an absent key would leave it alone).
+    await api('PATCH', '/student/profile', { token: studentToken, body: { strand: null } });
+
+    const response = await api('GET', '/student/profile', { token: studentToken });
+
+    expect(response.body.data.profiling.is_complete).toBe(false);
+    expect(response.body.data.profiling.missing.map((field: any) => field.field)).toEqual([
+      'strand',
+    ]);
+  });
+});

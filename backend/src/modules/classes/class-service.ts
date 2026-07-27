@@ -161,7 +161,12 @@ export class ClassService {
      * Students join afterwards and see the assignment on their dashboard the moment they do.
      */
     await dispatch(
-      { type: 'ClassCreated', classId: classRoom.id, counselorId: user.id },
+      {
+        type: 'ClassActivated',
+        classId: classRoom.id,
+        counselorId: user.id,
+        reason: 'CREATED',
+      },
       [applyGlobalAssignments(this.db)],
     );
 
@@ -200,6 +205,30 @@ export class ClassService {
       newValues: { ...input },
       ipAddress,
     });
+
+    /**
+     * **A class switched on becomes eligible for global assignments** (v1.6).
+     *
+     * Creation is not the only way a class becomes assignable: a `draft` class created before an
+     * administrator assigned an assessment globally, and activated afterwards, would otherwise
+     * never receive it — its students would be missing an assessment the admin list truthfully
+     * reports as reaching every class. Same event, same idempotent listener, so a class that already
+     * holds the assignment is skipped rather than given a second one.
+     *
+     * Only on the transition *into* `active`. Firing on every PATCH would be harmless (the listener
+     * is idempotent) and dishonest: the audit row it writes claims something happened.
+     */
+    if (input.status === 'active' && existing.status !== 'active') {
+      await dispatch(
+        {
+          type: 'ClassActivated',
+          classId: existing.id,
+          counselorId: user.id,
+          reason: 'REACTIVATED',
+        },
+        [applyGlobalAssignments(this.db)],
+      );
+    }
 
     return { ...existing, ...changes };
   }

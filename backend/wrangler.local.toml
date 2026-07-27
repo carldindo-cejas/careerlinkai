@@ -1,0 +1,110 @@
+# The **offline dev loop** (FULLPLAN §45, §49). `npm run dev` boots this file.
+#
+# ── Why this file exists, and what went wrong without it ─────────────────────────────────────
+# Until now `npm run dev` reused `wrangler.test.toml` — the config written for the *test suite*.
+# That looked economical and cost a whole feature. The test config declares
+#
+#     [[queues.producers]]   ← so a route can call QUEUE_AI.send()
+#
+# and, deliberately, **no `[[queues.consumers]]`**: the Vitest pool never delivers queue messages,
+# so a consumer block there would be decoration. In a real `wrangler dev`, though, a producer with
+# no consumer is a *black hole* — `send()` resolves successfully and the message is never handed
+# to anyone. Nothing errors. Nothing logs.
+#
+# The §31 AI generation flow ran straight into it: POST → 202 with an id → message vanishes →
+# `GenerateAssessmentDraft` never runs → no `ai_requests` row ever written → the §20 poll answered
+# PENDING, correctly and forever, while the browser retried every four seconds until the tab was
+# closed. Nothing in the code was wrong; the dev loop was running a Worker with half a queue.
+#
+# So the dev profile is now its own file. `wrangler.test.toml` stays exactly as the suite needs it,
+# and the thing a human runs all day declares the consumers it actually needs to function.
+#
+# ── The three profiles, and which one to reach for ───────────────────────────────────────────
+#   wrangler.test.toml   the hermetic gate. `npm test`. No AI, no Vectorize, no consumers.
+#   wrangler.local.toml  THIS FILE. `npm run dev`. Fully offline, but a *complete* Worker:
+#                        producers AND consumers, so queued jobs actually execute.
+#   wrangler.dev.toml    `npm run dev:remote`. Local storage + REAL Workers AI and Vectorize.
+#                        Needs `wrangler login`. **The only local profile that can generate
+#                        questions**, because Workers AI has no emulator.
+#   wrangler.toml        the DEPLOY config (staging + production). Never run `dev` against it.
+#
+# What this profile does to an AI generation, precisely: the job runs, reaches the gateway, finds
+# no `AI` binding, and writes a terminal FAILED row reading "The AI binding is not configured in
+# this environment… run `npm run dev:remote`". The UI shows that message in seconds. That is the
+# correct offline behaviour — an honest, immediate, actionable failure — and it is a different
+# thing entirely from hanging.
+#
+# Keep [vars] and the bindings in lockstep with wrangler.toml's top-level block.
+
+name = "careerlinkai"
+main = "src/index.ts"
+compatibility_date = "2026-07-13"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_ENV = "local"
+FRONTEND_URL = "http://localhost:5173"
+WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
+WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+STUDENT_JOIN_CODE_TTL_DAYS = "90"
+STUDENT_TOKEN_TTL_HOURS = "12"
+STAFF_TOKEN_TTL_HOURS = "168"
+ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+
+# The same local D1 the `db:migrate` / `db:seed` scripts target, so the dev loop and the seeds
+# agree about which database they mean.
+[[d1_databases]]
+binding = "DB"
+database_name = "CareerLinkAI_Main"
+database_id = "a3d20b3b-d9dd-435c-b6a7-2eb85e746942"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "careerlinkai-docs"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "2c31fc74fb2b40c59e7c0dda8884a848"
+
+[[durable_objects.bindings]]
+name = "AUTH_DO"
+class_name = "AuthGuardDO"
+
+# --- Queues: producers AND consumers -------------------------------------------------
+# The half that was missing. Miniflare emulates both ends in-process, so a message sent by a
+# request handler is delivered to this same Worker's `queue()` export a moment later — which is
+# what production does, and therefore what the dev loop has to do if it is to prove anything.
+[[queues.producers]]
+binding = "QUEUE_DEFAULT"
+queue = "careerlinkai-default-queue"
+
+[[queues.producers]]
+binding = "QUEUE_AI"
+queue = "careerlinkai-ai-queue"
+
+[[queues.consumers]]
+queue = "careerlinkai-default-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+
+# `max_batch_timeout = 1`, not 30, and only here. Production batches AI jobs for up to 30 s to
+# amortise the invocation; a developer watching a spinner should not. One second is the difference
+# between "the pipeline works" and "I think the pipeline is broken".
+[[queues.consumers]]
+queue = "careerlinkai-ai-queue"
+max_batch_size = 5
+max_batch_timeout = 1
+max_retries = 3
+
+# No dead-letter queues here: DLQs are consumed by name in production (see wrangler.toml), and
+# locally a message that exhausts its retries has already printed three stack traces to the
+# terminal, which is the whole diagnostic a developer needs.
+
+[observability]
+enabled = true
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AuthGuardDO"]

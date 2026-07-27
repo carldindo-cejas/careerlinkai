@@ -8,7 +8,15 @@ import { parseQuery } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
-import { AuditService } from '@/modules/platform/audit-service';
+import {
+  actionTypeOf,
+  AuditService,
+  AUDIT_ACTION_TYPES,
+  AUDIT_ACTORS,
+  AUDIT_EXPORT_LIMIT,
+  AUDIT_SORTS,
+  type AuditLogView,
+} from '@/modules/platform/audit-service';
 import { DashboardService } from '@/modules/platform/dashboard-service';
 import { serializeAuditLog } from '@/modules/platform/serializers';
 
@@ -51,16 +59,59 @@ function isoOrDate(edge: 'start' | 'end') {
     .optional();
 }
 
-const listAuditLogsQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  per_page: z.coerce.number().int().min(1).max(100).default(25),
+/** Everything both the viewer and the export accept. Pagination is layered on top for the viewer. */
+const auditFilterSchema = z.object({
   action: z.string().trim().max(100).optional(),
+  action_type: z.enum(AUDIT_ACTION_TYPES).optional(),
   module: z.string().trim().max(50).optional(),
   user_id: z.string().trim().max(64).optional(),
+  actor: z.enum(AUDIT_ACTORS).optional(),
   target_id: z.string().trim().max(64).optional(),
+  search: z.string().trim().max(200).optional(),
   from: isoOrDate('start'),
   to: isoOrDate('end'),
+  sort: z.enum(AUDIT_SORTS).default('created_at'),
+  direction: z.enum(['asc', 'desc']).default('desc'),
 });
+
+/** The query params both endpoints read — one array, so the two cannot drift apart. */
+const AUDIT_FILTER_PARAMS = [
+  'action',
+  'action_type',
+  'module',
+  'user_id',
+  'actor',
+  'target_id',
+  'search',
+  'from',
+  'to',
+  'sort',
+  'direction',
+] as const;
+
+const listAuditLogsQuerySchema = auditFilterSchema.extend({
+  page: z.coerce.number().int().min(1).default(1),
+  per_page: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+type AuditQuery = z.infer<typeof auditFilterSchema>;
+
+/** snake_case query → the Service's filter shape, in one place for both endpoints. */
+function auditFilters(query: AuditQuery) {
+  return {
+    action: query.action,
+    actionType: query.action_type,
+    module: query.module,
+    userId: query.user_id,
+    actor: query.actor,
+    targetId: query.target_id,
+    search: query.search,
+    from: query.from,
+    to: query.to,
+    sort: query.sort,
+    direction: query.direction,
+  };
+}
 
 /**
  * `GET /admin/audit-logs` (§20) — the append-only trail, finally readable. This is where
@@ -69,37 +120,139 @@ const listAuditLogsQuerySchema = z.object({
  */
 adminPlatformRoutes.get('/audit-logs', async (c) => {
   const query = parseQuery(c, listAuditLogsQuerySchema, [
+    ...AUDIT_FILTER_PARAMS,
     'page',
     'per_page',
-    'action',
-    'module',
-    'user_id',
-    'target_id',
-    'from',
-    'to',
   ]);
 
   const page = await new AuditService(createDatabase(c.env.DB)).list({
+    ...auditFilters(query),
     page: query.page,
     perPage: query.per_page,
-    action: query.action,
-    module: query.module,
-    userId: query.user_id,
-    targetId: query.target_id,
-    from: query.from,
-    to: query.to,
   });
 
   return c.json(
     successEnvelope(
       {
-        items: page.items.map((row) => serializeAuditLog(row.log, row.userName)),
+        items: page.items.map((row) => serializeAuditLog(row.log, row.userName, row.userRole)),
         pagination: page.pagination,
       },
       'Audit logs retrieved successfully.',
     ),
   );
 });
+
+/**
+ * `GET /admin/audit-logs/filter-options` — the vocabulary this deployment has actually recorded.
+ *
+ * Separate from the list rather than embedded in every page of it: the option set changes only when
+ * a kind of action happens for the first time, so shipping it alongside 25 rows would be the same
+ * two `DISTINCT` scans on every keystroke of the search box.
+ */
+adminPlatformRoutes.get('/audit-logs/filter-options', async (c) => {
+  const options = await new AuditService(createDatabase(c.env.DB)).filterOptions();
+
+  return c.json(
+    successEnvelope(
+      { ...options, action_types: AUDIT_ACTION_TYPES, actors: AUDIT_ACTORS },
+      'Audit log filter options retrieved successfully.',
+    ),
+  );
+});
+
+/**
+ * `GET /admin/audit-logs/export` — the **currently filtered** set as CSV.
+ *
+ * It reuses the viewer's filter schema exactly, so "export what I am looking at" is literally the
+ * same query with the pagination taken off — an export that quietly applied different filters from
+ * the screen above it would be worse than no export at all.
+ *
+ * Capped at `AUDIT_EXPORT_LIMIT`. When the cap bites, the response says so in a header **and** in a
+ * final CSV row, because a spreadsheet opened three days later has no headers left to read.
+ */
+adminPlatformRoutes.get('/audit-logs/export', async (c) => {
+  const query = parseQuery(c, auditFilterSchema, [...AUDIT_FILTER_PARAMS]);
+  const { rows, truncated } = await new AuditService(createDatabase(c.env.DB)).export(
+    auditFilters(query),
+  );
+
+  const csv = toCsv(rows, truncated);
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="audit-log-${stamp}.csv"`,
+      'X-Export-Truncated': truncated ? 'true' : 'false',
+      'X-Export-Row-Count': String(rows.length),
+    },
+  });
+});
+
+const CSV_COLUMNS = [
+  'timestamp',
+  'action',
+  'action_type',
+  'module',
+  'actor',
+  'actor_role',
+  'target_type',
+  'target_id',
+  'ip_address',
+  'old_values',
+  'new_values',
+] as const;
+
+function toCsv(rows: AuditLogView[], truncated: boolean): string {
+  const lines = [CSV_COLUMNS.join(',')];
+
+  for (const { log, userName, userRole } of rows) {
+    lines.push(
+      [
+        log.createdAt,
+        log.action,
+        actionTypeOf(log.action),
+        log.module,
+        userName ?? 'system / unresolved',
+        userRole ?? '',
+        log.targetType,
+        log.targetId,
+        log.ipAddress,
+        log.oldValues === null ? '' : JSON.stringify(log.oldValues),
+        log.newValues === null ? '' : JSON.stringify(log.newValues),
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+  }
+
+  if (truncated) {
+    lines.push(
+      csvCell(
+        `Export truncated at ${AUDIT_EXPORT_LIMIT} rows — narrow the date range for the rest.`,
+      ),
+    );
+  }
+
+  return lines.join('\r\n');
+}
+
+/**
+ * One CSV cell, RFC 4180.
+ *
+ * The leading `'` on a cell starting with `=`, `+`, `-` or `@` is **not cosmetic**: without it a
+ * spreadsheet treats the cell as a formula, and this file is full of attacker-influenced strings —
+ * `target_id`, `ip_address`, and the JSON blobs, which carry names and titles a user typed. A
+ * `new_values` beginning `=HYPERLINK(...)` would execute on open. This is the one place in the
+ * system where user text is handed to a program that will run it, so it is escaped here rather than
+ * trusted to whatever opens the file.
+ */
+function csvCell(value: string | null): string {
+  const text = value ?? '';
+  const guarded = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+
+  return `"${guarded.replaceAll('"', '""')}"`;
+}
 
 /** `GET /admin/dashboard` (§20, added v1.2) — the §54 metrics, pulled live. */
 adminPlatformRoutes.get('/dashboard', async (c) => {

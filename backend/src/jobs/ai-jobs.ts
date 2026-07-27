@@ -82,9 +82,9 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
 
     /**
      * §43 `GenerateAssessmentDraftJob` (Phase 5b): run the §31 pipeline against a DRAFT
-     * version. Model/quota failure is logged-and-absorbed inside the service (a FAILED
-     * `ai_requests` row the status endpoint reports) — never rethrown, because a retry into
-     * a dead quota cannot succeed (§30 v1.5).
+     * version. Every failure — model, quota, precondition, save — is logged-and-absorbed inside
+     * the service as a terminal FAILED `ai_requests` row the status endpoint reports, and is
+     * never rethrown, because none of them get better on a retry (§30 v1.5).
      */
     case 'GenerateAssessmentDraft': {
       const payload = message.payload;
@@ -95,7 +95,7 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
         assessmentGenerationMaxQuestions(env),
       );
 
-      await service.generateDraft({
+      const result = await service.generateDraft({
         aiRequestId: payload.aiRequestId as string,
         versionId: payload.versionId as string,
         userId: payload.userId as string,
@@ -103,17 +103,27 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
         sourceText: payload.sourceText as string,
       });
 
-      // §31: "AssessmentDraftGenerated event → notify the creator." Phase 6 plugged the §44
-      // listener into the seam this event fired at empty since 5b.
-      await dispatch<AssessmentDraftGeneratedEvent>(
-        {
-          type: 'AssessmentDraftGenerated',
-          aiRequestId: payload.aiRequestId as string,
-          versionId: payload.versionId as string,
-          creatorId: payload.userId as string,
-        },
-        [notifyAssessmentDraftGenerated(db)],
-      );
+      /**
+       * §31: "AssessmentDraftGenerated event → notify the creator." Phase 6 plugged the §44
+       * listener into the seam this event fired at empty since 5b.
+       *
+       * **Only when a draft actually landed.** This used to fire unconditionally, so a quota
+       * failure or a rejected model response told the creator their draft was ready and sent them
+       * to a review screen with nothing on it — the notification asserting the opposite of what
+       * the poll was simultaneously reporting. A failure reaches them through the status endpoint,
+       * which can say *why*.
+       */
+      if (result.outcome === 'DRAFTED') {
+        await dispatch<AssessmentDraftGeneratedEvent>(
+          {
+            type: 'AssessmentDraftGenerated',
+            aiRequestId: payload.aiRequestId as string,
+            versionId: payload.versionId as string,
+            creatorId: payload.userId as string,
+          },
+          [notifyAssessmentDraftGenerated(db)],
+        );
+      }
 
       return true;
     }
@@ -123,14 +133,48 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
   }
 }
 
-/** Best-effort FAILED marker so a dead ingestion job is visible in the admin list (§53). */
+/**
+ * Best-effort FAILED marker so a dead job is visible where a human looks (§53).
+ *
+ * Called from two places in `index.ts`: when a handler throws (so the admin list shows FAILED
+ * while the retry that may still fix it is pending) and when a message is dead-lettered after
+ * exhausting its retries (where it is the last word).
+ *
+ * **`GenerateAssessmentDraft` was missing from here**, which is one of the paths that produced the
+ * permanently-PENDING poll this module's callers were built around: `index.ts` documents the DLQ
+ * branch as the thing that stops "a `GenerateAssessmentDraft` gone silent" from leaving "its poll
+ * PENDING forever", and then handed the message to a function that only ever looked for a
+ * `documentId`. A dead-lettered generation flipped nothing at all.
+ */
 export async function markAiJobFailed(env: Env, message: AiJobMessage): Promise<void> {
-  const documentId = message.payload?.documentId;
+  const db = createDatabase(env.DB);
 
-  if (
-    typeof documentId === 'string' &&
-    (message.type === 'ProcessKnowledgeDocument' || message.type === 'GenerateEmbeddingBatch')
-  ) {
-    await ingestionFrom(createDatabase(env.DB), env).markFailed(documentId);
+  switch (message.type) {
+    case 'ProcessKnowledgeDocument':
+    case 'GenerateEmbeddingBatch': {
+      const documentId = message.payload?.documentId;
+
+      if (typeof documentId === 'string') {
+        await ingestionFrom(db, env).markFailed(documentId);
+      }
+
+      return;
+    }
+
+    case 'GenerateAssessmentDraft': {
+      const aiRequestId = message.payload?.aiRequestId;
+
+      if (typeof aiRequestId === 'string') {
+        await aiGatewayFrom(db, env).failReserved(
+          aiRequestId,
+          'JOB_FAILED: the generation job did not complete. If it was retried and dead-lettered, the reason for each attempt is in the Worker logs under pipeline="assessment_generation". Request a fresh generation.',
+        );
+      }
+
+      return;
+    }
+
+    default:
+      return;
   }
 }

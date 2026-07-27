@@ -590,12 +590,15 @@ export const assessmentTemplates = sqliteTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: timestamp('deleted_at'),
+    /** Migration 0016 — who removed it. `deleted_at` recorded when; nothing recorded who. */
+    deletedBy: text('deleted_by').references(() => users.id, { onDelete: 'set null' }),
   },
   (table) => [
     index('assessment_templates_creator_id_index').on(table.creatorId),
     index('assessment_templates_category_index').on(table.category),
     index('assessment_templates_status_index').on(table.status),
     index('assessment_templates_assessment_type_id_index').on(table.assessmentTypeId),
+    index('assessment_templates_deleted_at_index').on(table.deletedAt),
   ],
 );
 
@@ -649,6 +652,12 @@ export const assessmentVersions = sqliteTable(
       .notNull()
       .references(() => users.id),
     createdAt: createdAt(),
+    /**
+     * Migration 0016. **NULL means "never published"**, which is a state rather than missing data —
+     * `created_at` answers "when was this drafted", and for a version that sat in review it is a
+     * different date entirely. The administrator's Date Published column and filter read this.
+     */
+    publishedAt: timestamp('published_at'),
   },
   (table) => [
     uniqueIndex('assessment_versions_template_number_unique').on(
@@ -658,6 +667,7 @@ export const assessmentVersions = sqliteTable(
     index('assessment_versions_template_id_index').on(table.assessmentTemplateId),
     index('assessment_versions_status_index').on(table.status),
     index('assessment_versions_created_by_index').on(table.createdBy),
+    index('assessment_versions_published_at_index').on(table.publishedAt),
   ],
 );
 
@@ -1047,6 +1057,10 @@ export const knowledgeChunks = sqliteTable(
 /**
  * One row per `AiGatewayService` call, success or failure, no exceptions (§29 principle 6).
  * A quota-exhausted call is a FAILED row like any other model failure (§30 v1.5).
+ *
+ * Since migration 0015 the row is a **lifecycle**, not a completion receipt: a queued generation
+ * inserts it PENDING at enqueue time and the consumer advances it, so "in flight" is a row the
+ * system can see and time out rather than an absence it has to guess about.
  */
 export const aiRequests = sqliteTable(
   'ai_requests',
@@ -1062,11 +1076,16 @@ export const aiRequests = sqliteTable(
     tokensUsed: integer('tokens_used'),
     latencyMs: integer('latency_ms'),
     status: text('status').$type<AiRequestStatus>().notNull(),
+    /** The §30 taxonomy verbatim, or the stage that threw. NULL unless the row is FAILED. */
+    failureReason: text('failure_reason'),
     createdAt: createdAt(),
+    /** Last state change — `created_at` alone cannot answer "has this been stuck?". */
+    updatedAt: text('updated_at').notNull(),
   },
   (table) => [
     index('ai_requests_user_id_index').on(table.userId),
     index('ai_requests_user_created_index').on(table.userId, table.createdAt),
+    index('ai_requests_status_updated_index').on(table.status, table.updatedAt),
   ],
 );
 

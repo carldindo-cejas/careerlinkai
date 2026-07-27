@@ -1,4 +1,18 @@
-import { and, asc, count, desc, eq, inArray, isNull, like, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  like,
+  lte,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
 import type { AssignmentScope } from '@/db/enums';
@@ -15,6 +29,10 @@ import {
   type User,
 } from '@/db/schema';
 import { paginate, type PaginatedData } from '@/lib/envelope';
+import {
+  AssessmentBuilderService,
+  type Deletability,
+} from '@/modules/assessment/assessment-builder-service';
 import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
 import type { ListAssessmentsQuery } from '@/modules/assessment/schemas';
 
@@ -54,13 +72,56 @@ export interface AssessmentListRow {
   /** Questions in the published version — 0 when nothing is published. */
   questionCount: number;
   assignment: AssignmentSummary;
+  /**
+   * Whether the Delete action is offered, and the reason when it is not (v1.6). Resolved here
+   * rather than per row for the same reason everything else on this interface is: a Delete button
+   * that asked the server about itself would be one request per row.
+   */
+  deletability: Deletability;
+}
+
+/**
+ * The dates the table shows (v1.6).
+ *
+ * `created_at` and `updated_at` are the template's own columns. **Publication is not** — a template
+ * has no publish date, because publishing happens to a *version*. So the assessment's Date Published
+ * is derived from the versions the row already carries: `publishedAt` is the newest, the date it
+ * last became available to students, and `firstPublishedAt` is the oldest, "in service since".
+ *
+ * Derived rather than denormalized onto the template, and derived **from rows already loaded**
+ * rather than from a fifth query: `versionsFor` fetches every version of every template on the page
+ * anyway, so this costs nothing. A denormalized column would have to be maintained by every path
+ * that publishes, and the one that forgot would be silently wrong forever.
+ */
+export interface AssessmentDates {
+  createdAt: string | null;
+  updatedAt: string | null;
+  publishedAt: string | null;
+  firstPublishedAt: string | null;
+}
+
+export function assessmentDates(row: AssessmentListRow): AssessmentDates {
+  const published = row.versions
+    .map((version) => version.publishedAt)
+    .filter((date): date is string => date !== null)
+    // ISO-8601 UTC strings compare lexically (§12), so this is a real chronological sort.
+    .sort();
+
+  return {
+    createdAt: row.template.createdAt,
+    updatedAt: row.template.updatedAt,
+    publishedAt: published.at(-1) ?? null,
+    firstPublishedAt: published[0] ?? null,
+  };
 }
 
 export class AssessmentAdminService {
   private readonly taxonomy: AssessmentTaxonomyService;
+  private readonly builder: AssessmentBuilderService;
 
   constructor(private readonly db: Database) {
     this.taxonomy = new AssessmentTaxonomyService(db);
+    this.builder = new AssessmentBuilderService(db);
   }
 
   async list(user: User, query: ListAssessmentsQuery): Promise<PaginatedData<AssessmentListRow>> {
@@ -84,10 +145,14 @@ export class AssessmentAdminService {
 
     const templateIds = page.map((row) => row.template.id);
 
-    // The three grouped lookups. Each is one query for the whole page.
-    const versionsByTemplate = await this.versionsFor(templateIds);
-    const scoringsByTemplate = await this.taxonomy.scoringsForTemplates(templateIds);
-    const assignmentByTemplate = await this.assignmentSummaryFor(templateIds);
+    // The grouped lookups. Each is one query for the whole page, whatever the page size.
+    const [versionsByTemplate, scoringsByTemplate, assignmentByTemplate, deletabilityByTemplate] =
+      await Promise.all([
+        this.versionsFor(templateIds),
+        this.taxonomy.scoringsForTemplates(templateIds),
+        this.assignmentSummaryFor(templateIds),
+        this.builder.deletabilityFor(templateIds),
+      ]);
 
     const publishedVersionIds = templateIds
       .map((id) => newestPublished(versionsByTemplate.get(id) ?? []))
@@ -111,6 +176,12 @@ export class AssessmentAdminService {
             ? 0
             : (questionCountByVersion.get(publishedVersion.id) ?? 0),
         assignment: assignmentByTemplate.get(row.template.id) ?? { scope: null, classCount: 0 },
+        deletability: deletabilityByTemplate.get(row.template.id) ?? {
+          canDelete: true,
+          blockers: [],
+          attemptCount: 0,
+          activeAssignmentCount: 0,
+        },
       };
     });
 
@@ -143,6 +214,7 @@ export class AssessmentAdminService {
         scope: null,
         classCount: 0,
       },
+      deletability: await this.builder.deletability(template.id),
     };
   }
 
@@ -210,7 +282,66 @@ export class AssessmentAdminService {
       clauses.push(sql`NOT ${this.hasActiveAssignment()}`);
     }
 
+    /**
+     * The three date ranges (v1.6). Two are plain column comparisons; the third is not.
+     *
+     * `created_at` and `updated_at` live on the template, so `>= from` / `<= to` is exactly right —
+     * and correct as *string* comparison, because §12 stores ISO-8601 UTC, which sorts lexically.
+     *
+     * **Date Published has no column to compare.** Publishing happens to a version, so the filter
+     * asks a question about a *related row*: does this template have a version published inside the
+     * window? That is an `EXISTS`, for the same reason the status and assignment filters are — a
+     * post-filter in TypeScript would page over the unfiltered set and hand back short pages with
+     * wrong totals. It also gives the right answer to the subtle case: a template with three
+     * versions matches if *any* of them published in the window, which is what someone asking
+     * "what went live in March" means.
+     */
+    if (query.created_from !== undefined) {
+      clauses.push(gte(assessmentTemplates.createdAt, query.created_from));
+    }
+
+    if (query.created_to !== undefined) {
+      clauses.push(lte(assessmentTemplates.createdAt, query.created_to));
+    }
+
+    if (query.updated_from !== undefined) {
+      clauses.push(gte(assessmentTemplates.updatedAt, query.updated_from));
+    }
+
+    if (query.updated_to !== undefined) {
+      clauses.push(lte(assessmentTemplates.updatedAt, query.updated_to));
+    }
+
+    if (query.published_from !== undefined || query.published_to !== undefined) {
+      clauses.push(this.publishedWithin(query.published_from, query.published_to));
+    }
+
     return clauses;
+  }
+
+  /**
+   * `EXISTS` a version of this template published inside the window.
+   *
+   * **`published_at IS NOT NULL` is the whole test, and the version's current status is
+   * deliberately not part of it.** A version only ever receives that stamp by publishing, so the
+   * column *is* the record that publication happened — and a version that published in March and
+   * was archived in June still published in March. Adding `status = 'PUBLISHED'` here would answer
+   * a different question ("is it published *now*"), and it would answer it inconsistently with the
+   * `published_at` this same row displays, which is derived from the stamp alone. The filter, the
+   * sort and the value shown are one definition; that is what stops a row from being visible under
+   * a date range it does not appear to match.
+   */
+  private publishedWithin(from: string | undefined, to: string | undefined): SQL {
+    const lowerBound =
+      from === undefined ? sql`` : sql` AND ${assessmentVersions.publishedAt} >= ${from}`;
+    const upperBound =
+      to === undefined ? sql`` : sql` AND ${assessmentVersions.publishedAt} <= ${to}`;
+
+    return sql`EXISTS (
+      SELECT 1 FROM ${assessmentVersions}
+       WHERE ${assessmentVersions.assessmentTemplateId} = ${assessmentTemplates.id}
+         AND ${assessmentVersions.publishedAt} IS NOT NULL${lowerBound}${upperBound}
+    )`;
   }
 
   private hasPublishedVersion(): SQL {
@@ -252,12 +383,39 @@ export class AssessmentAdminService {
         return [direction(assessmentTemplates.createdAt), asc(assessmentTemplates.title)];
       case 'updated_at':
         return [direction(assessmentTemplates.updatedAt), asc(assessmentTemplates.title)];
+      case 'published_at':
+        /**
+         * A correlated `MAX()` rather than a column, because the date is a fact about the
+         * template's *versions* (see `assessmentDates`). Never-published rows sort last in both
+         * directions, for the same reason an untyped assessment does above: NULL is missing data,
+         * not a value that belongs at the top of a chronological list.
+         */
+        return [
+          sql`${this.newestPublishedAt()} IS NULL`,
+          direction(sql`${this.newestPublishedAt()}`),
+          asc(assessmentTemplates.title),
+        ];
       case 'status':
         return [direction(assessmentTemplates.status), asc(assessmentTemplates.title)];
       case 'title':
       default:
         return [direction(assessmentTemplates.title)];
     }
+  }
+
+  /**
+   * The newest publication date across a template's versions, as a scalar subquery.
+   *
+   * `MAX()` skips NULLs, so no status filter is needed — and none is wanted, for the reason
+   * `publishedWithin` gives: this has to agree exactly with the `published_at` the row displays,
+   * which is derived from the same stamps. A version status clause here and not there is how a
+   * sorted column ends up disagreeing with the values printed in it.
+   */
+  private newestPublishedAt(): SQL {
+    return sql`(
+      SELECT MAX(${assessmentVersions.publishedAt}) FROM ${assessmentVersions}
+       WHERE ${assessmentVersions.assessmentTemplateId} = ${assessmentTemplates.id}
+    )`;
   }
 
   // --- The grouped lookups ---------------------------------------------------------------------

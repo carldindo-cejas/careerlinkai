@@ -66,7 +66,7 @@ Full structure: FULLPLAN §16 (backend), §35 (frontend).
 npm install
 npm run db:migrate                              # apply migrations to the LOCAL D1 (append-only)
 npm test                                        # Vitest in the Workers runtime (offline, hermetic)
-npm run dev                                     # dev loop — fully OFFLINE (wrangler.test.toml)
+npm run dev                                     # dev loop — fully OFFLINE (wrangler.local.toml)
 npm run dev:remote                              # dev loop — local storage + REAL AI/Vectorize (needs login)
 npm run deploy:staging                          # publish careerlinkai-staging (pre-prod fidelity gate)
 npm run deploy:production                       # the careerlinkai.online Worker
@@ -89,7 +89,7 @@ isolated schema each.
 | Profile | Command | Storage | AI / Vectorize | Needs login? | Use for |
 |---|---|---|---|---|---|
 | **Hermetic suite** | `npm test` | local (per-file isolated) | stubbed / absent | no | the gate on every push · CI |
-| **Offline dev** | `npm run dev` (`wrangler.test.toml`) | local | absent | no | default loop — auth, classes, assessments, recs |
+| **Offline dev** | `npm run dev` (`wrangler.local.toml`) | local | absent | no | default loop — auth, classes, assessments, recs. **Runs queue consumers**, unlike the test config |
 | **Mixed-mode dev** | `npm run dev:remote` (`wrangler.dev.toml`) | local (disposable) | **real** (`remote = true`) | yes | Phase 5 RAG/generation — real model + real index |
 | **Staging** | `npm run deploy:staging` + `scripts/walkthrough.mjs` | real staging | real | yes | **pre-prod fidelity gate** — the authority for anything Miniflare can't see |
 

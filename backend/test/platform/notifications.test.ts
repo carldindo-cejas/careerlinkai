@@ -438,6 +438,7 @@ describe('the remaining §44 listeners', () => {
       requestType: 'ASSESSMENT_GENERATION',
       status: 'SUCCESS',
       createdAt: timestamp,
+      updatedAt: timestamp,
     });
     await database.insert(assessmentQuestions).values(
       [1, 2].map((order) => ({

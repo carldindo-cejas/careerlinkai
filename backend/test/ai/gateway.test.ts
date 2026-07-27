@@ -73,9 +73,9 @@ describe('generate — one ai_requests row per call, success or failure (§29 pr
     const row = await requestRowById(result.request.id);
 
     expect(row!.status).toBe('FAILED');
-    expect(row!.inputContext).toMatchObject({
-      failure_reason: expect.stringContaining('model exploded'),
-    });
+    // Its own column since migration 0015 — the one field an operator greps for was the one
+    // field SQL could not filter on while it lived inside the `input_context` JSON blob.
+    expect(row!.failureReason).toContain('model exploded');
   });
 
   it('recognises quota exhaustion (§30 v1.5) — FAILED with the quota reason, exactly one attempt', async () => {
@@ -124,9 +124,7 @@ describe('generate — one ai_requests row per call, success or failure (§29 pr
 
     expect(calls).toBe(0);
     expect((await requestRowById(row.id))!.status).toBe('FAILED');
-    expect((await requestRowById(row.id))!.inputContext).toMatchObject({
-      failure_reason: expect.stringContaining('SKIPPED'),
-    });
+    expect((await requestRowById(row.id))!.failureReason).toContain('SKIPPED');
   });
 });
 

@@ -9,6 +9,8 @@ import type {
   QuestionType,
 } from '@/db/enums';
 import {
+  assessmentAssignments,
+  assessmentAttempts,
   assessmentDimensions,
   assessmentQuestions,
   assessmentTemplates,
@@ -16,13 +18,16 @@ import {
   questionDimensions,
   questionOptions,
   type AssessmentDimension,
+  type AssessmentQuestion,
   type AssessmentTemplate,
   type AssessmentVersion,
   type InterpretationRange,
+  type QuestionOption,
   type ScoringConfig,
   type User,
 } from '@/db/schema';
 import { uuid } from '@/lib/crypto';
+import { chunkForInsert } from '@/lib/d1-batching';
 import { now } from '@/lib/datetime';
 import { translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError } from '@/lib/envelope';
@@ -53,29 +58,9 @@ import { AuditService } from '@/modules/platform/audit-service';
 
 const MODULE = 'Assessment';
 
-/**
- * **D1 binds at most 100 parameters per statement.** A multi-row INSERT binds one parameter per
- * column *per row*, so the limit is not a row count — it is a row count divided by the width of
- * the table. RIASEC's 300 option rows in one INSERT is ~1,800 parameters and fails with
- * `too many SQL variables`, which is a fact about the statement's shape and says nothing at all
- * about the data.
- *
- * Hence `chunk(rows, columns)` rather than a fixed `CHUNK_SIZE`: a 10-column table gets 10 rows
- * per statement, a 6-column table gets 16. Hard-coding one number would work until someone added
- * a column, and then it would fail on the widest table only.
- */
-const D1_MAX_BOUND_PARAMS = 100;
-
-function chunk<T>(rows: T[], columnsPerRow: number): T[][] {
-  const size = Math.max(1, Math.floor(D1_MAX_BOUND_PARAMS / columnsPerRow));
-  const chunks: T[][] = [];
-
-  for (let i = 0; i < rows.length; i += size) {
-    chunks.push(rows.slice(i, i + size));
-  }
-
-  return chunks;
-}
+// D1's 100-parameter ceiling and the chunking it forces live in `lib/d1-batching.ts`. The widths
+// used to be written out here as literals; `chunkForInsert` derives them from the table instead,
+// because the one place that hand-counted a width had it wrong (see that file).
 
 export interface CreateTemplateInput {
   category: AssessmentCategory;
@@ -130,6 +115,39 @@ export interface PublishReadiness {
   remaining: number;
 }
 
+/**
+ * Whether an assessment may be removed, and — when it may not — **why**, in the words the
+ * confirmation dialog shows (prompt-driven, v1.6).
+ *
+ * Two blockers, and they are refusals for genuinely different reasons:
+ *
+ *   * `HAS_RESPONSES` — a student has answered this instrument. §12 makes the attempt → answer →
+ *     result chain permanent historical evidence with no soft delete anywhere in it; removing the
+ *     instrument those rows describe would leave every one of them pointing at a title nobody can
+ *     read. This one can never be worked around, only outlived by archiving instead.
+ *   * `HAS_ACTIVE_ASSIGNMENTS` — a class is sitting for it right now. Recoverable: close the
+ *     assignments (which is the explicit act that expires the in-flight attempts, §21) and the
+ *     delete is permitted — though by then the first blocker usually applies, which is the point.
+ */
+export type DeleteBlocker = 'HAS_RESPONSES' | 'HAS_ACTIVE_ASSIGNMENTS';
+
+export interface Deletability {
+  canDelete: boolean;
+  blockers: DeleteBlocker[];
+  /** How many attempts exist against any version — the number the dialog quotes back. */
+  attemptCount: number;
+  /** Distinct classes holding an ACTIVE assignment for any version. */
+  activeAssignmentCount: number;
+}
+
+/** Nothing found: the shape a template with no versions, attempts or assignments resolves to. */
+const DELETABLE: Deletability = {
+  canDelete: true,
+  blockers: [],
+  attemptCount: 0,
+  activeAssignmentCount: 0,
+};
+
 export class AssessmentBuilderService {
   private readonly audit: AuditService;
   private readonly taxonomy: AssessmentTaxonomyService;
@@ -165,6 +183,7 @@ export class AssessmentBuilderService {
       createdAt: now(),
       updatedAt: now(),
       deletedAt: null,
+      deletedBy: null,
     };
 
     await this.db.insert(assessmentTemplates).values(template);
@@ -323,6 +342,172 @@ export class AssessmentBuilderService {
     });
 
     return { ...template, status, updatedAt: timestamp };
+  }
+
+  // --- Delete (prompt-driven, v1.6) ---------------------------------------------------------
+
+  /**
+   * **A soft delete, and deliberately not a hard one** (§12).
+   *
+   * `assessment_templates` is on §12's soft-delete list, and the reason is visible from here: the
+   * template is the parent of versions → questions → options → mappings, and every FK beneath it
+   * cascades. A hard `DELETE` would therefore be a silent, unrecoverable cascade through the
+   * authoring history of an instrument — and, if the guards below were ever wrong, through rows the
+   * attempt chain still references. Setting `deleted_at` removes it from every list in the system
+   * (each one opens with `deleted_at IS NULL`) while leaving the rows for a restore or an audit.
+   *
+   * **The two guards are re-checked here, not only at the route.** The list ships a `can_delete`
+   * flag so the UI can explain itself, but that flag is a snapshot: a student can start an attempt
+   * between the page load and the click. The authoritative check is this one, inside the act.
+   *
+   * Archived is not a precondition. Delete is a *stronger* act than archive, not a later step in a
+   * workflow, and forcing an administrator to archive first would only mean two confirmations for
+   * one decision.
+   */
+  async deleteTemplate(user: User, template: AssessmentTemplate): Promise<AssessmentTemplate> {
+    const deletability = await this.deletability(template.id);
+
+    if (!deletability.canDelete) {
+      throw ApiError.validation(
+        { assessment: [describeBlockers(deletability)] },
+        'This assessment cannot be deleted.',
+      );
+    }
+
+    const timestamp = now();
+
+    /**
+     * The template is soft-deleted and its versions are archived in one batch. Leaving a DRAFT
+     * version editable under a deleted template is the same back door `archiveTemplate` closes —
+     * only worse, because nothing lists the template any more to notice it.
+     */
+    await this.db.batch([
+      this.db
+        .update(assessmentTemplates)
+        .set({
+          deletedAt: timestamp,
+          deletedBy: user.id,
+          status: 'ARCHIVED',
+          updatedAt: timestamp,
+        })
+        .where(eq(assessmentTemplates.id, template.id)),
+      this.db
+        .update(assessmentVersions)
+        .set({ status: 'ARCHIVED' })
+        .where(
+          and(
+            eq(assessmentVersions.assessmentTemplateId, template.id),
+            eq(assessmentVersions.status, 'DRAFT'),
+          ),
+        ),
+    ]);
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_TEMPLATE_DELETED',
+      module: MODULE,
+      targetType: 'assessment_template',
+      targetId: template.id,
+      oldValues: { status: template.status, title: template.title },
+      newValues: {
+        deleted_at: timestamp,
+        soft_delete: true,
+        /** Recorded because the guards passing is itself the fact someone will audit later. */
+        attempts_at_deletion: deletability.attemptCount,
+        active_assignments_at_deletion: deletability.activeAssignmentCount,
+      },
+    });
+
+    return {
+      ...template,
+      status: 'ARCHIVED',
+      deletedAt: timestamp,
+      deletedBy: user.id,
+      updatedAt: timestamp,
+    };
+  }
+
+  /** One template's delete eligibility — the authoritative check, and the detail view's answer. */
+  async deletability(templateId: string): Promise<Deletability> {
+    return (await this.deletabilityFor([templateId])).get(templateId) ?? DELETABLE;
+  }
+
+  /**
+   * Delete eligibility for a whole page of templates, in **two queries regardless of page size**.
+   *
+   * The administrator's table renders a Delete button per row and has to know whether each one is
+   * permitted; asking per row is the same N+1 the rest of `AssessmentAdminService` was written to
+   * avoid. Both queries group by template id through the version join, so a template with nine
+   * versions still contributes one row to each result.
+   */
+  async deletabilityFor(templateIds: string[]): Promise<Map<string, Deletability>> {
+    const byTemplate = new Map<string, Deletability>();
+
+    if (templateIds.length === 0) {
+      return byTemplate;
+    }
+
+    const [attemptRows, assignmentRows] = await Promise.all([
+      this.db
+        .select({ templateId: assessmentVersions.assessmentTemplateId, total: count() })
+        .from(assessmentAttempts)
+        .innerJoin(
+          assessmentVersions,
+          eq(assessmentAttempts.assessmentVersionId, assessmentVersions.id),
+        )
+        .where(inArray(assessmentVersions.assessmentTemplateId, templateIds))
+        .groupBy(assessmentVersions.assessmentTemplateId),
+      this.db
+        .select({
+          templateId: assessmentVersions.assessmentTemplateId,
+          total: sql<number>`COUNT(DISTINCT ${assessmentAssignments.classId})`,
+        })
+        .from(assessmentAssignments)
+        .innerJoin(
+          assessmentVersions,
+          eq(assessmentAssignments.assessmentVersionId, assessmentVersions.id),
+        )
+        .where(
+          and(
+            inArray(assessmentVersions.assessmentTemplateId, templateIds),
+            eq(assessmentAssignments.status, 'ACTIVE'),
+          ),
+        )
+        .groupBy(assessmentVersions.assessmentTemplateId),
+    ]);
+
+    const attemptsByTemplate = new Map(attemptRows.map((row) => [row.templateId, row.total]));
+    const assignmentsByTemplate = new Map(
+      assignmentRows.map((row) => [row.templateId, Number(row.total)]),
+    );
+
+    for (const templateId of templateIds) {
+      const attemptCount = attemptsByTemplate.get(templateId) ?? 0;
+      const activeAssignmentCount = assignmentsByTemplate.get(templateId) ?? 0;
+      const blockers: DeleteBlocker[] = [];
+
+      /**
+       * **Every attempt counts, including an EXPIRED one.** An expired attempt is still a record
+       * of a student having sat this instrument (§21 — it is history, never deleted), and its
+       * answers still point at these questions.
+       */
+      if (attemptCount > 0) {
+        blockers.push('HAS_RESPONSES');
+      }
+
+      if (activeAssignmentCount > 0) {
+        blockers.push('HAS_ACTIVE_ASSIGNMENTS');
+      }
+
+      byTemplate.set(templateId, {
+        canDelete: blockers.length === 0,
+        blockers,
+        attemptCount,
+        activeAssignmentCount,
+      });
+    }
+
+    return byTemplate;
   }
 
   /**
@@ -604,6 +789,8 @@ export class AssessmentBuilderService {
       status: 'DRAFT',
       createdBy: user.id,
       createdAt: now(),
+      /** Never at creation — a draft has not published, and 0016's NULL says exactly that. */
+      publishedAt: null,
     };
 
     await this.db.insert(assessmentVersions).values(version);
@@ -787,11 +974,15 @@ export class AssessmentBuilderService {
     // The column counts are the tables' widths in `schema.ts` — see `chunk`'s note on why this is
     // a parameter budget rather than a row budget.
     const statements: BatchItem<'sqlite'>[] = [
-      ...chunk(questionRows, 10).map((rows) =>
+      ...chunkForInsert(questionRows, assessmentQuestions).map((rows) =>
         this.db.insert(assessmentQuestions).values(rows),
       ),
-      ...chunk(optionRows, 6).map((rows) => this.db.insert(questionOptions).values(rows)),
-      ...chunk(mappingRows, 6).map((rows) => this.db.insert(questionDimensions).values(rows)),
+      ...chunkForInsert(optionRows, questionOptions).map((rows) =>
+        this.db.insert(questionOptions).values(rows),
+      ),
+      ...chunkForInsert(mappingRows, questionDimensions).map((rows) =>
+        this.db.insert(questionDimensions).values(rows),
+      ),
     ];
 
     await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
@@ -878,16 +1069,25 @@ export class AssessmentBuilderService {
       );
     }
 
-    await this.db
-      .update(assessmentVersions)
-      .set({ status: 'PUBLISHED' })
-      .where(eq(assessmentVersions.id, versionId));
+    /**
+     * **One timestamp for both writes** (migration 0016). Publishing is a single act, so the date
+     * the version records and the date the template's `updated_at` moves to have to be the same
+     * instant — two `now()` calls would differ by a millisecond and make "published today, last
+     * edited today" render as two different times for one event.
+     */
+    const publishedAt = now();
 
-    // The template becomes ACTIVE the moment it has something assignable.
-    await this.db
-      .update(assessmentTemplates)
-      .set({ status: 'ACTIVE', updatedAt: now() })
-      .where(eq(assessmentTemplates.id, version.assessmentTemplateId));
+    await this.db.batch([
+      this.db
+        .update(assessmentVersions)
+        .set({ status: 'PUBLISHED', publishedAt })
+        .where(eq(assessmentVersions.id, versionId)),
+      // The template becomes ACTIVE the moment it has something assignable.
+      this.db
+        .update(assessmentTemplates)
+        .set({ status: 'ACTIVE', updatedAt: publishedAt })
+        .where(eq(assessmentTemplates.id, version.assessmentTemplateId)),
+    ]);
 
     await this.audit.write({
       userId: user.id,
@@ -900,10 +1100,11 @@ export class AssessmentBuilderService {
         status: 'PUBLISHED',
         version_number: version.versionNumber,
         confirmed_mappings: readiness.confirmed,
+        published_at: publishedAt,
       },
     });
 
-    return { ...version, status: 'PUBLISHED' };
+    return { ...version, status: 'PUBLISHED', publishedAt };
   }
 
   /** How many questions a version has — the counselor's template list shows it. */
@@ -993,30 +1194,210 @@ export class AssessmentBuilderService {
   }
 
   /**
-   * Edit one question's text/required flag during review (§31: "review/edit text and
-   * options"). DRAFT versions only — invariant 1 reaches every row beneath a published
-   * version, this one included.
+   * Edit one question in place (§31: "review/edit text and options"; extended by the v1.6 builder
+   * to the whole item — type, section, options and mappings, not only the text). DRAFT versions
+   * only: invariant 1 reaches every row beneath a published version, this one included.
    *
-   * Editing deliberately does **not** clear the mappings' `confirmed_at`: the mapping is a
-   * claim about *what the question measures*, and rewording the question is exactly what the
-   * reviewer is expected to do while confirming that claim. A reword so radical it changes
-   * the construct is the reviewer's own act, made while looking straight at the mapping.
+   * Rewording deliberately does **not** clear the mappings' `confirmed_at`: the mapping is a claim
+   * about *what the question measures*, and rewording is exactly what the reviewer is expected to
+   * do while confirming that claim. **Replacing the mapping set is different** — a mapping that did
+   * not exist a moment ago has not been confirmed by anyone, so the rows written below carry the
+   * editing user's confirmation precisely because a human is the one typing them (§25's rule, the
+   * same one `addQuestions` applies to a MANUAL question). An AI-proposed mapping that the author
+   * leaves alone keeps its unconfirmed state, because it is not touched.
+   *
+   * Options and mappings are **replaced wholesale rather than diffed**, in one batch with the
+   * question row. A diff would have to decide what a "changed" option is — the label? the score? —
+   * and get it wrong for the one case that matters: an author reordering two options with different
+   * scores. Delete-then-insert has no such ambiguity, and `assessment_answers.selected_option_id`
+   * cannot be orphaned by it because a DRAFT version has no attempts (invariant 1 is what
+   * guarantees that, and it is checked two lines up).
    */
   async updateQuestion(
+    user: User,
     questionId: string,
-    changes: { questionText?: string; required?: boolean },
-  ): Promise<typeof assessmentQuestions.$inferSelect> {
-    const [question] = await this.db
-      .select()
-      .from(assessmentQuestions)
-      .where(eq(assessmentQuestions.id, questionId))
-      .limit(1);
+    changes: {
+      questionText?: string;
+      questionType?: QuestionType;
+      sectionLabel?: string | null;
+      required?: boolean;
+      options?: { label: string; value: string; score: number }[];
+      dimensionCodes?: string[];
+    },
+  ): Promise<AssessmentQuestion> {
+    const { question, version } = await this.editableQuestion(questionId);
 
-    if (question === undefined) {
+    const updated: AssessmentQuestion = {
+      ...question,
+      questionText: changes.questionText ?? question.questionText,
+      questionType: changes.questionType ?? question.questionType,
+      sectionLabel: changes.sectionLabel === undefined ? question.sectionLabel : changes.sectionLabel,
+      required: changes.required ?? question.required,
+    };
+
+    const statements: BatchItem<'sqlite'>[] = [
+      this.db
+        .update(assessmentQuestions)
+        .set({
+          questionText: updated.questionText,
+          questionType: updated.questionType,
+          sectionLabel: updated.sectionLabel,
+          required: updated.required,
+        })
+        .where(eq(assessmentQuestions.id, questionId)),
+    ];
+
+    if (changes.options !== undefined) {
+      statements.push(
+        this.db.delete(questionOptions).where(eq(questionOptions.questionId, questionId)),
+        ...chunkForInsert(
+          changes.options.map((option, index) => ({
+            id: uuid(),
+            questionId,
+            label: option.label,
+            value: option.value,
+            score: option.score,
+            orderNumber: index + 1,
+          })),
+          questionOptions,
+        ).map((rows) => this.db.insert(questionOptions).values(rows)),
+      );
+    }
+
+    if (changes.dimensionCodes !== undefined) {
+      const dimensions = await this.dimensionsFor(version.assessmentTemplateId);
+      const dimensionByCode = new Map(dimensions.map((dimension) => [dimension.code, dimension]));
+      const timestamp = now();
+
+      const mappingRows = changes.dimensionCodes.map((code) => {
+        const dimension = dimensionByCode.get(code);
+
+        if (dimension === undefined) {
+          throw ApiError.validation(
+            { dimension_codes: [`Unknown dimension code "${code}" for this template.`] },
+            'A question cannot map to a dimension that does not exist on its template.',
+          );
+        }
+
+        return {
+          id: uuid(),
+          questionId,
+          dimensionId: dimension.id,
+          weight: 1,
+          confirmedAt: timestamp,
+          confirmedBy: user.id,
+        };
+      });
+
+      statements.push(
+        this.db.delete(questionDimensions).where(eq(questionDimensions.questionId, questionId)),
+        ...chunkForInsert(mappingRows, questionDimensions).map((rows) =>
+          this.db.insert(questionDimensions).values(rows),
+        ),
+      );
+    }
+
+    await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+
+    return updated;
+  }
+
+  /**
+   * Copy a question — text, type, options and mappings — as the next item in its version.
+   *
+   * The copy is **MANUAL and confirmed even when the original was AI-generated**, and that is the
+   * only interesting decision here. Duplicating is an authoring act: a human looked at an item and
+   * decided to make another one like it. Inheriting `AI_GENERATED` would misattribute the author's
+   * own work to the model, and inheriting an unconfirmed mapping would let a copy sit in the publish
+   * gate as though nobody had seen it — when the person who made the copy plainly had.
+   */
+  async duplicateQuestion(user: User, questionId: string): Promise<string> {
+    const { question, version } = await this.editableQuestion(questionId);
+
+    const [options, mappings] = await Promise.all([
+      this.db
+        .select()
+        .from(questionOptions)
+        .where(eq(questionOptions.questionId, questionId))
+        .orderBy(asc(questionOptions.orderNumber)),
+      this.db
+        .select({ code: assessmentDimensions.code, weight: questionDimensions.weight })
+        .from(questionDimensions)
+        .innerJoin(
+          assessmentDimensions,
+          eq(questionDimensions.dimensionId, assessmentDimensions.id),
+        )
+        .where(eq(questionDimensions.questionId, questionId)),
+    ]);
+
+    const [newId] = await this.addQuestions(user, version.id, [
+      {
+        questionText: question.questionText,
+        questionType: question.questionType,
+        sectionLabel: question.sectionLabel,
+        /**
+         * Appended, not inserted beside the original. `addQuestions` writes whatever
+         * `orderNumber` it is handed — the *routes* are what compute "next" for the bulk editor —
+         * so the position has to be resolved here rather than assumed.
+         */
+        orderNumber: await this.nextOrderNumber(version.id),
+        required: question.required,
+        source: 'MANUAL',
+        options: options.map((option, index) => ({
+          label: option.label,
+          value: option.value,
+          score: option.score,
+          orderNumber: index + 1,
+        })),
+        dimensions: mappings.map((mapping) => ({ code: mapping.code, weight: mapping.weight })),
+      },
+    ]);
+
+    if (newId === undefined) {
       throw ApiError.notFound('Question not found.');
     }
 
-    const version = await this.findVersion(question.assessmentVersionId);
+    return newId;
+  }
+
+  /**
+   * Remove one question from a DRAFT version, **closing the gap it leaves in the numbering**.
+   *
+   * `order_number` is what the player renders items in and what every author-facing list sorts by,
+   * so leaving a hole would work until someone inserted a question and found two items claiming
+   * position 7. The renumber is folded into the same batch as the delete: the two must not be
+   * separately observable. Options and mappings go with the row through their FK cascades.
+   */
+  async deleteQuestion(questionId: string): Promise<void> {
+    const { question, version } = await this.editableQuestion(questionId);
+
+    await this.db.batch([
+      this.db.delete(assessmentQuestions).where(eq(assessmentQuestions.id, questionId)),
+      this.db
+        .update(assessmentQuestions)
+        .set({ orderNumber: sql`${assessmentQuestions.orderNumber} - 1` })
+        .where(
+          and(
+            eq(assessmentQuestions.assessmentVersionId, version.id),
+            sql`${assessmentQuestions.orderNumber} > ${question.orderNumber}`,
+          ),
+        ),
+    ]);
+  }
+
+  /**
+   * Reorder a DRAFT version's questions — the drag-and-drop save.
+   *
+   * The payload must name **every** question in the version exactly once. A partial list would be a
+   * request whose meaning depends on where the unlisted items are supposed to end up, and there is
+   * no honest default: silently appending them changes an order the author did not touch. So a
+   * mismatch is a 422 naming the discrepancy rather than a best-effort write.
+   *
+   * Every row is renumbered in one batch, and the numbering is rewritten from 1 rather than patched,
+   * so a version whose numbering had drifted comes out consistent.
+   */
+  async reorderQuestions(versionId: string, questionIds: string[]): Promise<void> {
+    const version = await this.findVersion(versionId);
 
     if (version === undefined) {
       throw ApiError.notFound('Assessment version not found.');
@@ -1024,18 +1405,124 @@ export class AssessmentBuilderService {
 
     this.assertVersionEditable(version);
 
-    const updated = {
-      ...question,
-      questionText: changes.questionText ?? question.questionText,
-      required: changes.required ?? question.required,
+    const existing = await this.db
+      .select({ id: assessmentQuestions.id })
+      .from(assessmentQuestions)
+      .where(eq(assessmentQuestions.assessmentVersionId, versionId));
+
+    const existingIds = new Set(existing.map((row) => row.id));
+    const submitted = new Set(questionIds);
+
+    if (
+      submitted.size !== questionIds.length ||
+      submitted.size !== existingIds.size ||
+      questionIds.some((id) => !existingIds.has(id))
+    ) {
+      throw ApiError.validation(
+        {
+          question_ids: [
+            `Send every question in this version exactly once — ${existingIds.size} expected, ${questionIds.length} received.`,
+          ],
+        },
+        'The new order must list every question in this version.',
+      );
+    }
+
+    if (questionIds.length === 0) {
+      return;
+    }
+
+    const statements: BatchItem<'sqlite'>[] = questionIds.map((id, index) =>
+      this.db
+        .update(assessmentQuestions)
+        .set({ orderNumber: index + 1 })
+        .where(eq(assessmentQuestions.id, id)),
+    );
+
+    await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+  }
+
+  /**
+   * The position an appended question takes: `MAX(order_number) + 1`.
+   *
+   * `MAX + 1` rather than `COUNT + 1`, which are the same number only while the numbering is
+   * gapless. `deleteQuestion` keeps it gapless today, so the two agree — but a count would produce
+   * a *collision* the day anything did leave a hole, and two items claiming the same position is a
+   * bug that surfaces as an arbitrary render order rather than as an error.
+   */
+  private async nextOrderNumber(versionId: string): Promise<number> {
+    const [row] = await this.db
+      .select({ highest: sql<number | null>`MAX(${assessmentQuestions.orderNumber})` })
+      .from(assessmentQuestions)
+      .where(eq(assessmentQuestions.assessmentVersionId, versionId));
+
+    return (row?.highest ?? 0) + 1;
+  }
+
+  /**
+   * One question plus its version, refusing anything the freeze rules put out of reach.
+   *
+   * Every mutating question path starts here rather than repeating the two lookups and the
+   * `assertVersionEditable` call — which is what stops one of them from quietly not making it.
+   */
+  private async editableQuestion(
+    questionId: string,
+  ): Promise<{ question: AssessmentQuestion; version: AssessmentVersion }> {
+    const [row] = await this.db
+      .select({ question: assessmentQuestions, version: assessmentVersions })
+      .from(assessmentQuestions)
+      .innerJoin(
+        assessmentVersions,
+        eq(assessmentQuestions.assessmentVersionId, assessmentVersions.id),
+      )
+      .where(eq(assessmentQuestions.id, questionId))
+      .limit(1);
+
+    if (row === undefined) {
+      throw ApiError.notFound('Question not found.');
+    }
+
+    this.assertVersionEditable(row.version);
+
+    return row;
+  }
+
+  /** One question's options and mappings, for the builder's optimistic per-question refresh. */
+  async questionContent(questionId: string): Promise<{
+    options: QuestionOption[];
+    mappings: (typeof questionDimensions.$inferSelect & {
+      dimensionCode: string;
+      dimensionName: string;
+    })[];
+  }> {
+    const [options, mappings] = await Promise.all([
+      this.db
+        .select()
+        .from(questionOptions)
+        .where(eq(questionOptions.questionId, questionId))
+        .orderBy(asc(questionOptions.orderNumber)),
+      this.db
+        .select({
+          mapping: questionDimensions,
+          dimensionCode: assessmentDimensions.code,
+          dimensionName: assessmentDimensions.name,
+        })
+        .from(questionDimensions)
+        .innerJoin(
+          assessmentDimensions,
+          eq(questionDimensions.dimensionId, assessmentDimensions.id),
+        )
+        .where(eq(questionDimensions.questionId, questionId)),
+    ]);
+
+    return {
+      options,
+      mappings: mappings.map((row) => ({
+        ...row.mapping,
+        dimensionCode: row.dimensionCode,
+        dimensionName: row.dimensionName,
+      })),
     };
-
-    await this.db
-      .update(assessmentQuestions)
-      .set({ questionText: updated.questionText, required: updated.required })
-      .where(eq(assessmentQuestions.id, questionId));
-
-    return updated;
   }
 
   /** The mapping row + its version/template ids, for authorization before a confirm. */
@@ -1120,4 +1607,38 @@ export class AssessmentBuilderService {
 
     return confirmed;
   }
+}
+
+/**
+ * The refusal, in the sentence the confirmation dialog prints (prompt-driven, v1.6).
+ *
+ * The message is built here rather than in the frontend so the API's 422 and the disabled button's
+ * tooltip say the same thing — a dialog that explains "there are responses" while the server
+ * answers something else is how a user learns to distrust both. It names *numbers*, because
+ * "cannot be deleted" with no quantity is a dead end for whoever has to decide what to do next.
+ */
+export function describeBlockers(deletability: Deletability): string {
+  const reasons: string[] = [];
+
+  if (deletability.blockers.includes('HAS_RESPONSES')) {
+    reasons.push(
+      `${deletability.attemptCount} student ${
+        deletability.attemptCount === 1 ? 'response' : 'responses'
+      } exist for it, and assessment history is never deleted — archive it instead`,
+    );
+  }
+
+  if (deletability.blockers.includes('HAS_ACTIVE_ASSIGNMENTS')) {
+    reasons.push(
+      `it is currently assigned to ${deletability.activeAssignmentCount} ${
+        deletability.activeAssignmentCount === 1 ? 'class' : 'classes'
+      } — close those assignments first`,
+    );
+  }
+
+  if (reasons.length === 0) {
+    return 'This assessment can be deleted.';
+  }
+
+  return `This assessment cannot be deleted: ${reasons.join('; and ')}.`;
 }

@@ -1,5 +1,6 @@
 import { BookOpenCheck, ChartColumn, Compass, LayoutDashboard, UserRound } from 'lucide-react';
 
+import { ProfilingBanner } from '@/features/student/components/ProfilingBanner';
 import { AppShell, type AppNavItem } from '@/layouts/AppShell';
 import { paths } from '@/routes/paths';
 import { useStudentClassStore } from '@/stores/studentClassStore';
@@ -39,6 +40,11 @@ export function StudentLayout() {
       title="Student"
       nav={nav}
       onSignedOut={clearClass}
+      /**
+       * The profiling warning, on every student route (v1.6). It renders nothing once the required
+       * fields are filled in, so this costs an already-cached query and no layout.
+       */
+      banner={<ProfilingBanner />}
       headerBadge={
         classRoom ? (
           <span className="hidden truncate rounded-none bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground/80 sm:block">

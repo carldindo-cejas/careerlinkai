@@ -65,23 +65,32 @@ export interface KnowledgeDocumentProcessedEvent {
 }
 
 /**
- * The fifth event (v1.5, migration 0014) — fired by `ClassService.create`.
+ * The fifth event (v1.5, migration 0014) — **"a class became able to receive assignments"**.
  *
  * §60 catalogs four events, and this is deliberately a fifth rather than a direct call. A global
- * assessment assignment must reach classes created after it was made, so *something* has to react to
- * class creation; the only two ways to arrange that are the Class module calling into the Assessment
+ * assessment assignment must reach classes that were not eligible when it was made, so *something*
+ * has to react; the only two ways to arrange that are the Class module calling into the Assessment
  * module, or an event. The first would put an assessment concern inside class creation and close an
  * import cycle (`AssessmentAttemptService` already imports `ClassService`). The second is what the
- * dispatcher is for, and it keeps the failure mode right: a class must still be created if applying
- * the assignments fails, and `dispatch` guarantees exactly that.
+ * dispatcher is for, and it keeps the failure mode right: a class must still be created — or
+ * activated — if applying the assignments fails, and `dispatch` guarantees exactly that.
+ *
+ * **`reason` rather than two events** (v1.6). There are two moments a class becomes eligible: it is
+ * created (always `active`), or a `draft`/`archived` one is switched to `active`. Both need the same
+ * top-up, and the second was a real hole — a class drafted before an administrator assigned globally
+ * and activated afterwards would never have received the assignment, so its students would have been
+ * missing an assessment that the admin list truthfully reported as reaching "every class". These are
+ * one fact with two causes, not two facts, so they are one event; the reason travels for the audit
+ * row, which should not claim a class was created when it was reactivated.
  *
  * Recorded as deviation D27 in PROGRESS.md.
  */
-export interface ClassCreatedEvent {
-  type: 'ClassCreated';
+export interface ClassActivatedEvent {
+  type: 'ClassActivated';
   classId: string;
-  /** The counselor who created it — the audit actor for whatever the listener writes. */
+  /** The staff member whose act made the class eligible — the audit actor for the listener's row. */
   counselorId: string;
+  reason: 'CREATED' | 'REACTIVATED';
 }
 
 export type DomainEvent =
@@ -89,7 +98,7 @@ export type DomainEvent =
   | RecommendationGeneratedEvent
   | AssessmentDraftGeneratedEvent
   | KnowledgeDocumentProcessedEvent
-  | ClassCreatedEvent;
+  | ClassActivatedEvent;
 
 export type Listener<E extends DomainEvent> = (event: E) => Promise<void>;
 

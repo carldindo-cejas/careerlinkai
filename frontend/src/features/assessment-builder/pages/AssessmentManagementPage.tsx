@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { AssessmentAssignDialog } from '@/features/assessment-builder/components/AssessmentAssignDialog';
+import { AssessmentDeleteDialog } from '@/features/assessment-builder/components/AssessmentDeleteDialog';
 import { AssessmentFormDialog } from '@/features/assessment-builder/components/AssessmentFormDialog';
 import { AssessmentTable } from '@/features/assessment-builder/components/AssessmentTable';
 import {
@@ -12,6 +13,7 @@ import {
   useAssessmentTypes,
   useAssignAssessment,
   useCreateAssessment,
+  useDeleteAssessment,
   useRestoreAssessment,
   useUpdateAssessment,
 } from '@/features/assessment-builder/hooks/useAssessments';
@@ -19,6 +21,7 @@ import { toast } from '@/stores/toastStore';
 import type { SortDirection } from '@/types/address';
 import type {
   AssessmentAssignmentFilter,
+  AssessmentDateField,
   AssessmentListQuery,
   AssessmentRow,
   AssessmentSort,
@@ -57,6 +60,9 @@ export function AssessmentManagementPage() {
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<AssessmentStatusFilter | ''>('');
   const [assignmentFilter, setAssignmentFilter] = useState<AssessmentAssignmentFilter | ''>('');
+  const [dateField, setDateField] = useState<AssessmentDateField>('published_at');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [sort, setSort] = useState<AssessmentSort>('title');
   const [direction, setDirection] = useState<SortDirection>('asc');
   const [page, setPage] = useState(1);
@@ -64,13 +70,14 @@ export function AssessmentManagementPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editingRow, setEditingRow] = useState<AssessmentRow | null>(null);
   const [assigningRow, setAssigningRow] = useState<AssessmentRow | null>(null);
+  const [deletingRow, setDeletingRow] = useState<AssessmentRow | null>(null);
 
   const search = useDebouncedValue(searchInput, 300);
 
   // Any change to what is being *filtered* returns to page one.
   useEffect(() => {
     setPage(1);
-  }, [search, typeFilter, statusFilter, assignmentFilter]);
+  }, [search, typeFilter, statusFilter, assignmentFilter, dateField, dateFrom, dateTo]);
 
   const query: AssessmentListQuery = useMemo(
     () => ({
@@ -78,12 +85,31 @@ export function AssessmentManagementPage() {
       assessment_type_id: typeFilter || undefined,
       status: statusFilter || undefined,
       assignment: assignmentFilter || undefined,
+      /**
+       * One picker on screen, three independent server-side ranges behind it. The bounds are
+       * spread under the selected field's keys so switching the selector moves the range rather
+       * than stacking a second one — filtering on "created in January **and** published in
+       * January" is not what someone changing the dropdown meant.
+       */
+      ...(dateFrom === '' ? {} : { [`${dateField.replace('_at', '')}_from`]: dateFrom }),
+      ...(dateTo === '' ? {} : { [`${dateField.replace('_at', '')}_to`]: dateTo }),
       page,
       per_page: PER_PAGE,
       sort,
       direction,
     }),
-    [search, typeFilter, statusFilter, assignmentFilter, page, sort, direction],
+    [
+      search,
+      typeFilter,
+      statusFilter,
+      assignmentFilter,
+      dateField,
+      dateFrom,
+      dateTo,
+      page,
+      sort,
+      direction,
+    ],
   );
 
   const list = useAssessments(query);
@@ -93,6 +119,7 @@ export function AssessmentManagementPage() {
   const update = useUpdateAssessment();
   const archive = useArchiveAssessment();
   const restore = useRestoreAssessment();
+  const remove = useDeleteAssessment();
   const assign = useAssignAssessment();
 
   function onSort(column: AssessmentSort) {
@@ -184,6 +211,12 @@ export function AssessmentManagementPage() {
         onStatusFilterChange={setStatusFilter}
         assignmentFilter={assignmentFilter}
         onAssignmentFilterChange={setAssignmentFilter}
+        dateField={dateField}
+        onDateFieldChange={setDateField}
+        dateFrom={dateFrom}
+        onDateFromChange={setDateFrom}
+        dateTo={dateTo}
+        onDateToChange={setDateTo}
         sort={sort}
         direction={direction}
         onSort={onSort}
@@ -197,6 +230,7 @@ export function AssessmentManagementPage() {
         onAssign={setAssigningRow}
         onArchive={onArchive}
         onRestore={onRestore}
+        onDelete={setDeletingRow}
         busyId={
           archive.isPending
             ? (archive.variables ?? null)
@@ -226,6 +260,19 @@ export function AssessmentManagementPage() {
         onClose={() => setAssigningRow(null)}
         onAssign={(payload) => assign.mutateAsync({ id: assigningRow!.id, payload })}
         isAssigning={assign.isPending}
+      />
+
+      {/*
+        Deleting gets a dialog rather than the `window.confirm` archiving uses, and the asymmetry is
+        the point: archiving is reversible with one click, so a confirm is proportionate. Deleting
+        is not, so it asks the administrator to type the assessment's name — an act that cannot be
+        completed by the reflex that dismisses a confirm.
+      */}
+      <AssessmentDeleteDialog
+        row={deletingRow}
+        onClose={() => setDeletingRow(null)}
+        onDelete={() => remove.mutateAsync(deletingRow!.id)}
+        isDeleting={remove.isPending}
       />
     </div>
   );

@@ -75,8 +75,15 @@ function row(overrides: Partial<AssessmentRow> = {}): AssessmentRow {
     published_version: null,
     assignment: { scope: null, class_count: 0 },
     ai_generatable: true,
+    can_delete: true,
+    delete_blockers: [],
+    delete_blocked_reason: null,
+    response_count: 0,
+    active_assignment_count: 0,
     created_at: '2026-07-26T00:00:00.000Z',
     updated_at: '2026-07-26T00:00:00.000Z',
+    published_at: null,
+    first_published_at: null,
     ...overrides,
   };
 }

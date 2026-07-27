@@ -4,12 +4,14 @@ import {
   ArrowUpDown,
   Archive,
   ArchiveRestore,
+  CalendarX,
   Eye,
   Globe,
   Loader2,
   Pencil,
   Search,
   Send,
+  Trash2,
   Users,
 } from 'lucide-react';
 
@@ -22,12 +24,14 @@ import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { cn } from '@/components/ui/cn';
 import type { SortDirection } from '@/types/address';
-import type {
-  AssessmentAssignmentFilter,
-  AssessmentRow,
-  AssessmentSort,
-  AssessmentStatusFilter,
-  AssessmentType,
+import {
+  ASSESSMENT_DATE_FIELDS,
+  type AssessmentAssignmentFilter,
+  type AssessmentDateField,
+  type AssessmentRow,
+  type AssessmentSort,
+  type AssessmentStatusFilter,
+  type AssessmentType,
 } from '@/types/assessmentAdmin';
 import type { Paginated } from '@/types/class';
 
@@ -69,6 +73,14 @@ interface AssessmentTableProps {
   assignmentFilter: AssessmentAssignmentFilter | '';
   onAssignmentFilterChange: (value: AssessmentAssignmentFilter | '') => void;
 
+  /** Which date the range below filters on — one picker, three server-side ranges behind it. */
+  dateField: AssessmentDateField;
+  onDateFieldChange: (value: AssessmentDateField) => void;
+  dateFrom: string;
+  onDateFromChange: (value: string) => void;
+  dateTo: string;
+  onDateToChange: (value: string) => void;
+
   sort: AssessmentSort;
   direction: SortDirection;
   onSort: (column: AssessmentSort) => void;
@@ -81,9 +93,16 @@ interface AssessmentTableProps {
   onAssign: (row: AssessmentRow) => void;
   onArchive: (row: AssessmentRow) => void;
   onRestore: (row: AssessmentRow) => void;
+  onDelete: (row: AssessmentRow) => void;
   /** The row a destructive mutation is currently running against, so only its button spins. */
   busyId: string | null;
 }
+
+const DATE_FIELD_LABELS: Record<AssessmentDateField, string> = {
+  published_at: 'Date published',
+  created_at: 'Date created',
+  updated_at: 'Date updated',
+};
 
 export function AssessmentTable({
   data,
@@ -100,6 +119,12 @@ export function AssessmentTable({
   onStatusFilterChange,
   assignmentFilter,
   onAssignmentFilterChange,
+  dateField,
+  onDateFieldChange,
+  dateFrom,
+  onDateFromChange,
+  dateTo,
+  onDateToChange,
   sort,
   direction,
   onSort,
@@ -110,10 +135,16 @@ export function AssessmentTable({
   onAssign,
   onArchive,
   onRestore,
+  onDelete,
   busyId,
 }: AssessmentTableProps) {
   const filtered =
-    search !== '' || typeFilter !== '' || statusFilter !== '' || assignmentFilter !== '';
+    search !== '' ||
+    typeFilter !== '' ||
+    statusFilter !== '' ||
+    assignmentFilter !== '' ||
+    dateFrom !== '' ||
+    dateTo !== '';
 
   return (
     <div className="flex flex-col gap-4">
@@ -186,6 +217,69 @@ export function AssessmentTable({
         </div>
       </div>
 
+      {/*
+        The date range, on its own row.
+
+        **One picker with a "which date" selector, rather than three separate ranges on screen.**
+        The server supports all three independently — "created in January but published in March" is
+        a real question — but showing six date inputs at once turns the common case (one range) into
+        a puzzle. The selector keeps the common case one control and the uncommon case reachable.
+      */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="assessment-date-field">Filter dates by</Label>
+          <Select
+            id="assessment-date-field"
+            value={dateField}
+            onChange={(event) => onDateFieldChange(event.target.value as AssessmentDateField)}
+          >
+            {ASSESSMENT_DATE_FIELDS.map((field) => (
+              <option key={field} value={field}>
+                {DATE_FIELD_LABELS[field]}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="assessment-date-from">From</Label>
+          <Input
+            id="assessment-date-from"
+            type="date"
+            value={dateFrom}
+            max={dateTo === '' ? undefined : dateTo}
+            onChange={(event) => onDateFromChange(event.target.value)}
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="assessment-date-to">To</Label>
+          <Input
+            id="assessment-date-to"
+            type="date"
+            value={dateTo}
+            min={dateFrom === '' ? undefined : dateFrom}
+            onChange={(event) => onDateToChange(event.target.value)}
+          />
+        </div>
+
+        {dateFrom !== '' || dateTo !== '' ? (
+          <div className="flex items-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                onDateFromChange('');
+                onDateToChange('');
+              }}
+            >
+              <CalendarX className="size-4" aria-hidden="true" />
+              Clear dates
+            </Button>
+          </div>
+        ) : null}
+      </div>
+
       {isError ? <Alert>We could not load the assessments. {errorMessage}</Alert> : null}
 
       {isPending ? (
@@ -237,6 +331,20 @@ export function AssessmentTable({
                       onSort={onSort}
                     />
                     <th className="px-4 py-3 font-medium">Assignment</th>
+                    <SortableHeader
+                      label="Published"
+                      column="published_at"
+                      sort={sort}
+                      direction={direction}
+                      onSort={onSort}
+                    />
+                    <SortableHeader
+                      label="Updated"
+                      column="updated_at"
+                      sort={sort}
+                      direction={direction}
+                      onSort={onSort}
+                    />
                     <th className="px-4 py-3 text-right font-medium">
                       <span className="sr-only">Actions</span>
                     </th>
@@ -256,6 +364,9 @@ export function AssessmentTable({
                             No scoring method set
                           </p>
                         )}
+                        <p className="mt-0.5 text-xs text-muted-foreground/60">
+                          Created {formatDate(row.created_at)}
+                        </p>
                       </td>
 
                       <td className="px-4 py-3">
@@ -284,6 +395,30 @@ export function AssessmentTable({
 
                       <td className="whitespace-nowrap px-4 py-3">
                         <AssignmentCell assignment={row.assignment} />
+                      </td>
+
+                      {/*
+                        Two date columns, not three. `created_at` is on the details line under the
+                        title instead: it is the least useful of the three at a glance (an
+                        assessment's *draft* date rarely answers a question someone is scanning a
+                        table for), and a fifth data column pushes the actions off a laptop screen.
+                        All three remain filterable and two are sortable.
+                      */}
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <DateCell
+                          value={row.published_at}
+                          emptyLabel="Never"
+                          title={
+                            row.first_published_at !== null &&
+                            row.first_published_at !== row.published_at
+                              ? `First published ${formatDate(row.first_published_at)}`
+                              : undefined
+                          }
+                        />
+                      </td>
+
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <DateCell value={row.updated_at} emptyLabel="—" />
                       </td>
 
                       <td className="px-4 py-3 text-right">
@@ -343,6 +478,29 @@ export function AssessmentTable({
                               <Archive className="size-4" aria-hidden="true" />
                             </Button>
                           )}
+                          {/*
+                            **Disabled rather than hidden when the delete is blocked.** A missing
+                            button is indistinguishable from a UI bug, and the administrator is left
+                            guessing; a disabled one with the server's own reason in its tooltip
+                            answers "why can't I remove this?" without them having to try.
+                          */}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={!row.can_delete}
+                            aria-label={`Delete ${row.title}`}
+                            title={
+                              row.can_delete
+                                ? 'Delete permanently'
+                                : (row.delete_blocked_reason ?? 'This assessment cannot be deleted.')
+                            }
+                            onClick={() => onDelete(row)}
+                          >
+                            <Trash2
+                              className={cn('size-4', row.can_delete && 'text-destructive')}
+                              aria-hidden="true"
+                            />
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -424,6 +582,53 @@ function VersionList({ versions }: { versions: AssessmentRow['versions'] }) {
       ) : null}
     </div>
   );
+}
+
+/**
+ * A date, or an honest word for its absence.
+ *
+ * **"Never" and "—" are different claims and get different words.** A null `published_at` means the
+ * assessment has never been published, which is a fact worth stating; a null `updated_at` would
+ * mean the row is missing data. Printing an em dash for both would make the first look like a
+ * rendering gap.
+ *
+ * The absolute date is the `title`, so the relative one ("3 days ago") stays scannable without
+ * losing the precision someone auditing a rollout actually needs.
+ */
+function DateCell({
+  value,
+  emptyLabel,
+  title,
+}: {
+  value: string | null;
+  emptyLabel: string;
+  title?: string | undefined;
+}) {
+  if (value === null) {
+    return <span className="text-xs text-muted-foreground/60">{emptyLabel}</span>;
+  }
+
+  return (
+    <span
+      className="text-sm text-foreground/80"
+      title={title ?? new Date(value).toLocaleString()}
+    >
+      {formatDate(value)}
+    </span>
+  );
+}
+
+/** `26 Jul 2026` — unambiguous in every locale, unlike a numeric day/month order. */
+function formatDate(value: string | null): string {
+  if (value === null) {
+    return '—';
+  }
+
+  return new Date(value).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
 }
 
 function AssignmentCell({ assignment }: { assignment: AssessmentRow['assignment'] }) {

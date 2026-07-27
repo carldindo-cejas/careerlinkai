@@ -16,6 +16,7 @@ import type {
 export const platformAdminKeys = {
   dashboard: ['admin', 'dashboard'] as const,
   auditLogs: (filters: AuditLogFilters) => ['admin', 'audit-logs', filters] as const,
+  auditFilterOptions: ['admin', 'audit-logs', 'filter-options'] as const,
   counselors: (params: Record<string, unknown>) => ['admin', 'counselors', params] as const,
   counselorStudents: (id: string) => ['admin', 'counselors', id, 'students'] as const,
 };
@@ -34,6 +35,48 @@ export function useAuditLogs(filters: AuditLogFilters) {
     // Keep the previous page on screen while the next one loads — paging a table that
     // blanks out on every click reads as flicker, not progress.
     placeholderData: (previous) => previous,
+  });
+}
+
+/**
+ * The filter dropdowns' vocabulary — the modules and actions this deployment has actually recorded.
+ *
+ * Cached hard: the set changes only when a kind of action happens for the *first* time, and
+ * re-fetching it alongside every page of rows would be two `DISTINCT` scans per keystroke in the
+ * search box.
+ */
+export function useAuditFilterOptions() {
+  return useQuery({
+    queryKey: platformAdminKeys.auditFilterOptions,
+    queryFn: () => platformApi.auditFilterOptions(),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * Export the filtered set as CSV.
+ *
+ * A mutation rather than a query because it is an *act* with a side effect — a file lands in the
+ * user's downloads — and firing that from a cache-managed query would mean a refocus could
+ * re-download it. The blob is fetched through the authenticated client (a plain `<a href>` carries
+ * no bearer token) and handed to the browser via an object URL, revoked immediately after.
+ */
+export function useExportAuditLogs() {
+  return useMutation({
+    mutationFn: async (filters: AuditLogFilters) => {
+      const { blob, filename, truncated, rowCount } = await platformApi.exportAuditLogs(filters);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      return { truncated, rowCount };
+    },
   });
 }
 

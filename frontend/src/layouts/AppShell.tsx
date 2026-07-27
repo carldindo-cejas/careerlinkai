@@ -24,6 +24,16 @@ export interface AppShellProps {
   /** Extra chrome next to the breadcrumb — the student shell shows the joined class here. */
   headerBadge?: ReactNode;
   /**
+   * A full-width strip between the top bar and the page, on **every** route in this shell.
+   *
+   * The student shell puts its profiling warning here (v1.6). It belongs to the layout rather than
+   * to a page because the thing it warns about — recommendations being unavailable — is reachable
+   * from every destination, and a warning that only appeared on the dashboard would be invisible to
+   * the student who goes straight to Assessments. Renders nothing when the banner has nothing to
+   * say, so no shell pays for it in layout.
+   */
+  banner?: ReactNode;
+  /**
    * Runs after sign-out settles. The student shell clears the joined-class context here
    * so the next student on a shared lab machine never sees the last one's class.
    */
@@ -37,7 +47,7 @@ export interface AppShellProps {
  * CounselorLayout and StudentLayout compose this; they differ only in title, navigation
  * and the small role-specific chrome passed through props.
  */
-export function AppShell({ title, nav, headerBadge, onSignedOut }: AppShellProps) {
+export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppShellProps) {
   const user = useAuthStore((state) => state.user);
   const logout = useLogout();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -111,6 +121,10 @@ export function AppShell({ title, nav, headerBadge, onSignedOut }: AppShellProps
             </div>
           </div>
         </header>
+
+        {/* Full-bleed, directly under the sticky top bar and above the content column — so it
+            reads as a property of the session rather than as the first card on a page. */}
+        {banner}
 
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">
           <Outlet />

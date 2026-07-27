@@ -160,6 +160,63 @@ gate(
   'Add [triggers] crons = ["0 3 * * *"] per scope, plus the scheduled handler in src/index.ts.',
 );
 
+/**
+ * **Producer/consumer parity in every profile that runs a live Worker.**
+ *
+ * This gate exists because of a real, shipped, user-visible outage rather than as a hygiene rule.
+ * A `[[queues.producers]]` entry with no matching `[[queues.consumers]]` is not a configuration
+ * error at any layer that reports errors: `wrangler dev` boots, `QUEUE_AI.send()` resolves
+ * successfully, and the message is simply never delivered to anyone. Nothing throws and nothing
+ * logs. The §31 AI generation flow ran on that config for an entire phase — every request
+ * accepted, every job discarded, the status poll answering PENDING forever — because `npm run dev`
+ * booted `wrangler.test.toml`, which is producer-only by design.
+ *
+ * `wrangler.test.toml` is exempt, and only it: the Vitest pool delivers no queue messages at all,
+ * so its tests invoke `worker.queue(batch, env)` directly and a consumer block there would
+ * describe a loop that never runs.
+ */
+function queueNames(content, kind) {
+  const names = [];
+  let inBlock = false;
+
+  for (const line of content.split(/\r?\n/)) {
+    const header = /^\s*\[\[(?:env\.[a-z]+\.)?queues\.(producers|consumers)\]\]/.exec(line);
+
+    if (header !== null) {
+      inBlock = header[1] === kind;
+      continue;
+    }
+
+    if (/^\s*\[/.test(line)) {
+      inBlock = false;
+      continue;
+    }
+
+    const queue = /^\s*queue\s*=\s*"([^"]+)"/.exec(line);
+
+    if (inBlock && queue !== null) {
+      names.push(queue[1]);
+    }
+  }
+
+  return names;
+}
+
+for (const file of ['wrangler.toml', 'wrangler.local.toml', 'wrangler.dev.toml']) {
+  const content = readFileSync(join(backendDir, file), 'utf8');
+  const produced = new Set(queueNames(content, 'producers'));
+  const consumed = new Set(queueNames(content, 'consumers'));
+  const orphaned = [...produced].filter((queue) => !consumed.has(queue));
+
+  gate(
+    `${file}: every produced queue has a consumer (a producer-only queue silently drops jobs)`,
+    produced.size > 0 && orphaned.length === 0,
+    produced.size === 0
+      ? 'No [[queues.producers]] found — has this profile lost its queue bindings?'
+      : `No [[queues.consumers]] for: ${orphaned.join(', ')}. send() will resolve and the message will never be delivered; a queued job's status poll then hangs forever.`,
+  );
+}
+
 // --- Gate 2: the DO boundary --------------------------------------------------------------
 
 console.log('\nSource gates (src/):');

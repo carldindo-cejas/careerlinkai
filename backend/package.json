@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --config wrangler.test.toml",
+    "dev": "wrangler dev --config wrangler.local.toml",
     "dev:remote": "wrangler dev --config wrangler.dev.toml",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production",

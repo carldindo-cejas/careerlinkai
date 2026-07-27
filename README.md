@@ -39,7 +39,8 @@ careerlinkai_v1/
 │   ├── seeds/               # Staff, academic catalog, AI policy
 │   ├── test/                # Vitest (@cloudflare/vitest-pool-workers)
 │   ├── wrangler.toml        # Deploy config — staging + production environments
-│   ├── wrangler.test.toml   # Hermetic offline config (no AI/Vectorize) — tests + `npm run dev`
+│   ├── wrangler.test.toml   # Hermetic config for the SUITE only (no AI/Vectorize, no consumers)
+│   ├── wrangler.local.toml  # Offline dev — `npm run dev`. Same, but WITH queue consumers
 │   └── wrangler.dev.toml    # Mixed-mode dev — local storage + REAL AI/Vectorize (staging index)
 ├── frontend/                # React 19 + Vite
 ├── scripts/                 # walkthrough.mjs (end-to-end browser run), bootstrap-staff.mjs

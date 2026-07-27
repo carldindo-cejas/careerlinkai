@@ -9,7 +9,11 @@ import type {
   StudentProfile,
 } from '@/db/schema';
 import type { ScoredDimension } from '@/lib/scoring';
-import type { AssessmentListRow } from '@/modules/assessment/assessment-admin-service';
+import {
+  assessmentDates,
+  type AssessmentListRow,
+} from '@/modules/assessment/assessment-admin-service';
+import { describeBlockers } from '@/modules/assessment/assessment-builder-service';
 import type {
   AssignmentView,
   AttemptWithContent,
@@ -266,8 +270,39 @@ export function serializeAssessmentRow(row: AssessmentListRow) {
     },
     /** Permanently false for RIASEC and SCCT (§5) — the UI mirrors the rule it cannot enforce. */
     ai_generatable: row.template.category === 'CUSTOM',
-    created_at: row.template.createdAt,
-    updated_at: row.template.updatedAt,
+    /**
+     * Whether Delete is offered, and the sentence to show when it is not (v1.6).
+     *
+     * The reason travels with the flag rather than being reconstructed client-side, so the disabled
+     * button's tooltip and the 422 the endpoint would answer with say the same thing. A UI that
+     * explained the refusal in its own words would eventually explain it differently.
+     */
+    can_delete: row.deletability.canDelete,
+    delete_blockers: row.deletability.blockers,
+    delete_blocked_reason: row.deletability.canDelete ? null : describeBlockers(row.deletability),
+    /** Quoted back in the confirmation dialog — a refusal with no number is a dead end. */
+    response_count: row.deletability.attemptCount,
+    active_assignment_count: row.deletability.activeAssignmentCount,
+    ...serializeAssessmentDates(row),
+  };
+}
+
+/**
+ * The three dates the administrator's table shows and filters on (v1.6).
+ *
+ * `published_at` is **not** a template column — publishing happens to a version — so it is derived
+ * from the versions this row already carries. `first_published_at` rides along because "in service
+ * since" and "last republished" are different questions and a single date would answer whichever
+ * one the reader assumed.
+ */
+export function serializeAssessmentDates(row: AssessmentListRow) {
+  const dates = assessmentDates(row);
+
+  return {
+    created_at: dates.createdAt,
+    updated_at: dates.updatedAt,
+    published_at: dates.publishedAt,
+    first_published_at: dates.firstPublishedAt,
   };
 }
 
@@ -327,6 +362,42 @@ export function serializeTemplate(
 }
 
 /**
+ * The **profiling** fields a student must supply before the recommendation features mean anything
+ * (prompt-driven, v1.6) — what the persistent dashboard banner is computed from.
+ *
+ * This is deliberately a **superset** of `is_complete_for_recommendations`, and the two are not
+ * redundant. That flag answers a question about the *engine*: strand and GWA are the two inputs §27
+ * cannot run without, and it has always meant exactly that. This answers a question about the
+ * *student*: what is still missing from the profile they were asked to complete. Grade level is
+ * required here and not there because §27 does not read it while the counselor's roster and every
+ * result export do — a profile without it is incomplete even though the engine would tolerate it.
+ *
+ * Collapsing the two would mean either loosening the engine's precondition or telling a student
+ * their profile is incomplete for a reason that is not true. Two questions, two answers.
+ *
+ * `label` travels with each field so the banner can name what is missing in the student's words
+ * ("Academic strand") rather than in the column's ("strand"), from one definition rather than a
+ * lookup table on each side of the wire.
+ */
+const REQUIRED_PROFILING_FIELDS = [
+  { field: 'strand', label: 'Academic track / strand' },
+  { field: 'grade_level', label: 'Grade level' },
+  { field: 'gwa', label: 'General weighted average' },
+] as const;
+
+function missingProfiling(profile: StudentProfile): { field: string; label: string }[] {
+  const present: Record<string, unknown> = {
+    strand: profile.strand,
+    grade_level: profile.gradeLevel,
+    gwa: profile.gwa,
+  };
+
+  return REQUIRED_PROFILING_FIELDS.filter(
+    ({ field }) => present[field] === null || present[field] === undefined,
+  ).map(({ field, label }) => ({ field, label }));
+}
+
+/**
  * The §27 inputs a student profile still needs (`docs/api`).
  *
  * `strand` and `gwa` are the two the engine cannot do without — strand gates the alignment
@@ -342,6 +413,8 @@ export function serializeStudentProfile(profile: StudentProfile) {
   if (profile.gwa === null) {
     missing.push('gwa');
   }
+
+  const missingProfilingFields = missingProfiling(profile);
 
   return {
     id: profile.id,
@@ -359,6 +432,12 @@ export function serializeStudentProfile(profile: StudentProfile) {
     guardian_contact: profile.guardianContact,
     is_complete_for_recommendations: missing.length === 0,
     missing_for_recommendations: missing,
+    /** The banner's whole input (v1.6) — see `REQUIRED_PROFILING_FIELDS` on why this is broader. */
+    profiling: {
+      is_complete: missingProfilingFields.length === 0,
+      missing: missingProfilingFields,
+      required_fields: REQUIRED_PROFILING_FIELDS.map(({ field }) => field),
+    },
   };
 }
 
@@ -429,5 +508,7 @@ export function serializeVersionSummary(version: AssessmentVersion) {
     duration_minutes: version.durationMinutes,
     scoring_algorithm: version.scoringConfig.algorithm,
     created_at: version.createdAt,
+    /** Migration 0016. NULL for a draft, and for a version archived before it ever published. */
+    published_at: version.publishedAt,
   };
 }

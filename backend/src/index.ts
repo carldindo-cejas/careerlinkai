@@ -116,6 +116,7 @@ export default {
         message: 'Nightly cleanup complete.',
         expired_tokens: result.expiredTokens,
         stale_reset_tokens: result.staleResetTokens,
+        stalled_ai_requests: result.stalledAiRequests,
       }),
     );
   },

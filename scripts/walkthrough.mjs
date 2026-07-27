@@ -27,9 +27,11 @@
  *          --password '<the temp password>'
  *
  *  Against LOCAL:
- *     1. cd backend && npx wrangler dev --config wrangler.test.toml --port 8787
- *        (the *test* config: ~3s boot, fully offline — it drops the [ai] and [[vectorize]]
- *         bindings, which have no local emulation and always dial out to Cloudflare.)
+ *     1. cd backend && npm run dev            (wrangler.local.toml, port 8787)
+ *        (~3s boot, fully offline — it drops the [ai] and [[vectorize]] bindings, which have no
+ *         local emulation and always dial out to Cloudflare, but it DOES run the queue consumers.
+ *         Do not substitute `--config wrangler.test.toml` here: that is the suite's config and has
+ *         producers with no consumers, so every queued job is silently discarded.)
  *        NOTE: the offline config has no AI. To drive the Phase 5 RAG/generation legs locally,
  *        boot the mixed-mode config instead — `npm run dev:remote` (wrangler.dev.toml): local
  *        storage but real Workers AI + the staging Vectorize index. Needs `wrangler login`.

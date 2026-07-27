@@ -16,7 +16,7 @@ import { StatCard } from '@/components/dashboard/StatCard';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { useAssignments, useProfile, useResults } from '@/features/student/hooks/useAssessment';
+import { useAssignments, useResults } from '@/features/student/hooks/useAssessment';
 import { useStudentDashboard } from '@/features/student/hooks/useDashboard';
 import { useMyRecommendations } from '@/features/student/hooks/useRecommendations';
 import { paths } from '@/routes/paths';
@@ -37,7 +37,6 @@ export function StudentDashboardPage() {
 
   const { data: assignments, isError: assignmentsFailed, error: assignmentsError } = useAssignments();
   const { data: results } = useResults();
-  const { data: profile } = useProfile();
   // Phase 6: the aggregate view — used for the one fact the other queries cannot answer,
   // "do I have recommendations waiting?" (§27 needs both RIASEC and SCCT before any exist).
   const { data: dashboard } = useStudentDashboard();
@@ -66,15 +65,13 @@ export function StudentDashboardPage() {
         ) : null}
       </div>
 
-      {/* §27 consumes strand and GWA. Naming the consequence beats "complete your profile". */}
-      {profile && !profile.is_complete_for_recommendations ? (
-        <Alert tone="warning">
-          We need your strand and general weighted average before we can recommend a program.{' '}
-          <button className="font-medium underline" onClick={() => navigate(paths.studentProfile)}>
-            Complete your profile
-          </button>
-        </Alert>
-      ) : null}
+      {/*
+        The profiling warning used to live here. It moved to `ProfilingBanner` in the shell (v1.6),
+        which renders it above the content column on **every** student route — because the thing it
+        warns about, recommendations being unavailable, is reachable from all of them, and a student
+        who lands on Assessments and never opens the dashboard would never have seen this one.
+        Rendering it in both places would show the same warning twice on this page.
+      */}
 
       {/* KPI row — real counts, no teasers. */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

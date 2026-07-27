@@ -11,6 +11,7 @@ import { AssessmentAdminService } from '@/modules/assessment/assessment-admin-se
 import { AssessmentAttemptService } from '@/modules/assessment/assessment-attempt-service';
 import {
   AssessmentBuilderService,
+  describeBlockers,
   type CreateQuestionInput,
 } from '@/modules/assessment/assessment-builder-service';
 import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
@@ -21,6 +22,7 @@ import {
   createTemplateSchema,
   createVersionSchema,
   listAssessmentsQuerySchema,
+  reorderQuestionsSchema,
   updateQuestionSchema,
   updateTemplateSchema,
 } from '@/modules/assessment/schemas';
@@ -123,6 +125,12 @@ builderRoutes.get('/assessments', async (c) => {
     'assessment_type_id',
     'status',
     'assignment',
+    'created_from',
+    'created_to',
+    'updated_from',
+    'updated_to',
+    'published_from',
+    'published_to',
     'page',
     'per_page',
     'sort',
@@ -156,6 +164,29 @@ async function authorizedVersion(
   authorizeManageTemplate(user, template);
 
   return { version, template };
+}
+
+/**
+ * The same, one link further down: question → version → template → ownership.
+ *
+ * Every question route needs exactly this chain, and writing it out four times is how one of them
+ * eventually stops running `authorizeManageTemplate` — the check that keeps a counselor from
+ * reaching another counselor's private instrument by question id.
+ */
+async function authorizedQuestion(
+  builder: AssessmentBuilderService,
+  user: ReturnType<typeof requireUser>,
+  questionId: string,
+) {
+  const question = await builder.findQuestion(questionId);
+
+  if (question === undefined) {
+    throw ApiError.notFound('Question not found.');
+  }
+
+  await authorizedVersion(builder, user, question.assessmentVersionId);
+
+  return question;
 }
 
 // --- Templates -------------------------------------------------------------------------------
@@ -294,6 +325,68 @@ builderRoutes.post('/assessment-templates/:templateId/restore', async (c) => {
 
   return c.json(
     successEnvelope(serializeAssessmentRow(await admin.row(restored)), 'Assessment restored.'),
+  );
+});
+
+/**
+ * `DELETE /assessment-templates/{id}` — the soft delete (prompt-driven, v1.6).
+ *
+ * **The two guards are re-checked inside the Service**, not here, and the route is thin on purpose:
+ * the list ships a `can_delete` flag so the confirmation dialog can explain itself, but that flag is
+ * a snapshot and a student can start an attempt between the page load and the click. A refusal is a
+ * **422 carrying the reason**, not a 403 — the caller is entirely permitted to delete assessments;
+ * this particular one has responses or open assignments, which is a fact about the data.
+ *
+ * The client-side "type the assessment's name to enable the button" gate is deliberately **not**
+ * mirrored as a server-side requirement. It is a speed bump against a misplaced click, not an
+ * authorization check, and turning it into one would mean the API's contract included a string the
+ * caller already sent as a URL parameter.
+ */
+builderRoutes.delete('/assessment-templates/:templateId', async (c) => {
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
+  const user = requireUser(c);
+  const template = await builder.findTemplate(c.req.param('templateId'));
+
+  authorizeManageTemplate(user, template);
+
+  const deleted = await builder.deleteTemplate(user, template);
+
+  return c.json(
+    successEnvelope(
+      { id: deleted.id, title: deleted.title, deleted_at: deleted.deletedAt },
+      `Deleted “${deleted.title}”.`,
+    ),
+  );
+});
+
+/**
+ * `GET /assessment-templates/{id}/deletability` — "may this be deleted, and if not, why?"
+ *
+ * The list already carries this per row, so the dialog does not need a request to open. This exists
+ * for the one case the list cannot cover: **re-checking at the moment of confirmation**, after the
+ * administrator has typed the name, so a dialog that has been open while a class started the
+ * assessment says so before the delete rather than after it.
+ */
+builderRoutes.get('/assessment-templates/:templateId/deletability', async (c) => {
+  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const template = await builder.findTemplate(c.req.param('templateId'));
+
+  authorizeManageTemplate(requireUser(c), template);
+
+  const deletability = await builder.deletability(template.id);
+
+  return c.json(
+    successEnvelope(
+      {
+        can_delete: deletability.canDelete,
+        blockers: deletability.blockers,
+        reason: deletability.canDelete ? null : describeBlockers(deletability),
+        response_count: deletability.attemptCount,
+        active_assignment_count: deletability.activeAssignmentCount,
+      },
+      'Delete eligibility retrieved.',
+    ),
   );
 });
 
@@ -512,31 +605,96 @@ builderRoutes.post('/assessment-versions/:versionId/publish', async (c) => {
 
 // --- Questions + mappings (the review acts) ----------------------------------------------------
 
+/**
+ * `PATCH /assessment-questions/{id}` — the builder's auto-save.
+ *
+ * Every field is optional, so the editor sends only what changed; the response carries the whole
+ * question back in the author's shape (`serializeAuthorQuestion`) so an optimistic UI can reconcile
+ * against the server's answer rather than against what it hoped it wrote. DRAFT-only — enforced in
+ * the Service, where invariant 1 lives.
+ */
 builderRoutes.patch('/assessment-questions/:questionId', async (c) => {
   const input = await parseBody(c, updateQuestionSchema);
   const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
   const user = requireUser(c);
 
   // Authorize via the question's own chain: question → version → template → ownership.
-  const question = await builder.findQuestion(c.req.param('questionId'));
+  const question = await authorizedQuestion(builder, user, c.req.param('questionId'));
 
-  if (question === undefined) {
-    throw ApiError.notFound('Question not found.');
-  }
-
-  await authorizedVersion(builder, user, question.assessmentVersionId);
-
-  const updated = await builder.updateQuestion(question.id, {
-    questionText: input.question_text,
-    required: input.required,
+  const updated = await builder.updateQuestion(user, question.id, {
+    ...(input.question_text !== undefined ? { questionText: input.question_text } : {}),
+    ...(input.question_type !== undefined ? { questionType: input.question_type } : {}),
+    ...(input.section_label !== undefined ? { sectionLabel: input.section_label } : {}),
+    ...(input.required !== undefined ? { required: input.required } : {}),
+    ...(input.options !== undefined ? { options: input.options } : {}),
+    ...(input.dimension_codes !== undefined ? { dimensionCodes: input.dimension_codes } : {}),
   });
+
+  const content = await builder.questionContent(updated.id);
 
   return c.json(
     successEnvelope(
-      { id: updated.id, question_text: updated.questionText, required: updated.required },
+      serializeAuthorQuestion(updated, content.options, content.mappings),
       'Question updated.',
     ),
   );
+});
+
+/**
+ * `POST /assessment-questions/{id}/duplicate` — copy an item, appended at the end of its version.
+ *
+ * The copy is MANUAL and its mappings are confirmed even when the original was AI-generated: making
+ * a copy is an authoring act by the person doing it, and inheriting `AI_GENERATED` would attribute
+ * their work to the model (see the Service).
+ */
+builderRoutes.post('/assessment-questions/:questionId/duplicate', async (c) => {
+  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const user = requireUser(c);
+  const question = await authorizedQuestion(builder, user, c.req.param('questionId'));
+
+  const duplicateId = await builder.duplicateQuestion(user, question.id);
+  const duplicate = await builder.findQuestion(duplicateId);
+
+  if (duplicate === undefined) {
+    throw ApiError.notFound('Question not found.');
+  }
+
+  const content = await builder.questionContent(duplicateId);
+
+  return c.json(
+    successEnvelope(
+      serializeAuthorQuestion(duplicate, content.options, content.mappings),
+      'Question duplicated.',
+    ),
+    201,
+  );
+});
+
+/** `DELETE /assessment-questions/{id}` — DRAFT only; the remaining items are renumbered with it. */
+builderRoutes.delete('/assessment-questions/:questionId', async (c) => {
+  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const user = requireUser(c);
+  const question = await authorizedQuestion(builder, user, c.req.param('questionId'));
+
+  await builder.deleteQuestion(question.id);
+
+  return c.json(successEnvelope({ id: question.id }, 'Question removed.'));
+});
+
+/**
+ * `PUT /assessment-versions/{id}/question-order` — the drag-and-drop save.
+ *
+ * A `PUT` rather than a `PATCH`, because the body is the complete order rather than a change to it:
+ * the request replaces the sequence, and sending it twice is the same as sending it once.
+ */
+builderRoutes.put('/assessment-versions/:versionId/question-order', async (c) => {
+  const input = await parseBody(c, reorderQuestionsSchema);
+  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const { version } = await authorizedVersion(builder, requireUser(c), c.req.param('versionId'));
+
+  await builder.reorderQuestions(version.id, input.question_ids);
+
+  return c.json(successEnvelope({ question_ids: input.question_ids }, 'Question order saved.'));
 });
 
 /**

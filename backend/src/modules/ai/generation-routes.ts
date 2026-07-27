@@ -10,6 +10,7 @@ import {
 import { assessmentGenerationMaxQuestions } from '@/lib/config';
 import { uuid } from '@/lib/crypto';
 import { successEnvelope, ApiError } from '@/lib/envelope';
+import { describeError, pipelineLogger } from '@/lib/logger';
 import { parseBody } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
@@ -92,22 +93,68 @@ async function enqueueGeneration(
   }
 
   /**
-   * The id is allocated HERE and travels with the job, so the `ai_requests` row the gateway
-   * eventually writes is the row this response already told the client to poll. Until the
-   * job runs, the id resolves to PENDING.
+   * The id is allocated HERE and travels with the job, so the `ai_requests` row is the row this
+   * response tells the client to poll.
+   *
+   * **The row is written before the message is sent** (migration 0015). It used to be written by
+   * the gateway, at the far end of a queue hop — which meant that between the 202 and the job
+   * actually running there was no row at all, and "queued", "running", "never delivered" and
+   * "bogus id" were one indistinguishable PENDING that a lost message made permanent. Reserving
+   * first inverts that: the row exists before anything can go wrong, and every later stage moves
+   * a row that is already there.
    */
   const aiRequestId = uuid();
+  const logger = pipelineLogger('assessment_generation', {
+    ai_request_id: aiRequestId,
+    correlation_id: c.get('correlationId'),
+    assessment_version_id: version.id,
+    user_id: user.id,
+    mode,
+  });
 
-  await c.env.QUEUE_AI.send({
-    type: 'GenerateAssessmentDraft',
-    payload: {
-      aiRequestId,
-      versionId: version.id,
-      userId: user.id,
+  logger.info('request_received', { source_chars: sourceText.trim().length });
+
+  await aiGatewayFrom(db, c.env).reserve({
+    id: aiRequestId,
+    userId: user.id,
+    requestType: 'ASSESSMENT_GENERATION',
+    inputContext: {
+      assessment_version_id: version.id,
       mode,
-      sourceText: sourceText.trim(),
+      source_chars: sourceText.trim().length,
+      correlation_id: c.get('correlationId'),
     },
   });
+
+  try {
+    await c.env.QUEUE_AI.send({
+      type: 'GenerateAssessmentDraft',
+      payload: {
+        aiRequestId,
+        versionId: version.id,
+        userId: user.id,
+        mode,
+        sourceText: sourceText.trim(),
+      },
+    });
+  } catch (error) {
+    /**
+     * The producer itself rejected the message (binding missing, queue over quota). The reserved
+     * row must not be left PENDING for a job that provably was never queued — that is precisely
+     * the stuck state this whole change exists to remove — so it is terminated here and the
+     * caller is told now rather than being sent away to poll a corpse for ten minutes.
+     */
+    const reason = `QUEUE_UNAVAILABLE: the generation job could not be queued — ${describeError(error)}`;
+
+    logger.error('enqueue_failed', { failure_reason: reason });
+    await aiGatewayFrom(db, c.env).failReserved(aiRequestId, reason);
+
+    throw ApiError.badGateway(
+      'The generation job could not be queued. Nothing was drafted — please try again.',
+    );
+  }
+
+  logger.info('enqueued');
 
   return c.json(
     successEnvelope(
@@ -133,10 +180,13 @@ generationRoutes.post('/assessment-versions/:versionId/ai-generate/description',
 });
 
 /**
- * `GET /ai/requests/{id}/status` (§20) — the poll. The status is *derived* (see
- * `AssessmentGenerationService.statusFor`): PENDING until the job's row exists, then the
- * row's own outcome, then DRAFTED once questions reference it. A row that is not the
- * caller's reports PENDING — indistinguishable from an id that never existed.
+ * `GET /ai/requests/{id}/status` (§20) — the poll.
+ *
+ * PENDING → PROCESSING → DRAFTED | VALIDATION_FAILED | FAILED, read from the `ai_requests` row
+ * the enqueue endpoint reserved (see `AssessmentGenerationService.statusFor`). **Every one of
+ * those transitions terminates**, including the case where the queue never delivers the message:
+ * a row that has been non-terminal past the deadline is reported — and reaped — as FAILED. A row
+ * that is not the caller's reports PENDING, indistinguishable from an id that never existed.
  */
 generationRoutes.get('/ai/requests/:aiRequestId/status', async (c) => {
   const user = requireUser(c);

@@ -1,6 +1,7 @@
 import { httpClient, unwrap } from '@/services/httpClient';
 import type { ApiSuccess } from '@/types/api';
 import type {
+  AssessmentDeletability,
   AssessmentFormPayload,
   AssessmentListQuery,
   AssessmentRow,
@@ -25,14 +26,11 @@ import type { Paginated } from '@/types/class';
 function params(query: AssessmentListQuery): Record<string, string | number> {
   const out: Record<string, string | number> = {};
 
-  if (query.search) out.search = query.search;
-  if (query.assessment_type_id) out.assessment_type_id = query.assessment_type_id;
-  if (query.status) out.status = query.status;
-  if (query.assignment) out.assignment = query.assignment;
-  if (query.page) out.page = query.page;
-  if (query.per_page) out.per_page = query.per_page;
-  if (query.sort) out.sort = query.sort;
-  if (query.direction) out.direction = query.direction;
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') {
+      out[key] = value as string | number;
+    }
+  }
 
   return out;
 }
@@ -98,6 +96,35 @@ export const assessmentAdminApi = {
   restore(id: string): Promise<AssessmentRow> {
     return unwrap(
       httpClient.post<ApiSuccess<AssessmentRow>>(`/assessment-templates/${id}/restore`),
+    );
+  },
+
+  /**
+   * Delete — a **soft** delete on the server (§12: `assessment_templates` is on the soft-delete
+   * list, and every FK beneath it cascades, so a hard delete would take the authoring history with
+   * it). Refused with a 422 and a reason when the assessment has student responses or open
+   * assignments; the list's `can_delete` is a snapshot, and this is the authoritative answer.
+   */
+  remove(id: string): Promise<{ id: string; title: string; deleted_at: string | null }> {
+    return unwrap(
+      httpClient.delete<ApiSuccess<{ id: string; title: string; deleted_at: string | null }>>(
+        `/assessment-templates/${id}`,
+      ),
+    );
+  },
+
+  /**
+   * Re-check eligibility at the moment of confirmation.
+   *
+   * The row already carries this, so the dialog opens without a request. This exists for the case
+   * the row cannot cover: a dialog left open while a class started the assessment must say so
+   * *before* the delete rather than after it.
+   */
+  deletability(id: string): Promise<AssessmentDeletability> {
+    return unwrap(
+      httpClient.get<ApiSuccess<AssessmentDeletability>>(
+        `/assessment-templates/${id}/deletability`,
+      ),
     );
   },
 

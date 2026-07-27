@@ -24,6 +24,34 @@ export interface BuilderVersionSummary {
   duration_minutes: number | null;
   scoring_algorithm: 'HOLLAND_CODE_TOP3' | 'WEIGHTED_COMPOSITE';
   created_at: string;
+  /** Migration 0016 — NULL for a draft, and for a version archived before it ever published. */
+  published_at: string | null;
+}
+
+/** The three item types the builder's type selector offers. */
+export type QuestionType = 'LIKERT' | 'MULTIPLE_CHOICE' | 'BOOLEAN';
+
+export interface QuestionOptionDraft {
+  label: string;
+  value: string;
+  score: number;
+}
+
+/**
+ * One auto-save. Every field is optional and the editor sends only what changed, so toggling
+ * Required is a two-field request rather than a round trip carrying the whole item back.
+ *
+ * `options` and `dimension_codes`, when present, are the **complete** new set — the server replaces
+ * rather than merges, because a diff would have to guess what a "changed" option is and would get
+ * it wrong for the case that matters: two options swapped, with different scores.
+ */
+export interface QuestionPatch {
+  question_text?: string;
+  question_type?: QuestionType;
+  section_label?: string | null;
+  required?: boolean;
+  options?: QuestionOptionDraft[];
+  dimension_codes?: string[];
 }
 
 export interface BuilderTemplate {
@@ -65,7 +93,7 @@ export interface AuthorMapping {
 export interface AuthorQuestion {
   id: string;
   question_text: string;
-  question_type: 'LIKERT' | 'MULTIPLE_CHOICE' | 'BOOLEAN';
+  question_type: QuestionType;
   section_label: string | null;
   order_number: number;
   required: boolean;
@@ -81,7 +109,28 @@ export interface VersionReview extends BuilderVersionSummary {
   questions: AuthorQuestion[];
 }
 
-export type GenerationStatus = 'PENDING' | 'FAILED' | 'VALIDATION_FAILED' | 'DRAFTED';
+/**
+ * The §20 poll's states. `PENDING` (queued) and `PROCESSING` (a consumer has it) are the two
+ * non-terminal ones; the other three end the poll.
+ *
+ * `PROCESSING` was added with the backend's `ai_requests` lifecycle: the row is now written at
+ * enqueue time and advanced by the job, so the client can tell "waiting in the queue" from "the
+ * model is working" — and, more importantly, so a request that stalls is a state the server can
+ * time out and report as FAILED instead of an indefinite PENDING.
+ */
+export type GenerationStatus =
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'FAILED'
+  | 'VALIDATION_FAILED'
+  | 'DRAFTED';
+
+/** The two states that mean "keep polling". Everything else is final. */
+export const GENERATION_IN_FLIGHT: readonly GenerationStatus[] = ['PENDING', 'PROCESSING'];
+
+export function isGenerationTerminal(status: GenerationStatus | undefined): boolean {
+  return status !== undefined && !GENERATION_IN_FLIGHT.includes(status);
+}
 
 export interface GenerationStatusResponse {
   ai_request_id: string;

@@ -64,6 +64,15 @@ id = "0000000000000000000000000000ffff"
 name = "AUTH_DO"
 class_name = "AuthGuardDO"
 
+# Producers only, and that is correct **for the suite**: the Vitest pool never delivers queue
+# messages, so tests drive `worker.queue(batch, env)` directly (see test/ai/queue-consumer.test.ts)
+# and a consumer block here would describe a loop that never runs.
+#
+# It is emphatically NOT correct for a `wrangler dev` session, where a producer with no consumer
+# silently swallows every message — `send()` resolves, nothing is delivered, nothing logs. That is
+# what left the §31 AI generation flow polling PENDING forever, because `npm run dev` used to boot
+# this file. **The dev loop now has its own config: `wrangler.local.toml`.** Do not point a `dev`
+# command back at this one.
 [[queues.producers]]
 binding = "QUEUE_DEFAULT"
 queue = "careerlinkai-default-queue"

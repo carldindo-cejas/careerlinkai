@@ -79,19 +79,64 @@ export interface AssessmentRow {
   } | null;
   assignment: AssignmentSummary;
   ai_generatable: boolean;
+  /**
+   * Whether Delete is offered, and — when it is not — the sentence to show (v1.6).
+   *
+   * The reason is computed server-side so the disabled button's tooltip and the 422 the endpoint
+   * would answer with say the same thing. A UI that phrased the refusal itself would eventually
+   * phrase it differently.
+   */
+  can_delete: boolean;
+  delete_blockers: ('HAS_RESPONSES' | 'HAS_ACTIVE_ASSIGNMENTS')[];
+  delete_blocked_reason: string | null;
+  response_count: number;
+  active_assignment_count: number;
   created_at: string;
   updated_at: string;
+  /**
+   * When this assessment last became available to students — the newest `published_at` across its
+   * versions. **NULL means never published**, which is a state rather than missing data.
+   */
+  published_at: string | null;
+  /** The first time any version published — "in service since", not "last republished". */
+  first_published_at: string | null;
 }
 
-export type AssessmentSort = 'title' | 'type' | 'status' | 'created_at' | 'updated_at';
+/** The live re-check the confirmation dialog runs before it lets the button fire. */
+export interface AssessmentDeletability {
+  can_delete: boolean;
+  blockers: ('HAS_RESPONSES' | 'HAS_ACTIVE_ASSIGNMENTS')[];
+  reason: string | null;
+  response_count: number;
+  active_assignment_count: number;
+}
+
+export type AssessmentSort =
+  | 'title'
+  | 'type'
+  | 'status'
+  | 'created_at'
+  | 'updated_at'
+  | 'published_at';
 export type AssessmentStatusFilter = 'PUBLISHED' | 'UNPUBLISHED' | 'ARCHIVED';
 export type AssessmentAssignmentFilter = 'GLOBAL' | 'CLASS' | 'UNASSIGNED';
+
+/** Which date the range picker is filtering on. Three separate server-side ranges back it. */
+export const ASSESSMENT_DATE_FIELDS = ['published_at', 'created_at', 'updated_at'] as const;
+export type AssessmentDateField = (typeof ASSESSMENT_DATE_FIELDS)[number];
 
 export interface AssessmentListQuery {
   search?: string | undefined;
   assessment_type_id?: string | undefined;
   status?: AssessmentStatusFilter | undefined;
   assignment?: AssessmentAssignmentFilter | undefined;
+  /** `YYYY-MM-DD`; the server snaps each bound to the right edge of its day. */
+  created_from?: string | undefined;
+  created_to?: string | undefined;
+  updated_from?: string | undefined;
+  updated_to?: string | undefined;
+  published_from?: string | undefined;
+  published_to?: string | undefined;
   page?: number | undefined;
   per_page?: number | undefined;
   sort?: AssessmentSort | undefined;

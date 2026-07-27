@@ -24,12 +24,42 @@ export interface NotificationList extends Paginated<AppNotification> {
   unread_count: number;
 }
 
+/**
+ * The action **groups** the viewer filters by (v1.6).
+ *
+ * Resolved on the server from an exhaustive `Record<AuditAction, …>`, and shipped on every row as
+ * `action_type`. This list is only the filter dropdown's vocabulary — the classification itself is
+ * deliberately not duplicated here, because a second copy of that map is a second copy that drifts.
+ */
+export const AUDIT_ACTION_TYPES = [
+  'CREATE',
+  'UPDATE',
+  'DELETE',
+  'ARCHIVE',
+  'RESTORE',
+  'PUBLISH',
+  'ASSIGN',
+  'SUBMIT',
+  'LOGIN',
+  'LOGOUT',
+  'OTHER',
+] as const;
+export type AuditActionType = (typeof AUDIT_ACTION_TYPES)[number];
+
+/** `system` is a real value: the rows §38 deliberately never resolves a user for. */
+export const AUDIT_ACTORS = ['admin', 'counselor', 'student', 'system'] as const;
+export type AuditActor = (typeof AUDIT_ACTORS)[number];
+
+export type AuditSort = 'created_at' | 'action' | 'module';
+
 export interface AuditLogEntry {
   id: string;
   user_id: string | null;
   /** Resolved for display; null for system actions and unresolved join attempts. */
   user_name: string | null;
+  user_role: string | null;
   action: string;
+  action_type: AuditActionType;
   module: string;
   target_type: string | null;
   target_id: string | null;
@@ -40,11 +70,28 @@ export interface AuditLogEntry {
 }
 
 export interface AuditLogFilters {
-  page?: number;
-  per_page?: number;
-  action?: string;
-  module?: string;
-  user_id?: string;
+  page?: number | undefined;
+  per_page?: number | undefined;
+  action?: string | undefined;
+  action_type?: AuditActionType | undefined;
+  module?: string | undefined;
+  user_id?: string | undefined;
+  actor?: AuditActor | undefined;
+  target_id?: string | undefined;
+  search?: string | undefined;
+  /** `YYYY-MM-DD` is accepted and snapped to the right edge of the day server-side. */
+  from?: string | undefined;
+  to?: string | undefined;
+  sort?: AuditSort | undefined;
+  direction?: 'asc' | 'desc' | undefined;
+}
+
+/** The vocabulary this deployment has actually recorded — what the two dropdowns offer. */
+export interface AuditFilterOptions {
+  modules: string[];
+  actions: string[];
+  action_types: AuditActionType[];
+  actors: AuditActor[];
 }
 
 // --- Dashboards (§54, pulled live) -------------------------------------------------------

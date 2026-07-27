@@ -106,4 +106,16 @@ export class ApiError extends Error {
   static tooManyRequests(errors: Record<string, string[]>, message = 'Validation failed.'): ApiError {
     return new ApiError(429, message, errors);
   }
+
+  /**
+   * 502 — a Cloudflare service the request depends on refused it (the Queues producer, so far).
+   *
+   * Distinct from the bare 500 `app.onError` produces for an unplanned throw: this one is
+   * *expected* in the sense that the code anticipated it, cleaned up after itself, and can
+   * honestly promise the caller that nothing was half-written. "Try again" is sound advice here
+   * and is not sound advice for an unknown 500.
+   */
+  static badGateway(message = 'An upstream service is unavailable.'): ApiError {
+    return new ApiError(502, message);
+  }
 }

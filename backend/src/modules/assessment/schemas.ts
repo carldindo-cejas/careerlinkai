@@ -141,8 +141,45 @@ export type UpdateTemplateInput = z.infer<typeof updateTemplateSchema>;
 // --- The administrator's assessment list (prompt-driven, v1.5) --------------------------------
 
 /** Sortable columns — an allow-list, so `?sort=` can never name an arbitrary column. */
-export const ASSESSMENT_SORTS = ['title', 'type', 'status', 'created_at', 'updated_at'] as const;
+export const ASSESSMENT_SORTS = [
+  'title',
+  'type',
+  'status',
+  'created_at',
+  'updated_at',
+  /** v1.6 — derived from the versions' `published_at`, not a column. See `AssessmentAdminService`. */
+  'published_at',
+] as const;
 export type AssessmentSort = (typeof ASSESSMENT_SORTS)[number];
+
+/**
+ * A date bound that accepts **either** a full ISO-8601 timestamp **or** a bare `YYYY-MM-DD`,
+ * normalizing the latter to the requested edge of that UTC day.
+ *
+ * The same shape the audit viewer settled on (`modules/platform/routes.ts`, M7), and for the same
+ * two reasons. A date picker emits `2026-03-01`, so requiring a timestamp would push the
+ * `T00:00:00Z` suffix into the frontend — one transcription per screen, each free to get it wrong.
+ * And a `to` bound naively read as midnight **excludes the whole day it names**, which is never what
+ * someone typing "to 1 March" meant; snapping it to `23:59:59.999` is what makes the range inclusive
+ * at both ends, as a UI labelled "from … to …" promises.
+ */
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function dateBound(edge: 'start' | 'end') {
+  return z
+    .string()
+    .trim()
+    .refine(
+      (value) => DATE_ONLY_PATTERN.test(value) || z.iso.datetime().safeParse(value).success,
+      { message: 'Use an ISO-8601 date (YYYY-MM-DD) or timestamp.' },
+    )
+    .transform((value) =>
+      DATE_ONLY_PATTERN.test(value)
+        ? `${value}${edge === 'start' ? 'T00:00:00.000Z' : 'T23:59:59.999Z'}`
+        : value,
+    )
+    .optional();
+}
 
 /**
  * The list's `Status` filter, which is **derived rather than stored**: an assessment is "Published"
@@ -160,6 +197,17 @@ export const listAssessmentsQuerySchema = z.object({
   assessment_type_id: z.string().uuid().optional(),
   status: z.enum(ASSESSMENT_STATUS_FILTERS).optional(),
   assignment: z.enum(ASSESSMENT_ASSIGNMENT_FILTERS).optional(),
+  /**
+   * The three date ranges (v1.6). Separate `_from`/`_to` pairs rather than one field plus a
+   * "which date?" selector, because they compose: "created in January but published in March" is a
+   * real question about an instrument that sat in review, and a single-axis filter cannot ask it.
+   */
+  created_from: dateBound('start'),
+  created_to: dateBound('end'),
+  updated_from: dateBound('start'),
+  updated_to: dateBound('end'),
+  published_from: dateBound('start'),
+  published_to: dateBound('end'),
   page: z.coerce.number().int().min(1).default(1),
   // Clamped at 100, as §20 clamps the catalog and the address hierarchy.
   per_page: z.coerce.number().int().min(1).max(100).default(20),
@@ -268,14 +316,62 @@ export const addQuestionsSchema = z
 
 export type AddQuestionsInput = z.infer<typeof addQuestionsSchema>;
 
+/**
+ * Editing one question in place — the v1.6 builder's auto-save.
+ *
+ * **Every field is optional and `.strict()` still applies**, which is exactly what an auto-save
+ * needs: the editor sends only what the author actually changed, so toggling Required is a
+ * two-field request rather than a round trip carrying the whole item back. `options` and
+ * `dimension_codes`, when present, are the *complete* new set — the service replaces rather than
+ * merges (see `updateQuestion` on why a diff would be ambiguous).
+ *
+ * `section_label` is `.nullable()` on purpose: an author clearing a section heading has to be able
+ * to say so, and under `.optional()` alone "absent" and "cleared" would be the same request.
+ */
 export const updateQuestionSchema = z
   .object({
     question_text: z.string().trim().min(1).max(1000).optional(),
+    question_type: z.enum(QUESTION_TYPES).optional(),
+    section_label: z.string().trim().max(100).nullable().optional(),
     required: z.boolean().optional(),
+    options: z
+      .array(
+        z
+          .object({
+            label: z.string().trim().min(1).max(200),
+            value: z.string().trim().min(1).max(200),
+            score: z.number().finite(),
+          })
+          .strict(),
+      )
+      .min(2, 'Every question needs at least 2 options.')
+      .max(20)
+      .optional(),
+    dimension_codes: z.array(z.string().trim().min(1)).max(6).optional(),
+  })
+  .strict()
+  .refine((input) => Object.keys(input).length > 0, {
+    message: 'Send at least one field to change.',
+  });
+
+export type UpdateQuestionInput = z.infer<typeof updateQuestionSchema>;
+
+/**
+ * The drag-and-drop save — **the whole order, never a delta**.
+ *
+ * A move-this-item-to-position-N request would need the server to reconcile it against an order the
+ * client may already have drifted from; sending the resulting sequence makes the request idempotent
+ * and its meaning independent of what the server currently holds. The service refuses a list that
+ * does not name every question in the version exactly once, so a partial save cannot silently
+ * reshuffle the items it forgot.
+ */
+export const reorderQuestionsSchema = z
+  .object({
+    question_ids: z.array(z.string().uuid()).min(1).max(200),
   })
   .strict();
 
-export type UpdateQuestionInput = z.infer<typeof updateQuestionSchema>;
+export type ReorderQuestionsInput = z.infer<typeof reorderQuestionsSchema>;
 
 /** §31 Mode A: the browser already extracted (the §33 utility, shared on purpose). */
 export const generateFromDocumentSchema = z

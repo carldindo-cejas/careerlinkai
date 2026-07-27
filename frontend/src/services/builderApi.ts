@@ -1,11 +1,15 @@
 import { httpClient, unwrap } from '@/services/httpClient';
 import type { ApiSuccess } from '@/types/api';
 import type {
+  AuthorQuestion,
   BuilderDimension,
   BuilderTemplate,
   BuilderVersionSummary,
   GenerationStatusResponse,
   PublishReadiness,
+  QuestionOptionDraft,
+  QuestionPatch,
+  QuestionType,
   VersionReview,
 } from '@/types/builder';
 
@@ -62,8 +66,10 @@ export const builderApi = {
     versionId: string,
     questions: {
       question_text: string;
-      question_type: 'LIKERT' | 'MULTIPLE_CHOICE' | 'BOOLEAN';
-      options: { label: string; value: string; score: number }[];
+      question_type: QuestionType;
+      section_label?: string | null;
+      required?: boolean;
+      options: QuestionOptionDraft[];
       dimension_codes: string[];
     }[],
   ): Promise<{ question_ids: string[] }> {
@@ -75,14 +81,39 @@ export const builderApi = {
     );
   },
 
-  updateQuestion(
-    questionId: string,
-    payload: { question_text?: string; required?: boolean },
-  ): Promise<{ id: string; question_text: string; required: boolean }> {
+  /**
+   * The builder's auto-save. Sends only the changed fields; the response is the whole question in
+   * the author's shape, so an optimistic UI reconciles against what the server actually wrote
+   * rather than against what it hoped it wrote.
+   */
+  updateQuestion(questionId: string, payload: QuestionPatch): Promise<AuthorQuestion> {
     return unwrap(
-      httpClient.patch<ApiSuccess<{ id: string; question_text: string; required: boolean }>>(
-        `/assessment-questions/${questionId}`,
-        payload,
+      httpClient.patch<ApiSuccess<AuthorQuestion>>(`/assessment-questions/${questionId}`, payload),
+    );
+  },
+
+  /** Copy an item, appended last. The copy is MANUAL and confirmed — a human chose to make it. */
+  duplicateQuestion(questionId: string): Promise<AuthorQuestion> {
+    return unwrap(
+      httpClient.post<ApiSuccess<AuthorQuestion>>(`/assessment-questions/${questionId}/duplicate`),
+    );
+  },
+
+  deleteQuestion(questionId: string): Promise<{ id: string }> {
+    return unwrap(
+      httpClient.delete<ApiSuccess<{ id: string }>>(`/assessment-questions/${questionId}`),
+    );
+  },
+
+  /**
+   * The drag-and-drop save — **the whole order, never a delta**, which is what makes it idempotent
+   * and its meaning independent of what the server currently holds.
+   */
+  reorderQuestions(versionId: string, questionIds: string[]): Promise<{ question_ids: string[] }> {
+    return unwrap(
+      httpClient.put<ApiSuccess<{ question_ids: string[] }>>(
+        `/assessment-versions/${versionId}/question-order`,
+        { question_ids: questionIds },
       ),
     );
   },

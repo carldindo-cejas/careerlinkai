@@ -85,10 +85,14 @@ max_batch_size = 10
 max_batch_timeout = 30
 max_retries = 3
 
+# `max_batch_timeout = 1`, not production's 30: batching amortises the invocation cost of a real
+# deployment, and locally it only means a developer watches a spinner for half a minute before the
+# job they are debugging starts. This is the profile the §31 generation flow is actually exercised
+# in — it is the only local one with a model — so the wait is felt on every single run.
 [[queues.consumers]]
 queue = "careerlinkai-ai-queue"
 max_batch_size = 5
-max_batch_timeout = 30
+max_batch_timeout = 1
 max_retries = 3
 
 # --- Remote (real Cloudflare during `wrangler dev`) -----------------------------------

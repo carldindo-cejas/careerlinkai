@@ -113,6 +113,36 @@ export function useRestoreAssessment() {
   });
 }
 
+/**
+ * Delete — soft on the server, and refused with a reason when the assessment has student responses
+ * or open assignments. The row leaves every list, so the whole branch is invalidated.
+ */
+export function useDeleteAssessment() {
+  const invalidate = useInvalidateList();
+
+  return useMutation({
+    mutationFn: (id: string) => assessmentAdminApi.remove(id),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * The confirmation dialog's live re-check.
+ *
+ * `enabled` on an open dialog and `staleTime: 0`, because the whole point is to catch the case the
+ * list row cannot: a class starting the assessment while the dialog sat open. Caching this would
+ * defeat it.
+ */
+export function useAssessmentDeletability(id: string | null) {
+  return useQuery({
+    queryKey: ['assessments', 'deletability', id] as const,
+    queryFn: () => assessmentAdminApi.deletability(id!),
+    enabled: id !== null,
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
 export interface AssignAssessmentArgs {
   id: string;
   payload: AssignPayload;

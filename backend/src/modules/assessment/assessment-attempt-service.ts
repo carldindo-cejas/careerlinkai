@@ -32,6 +32,7 @@ import { dispatchRecommendationGeneration } from '@/events/dispatch-recommendati
 import { dispatch, type AssessmentCompletedEvent } from '@/events/dispatcher';
 import { notifyAssessmentCompleted } from '@/events/send-notifications';
 import { uuid } from '@/lib/crypto';
+import { chunkForInsert } from '@/lib/d1-batching';
 import { now } from '@/lib/datetime';
 import { isUniqueViolation } from '@/lib/db-errors';
 import { ApiError } from '@/lib/envelope';
@@ -61,24 +62,8 @@ import {
 
 const MODULE = 'Assessment';
 
-/**
- * **D1 binds at most 100 parameters per statement**, so a multi-row INSERT's ceiling is a row count
- * *divided by the width of the table* — the same constraint `AssessmentBuilderService` documents at
- * length. Assigning one instrument to sixty classes is one statement's worth of rows only if the
- * arithmetic is done; hard-coding a row count would work until someone added a column.
- */
-const D1_MAX_BOUND_PARAMS = 100;
-
-function chunkRows<T>(rows: T[], columnsPerRow: number): T[][] {
-  const size = Math.max(1, Math.floor(D1_MAX_BOUND_PARAMS / columnsPerRow));
-  const chunks: T[][] = [];
-
-  for (let index = 0; index < rows.length; index += size) {
-    chunks.push(rows.slice(index, index + size));
-  }
-
-  return chunks;
-}
+// The D1 parameter budget and the chunking it forces now live in `lib/d1-batching.ts`, derived
+// from the table itself — this file used to hard-code the width, and it was wrong (see that file).
 
 export interface AttemptWithContent {
   attempt: AssessmentAttempt;
@@ -147,7 +132,34 @@ export class AssessmentAttemptService {
 
   // --- Student: the player ------------------------------------------------------------------
 
-  /** Active assignments in my active enrollments, each carrying **my** attempt if I have one. */
+  /**
+   * **What a student may actually sit** — the Available Assessments list.
+   *
+   * Four conditions, and until v1.6 only the first two were checked. That gap is worth naming
+   * because it was invisible from the student's side and obvious from the counselor's: an
+   * assignment row is written against a *version*, and nothing stopped that version, or the
+   * instrument above it, from being retired afterwards. So an archived assessment kept appearing,
+   * and — after a soft delete — so did one that no longer existed anywhere else in the product.
+   *
+   *   1. **Assigned to me** — an ACTIVE assignment on a class I am actively enrolled in. Global and
+   *      class-scoped assignments are the same row shape (migration 0014), so a GLOBAL assignment
+   *      reaches me through exactly this join and needs no special case anywhere: the assign act
+   *      writes a row per active class, and `applyGlobalAssignmentsToNewClass` writes one for a
+   *      class created later. This is why "assigned globally" resolves to "in every eligible
+   *      student's list" without a second code path that could disagree with the first.
+   *   2. **PUBLISHED version** — the only kind that can be assigned in the first place, but not the
+   *      only kind an old row can point at; a version archived with its template must stop being
+   *      offered even though the assignment row survives.
+   *   3. **Not archived** — archiving retires an instrument, deliberately without closing the
+   *      assignments already open (§21's expiry is an explicit act). That is right for the class
+   *      sitting it this afternoon and wrong for the list of what to start *next*, so a retired
+   *      instrument stops being offered while an attempt already under way is untouched.
+   *   4. **Not deleted** — `deleted_at IS NULL`, the same clause every other list in the module
+   *      opens with.
+   *
+   * A student mid-attempt on something that has since been archived reaches it through the attempt,
+   * which is unaffected: this filters what is *offered*, never what is already in progress.
+   */
   async listAssignmentsForStudent(student: User): Promise<AssignmentView[]> {
     const classIds = await this.enrollment.activeClassIdsFor(student.id);
 
@@ -174,6 +186,9 @@ export class AssessmentAttemptService {
         and(
           inArray(assessmentAssignments.classId, classIds),
           eq(assessmentAssignments.status, 'ACTIVE'),
+          eq(assessmentVersions.status, 'PUBLISHED'),
+          ne(assessmentTemplates.status, 'ARCHIVED'),
+          isNull(assessmentTemplates.deletedAt),
         ),
       )
       .orderBy(desc(assessmentAssignments.createdAt));
@@ -219,6 +234,30 @@ export class AssessmentAttemptService {
       }
 
       return this.loadAttemptContent(existing);
+    }
+
+    /**
+     * **The list's visibility rule, enforced as the act** (v1.6) — and only for a *new* attempt.
+     *
+     * `listAssignmentsForStudent` stopped offering archived, deleted and unpublished instruments,
+     * but a filtered list is a UI fact and this is the server. A stale tab, a bookmarked assignment
+     * id, or a race with an administrator archiving the instrument all reach this line.
+     *
+     * It sits below the resume branch on purpose: a student who *already* started something that
+     * has since been retired must still be able to finish it. Archiving retires what is offered
+     * next; it does not void work in flight (that is what closing an assignment does, §21).
+     */
+    const { version, template } = await this.versionWithTemplate(assignment.assessmentVersionId);
+
+    if (
+      version.status !== 'PUBLISHED' ||
+      template.status === 'ARCHIVED' ||
+      template.deletedAt !== null
+    ) {
+      throw ApiError.validation(
+        { assignment: ['This assessment is no longer available.'] },
+        'This assessment is no longer available.',
+      );
     }
 
     const attempt: AssessmentAttempt = {
@@ -729,9 +768,9 @@ export class AssessmentAttemptService {
     }));
 
     // Chunked for the same reason `addQuestions` chunks: D1 binds one parameter per column per row,
-    // so the ceiling is a parameter budget, not a row count. `assessment_assignments` is 7 columns.
-    const statements: BatchItem<'sqlite'>[] = chunkRows(rows, 7).map((batch) =>
-      this.db.insert(assessmentAssignments).values(batch),
+    // so the ceiling is a parameter budget, not a row count.
+    const statements: BatchItem<'sqlite'>[] = chunkForInsert(rows, assessmentAssignments).map(
+      (batch) => this.db.insert(assessmentAssignments).values(batch),
     );
 
     await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);

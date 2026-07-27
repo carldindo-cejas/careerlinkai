@@ -1,4 +1,5 @@
 import type { AuditLog, Notification } from '@/db/schema';
+import { actionTypeOf, type AuditActionType } from '@/modules/platform/audit-service';
 
 /**
  * Response shaping for the Platform module (FULLPLAN §17) — allow-lists, never a
@@ -34,7 +35,15 @@ export interface SerializedAuditLog {
   id: string;
   user_id: string | null;
   user_name: string | null;
+  /** The actor's role, for the Actor column. NULL for system actions and unresolved joins. */
+  user_role: string | null;
   action: string;
+  /**
+   * The group the action belongs to (v1.6) — resolved server-side from the exhaustive
+   * `ACTION_TYPES` record so the row's badge and the Action Type filter can never disagree. A
+   * client deriving it from the action string would be a second, drifting copy of that map.
+   */
+  action_type: AuditActionType;
   module: string;
   target_type: string | null;
   target_id: string | null;
@@ -52,12 +61,15 @@ export interface SerializedAuditLog {
 export function serializeAuditLog(
   log: AuditLog,
   userName: string | null = null,
+  userRole: string | null = null,
 ): SerializedAuditLog {
   return {
     id: log.id,
     user_id: log.userId,
     user_name: userName,
+    user_role: userRole,
     action: log.action,
+    action_type: actionTypeOf(log.action),
     module: log.module,
     target_type: log.targetType,
     target_id: log.targetId,

@@ -163,9 +163,23 @@ export const AI_REQUEST_TYPES = [
 ] as const;
 export type AiRequestType = (typeof AI_REQUEST_TYPES)[number];
 
-/** §29 principle 6 — every gateway call lands as exactly one row, in one of these two states. */
-export const AI_REQUEST_STATUSES = ['SUCCESS', 'FAILED'] as const;
+/**
+ * §29 principle 6 — every gateway call lands as exactly one row, and that row now carries a
+ * **lifecycle** rather than only an outcome (migration 0015).
+ *
+ * `PENDING` is written by the endpoint that enqueues a background generation, before the queue
+ * message is sent; `PROCESSING` by the consumer that picks it up. Both exist so that "in flight"
+ * is a fact in the database instead of being inferred from a missing row — which is what let a
+ * dropped message poll as PENDING forever. `SUCCESS` and `FAILED` are terminal.
+ *
+ * A synchronous caller (the §30 explanation path) writes one terminal row and never occupies the
+ * middle two states. The lifecycle is available, not compulsory.
+ */
+export const AI_REQUEST_STATUSES = ['PENDING', 'PROCESSING', 'SUCCESS', 'FAILED'] as const;
 export type AiRequestStatus = (typeof AI_REQUEST_STATUSES)[number];
+
+/** The two states a row can be *stuck* in — what the deadline and the nightly sweep look for. */
+export const AI_REQUEST_IN_FLIGHT_STATUSES = ['PENDING', 'PROCESSING'] as const;
 
 /** §13.7 — GLOBAL is the only v1 scope; the column extends to finer scopes later (§63). */
 export const AI_POLICY_SCOPES = ['GLOBAL'] as const;

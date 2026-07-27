@@ -156,6 +156,20 @@ export interface StudentProfile {
   /** What Part VII (§27) still needs before it can recommend anything. */
   is_complete_for_recommendations: boolean;
   missing_for_recommendations: string[];
+  /**
+   * What the **student** was asked for, which is a deliberately broader set than the two inputs the
+   * engine cannot run without (v1.6). Grade level is required here and not there: §27 never reads
+   * it, while the counselor's roster does, so a profile without it is incomplete even though the
+   * engine would tolerate it. This is what the persistent dashboard banner is computed from.
+   *
+   * `label` arrives with each field so the banner names what is missing in the student's words
+   * rather than in the column's, from one definition instead of a copy on each side of the wire.
+   */
+  profiling: {
+    is_complete: boolean;
+    missing: { field: string; label: string }[];
+    required_fields: string[];
+  };
 }
 
 export type UpdateProfilePayload = Partial<{

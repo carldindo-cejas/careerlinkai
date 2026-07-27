@@ -4,6 +4,7 @@ import { createDatabase } from '@/db/client';
 import { apiTokens, passwordResetTokens } from '@/db/schema';
 import type { Env } from '@/env';
 import { now } from '@/lib/datetime';
+import { reapStaleAiRequests } from '@/modules/ai/assessment-generation-service';
 
 /**
  * Nightly housekeeping (FULLPLAN §45 enhancement, audit M11) — run by the Cron Trigger in
@@ -20,6 +21,13 @@ import { now } from '@/lib/datetime';
  * Both are pure garbage once past their expiry, and both are cheap to sweep. The sweep is a plain
  * `DELETE ... WHERE <expiry> < now` — idempotent, and safe to run as often as the trigger fires.
  *
+ * A third sweep joined them with migration 0015, and it is not garbage collection: **stale
+ * `ai_requests`**. A queued generation reserves its row as PENDING, and if the message is never
+ * delivered — no consumer subscribed, retention expired, dead-lettered — nothing else in the
+ * system will ever move that row. `statusFor` reaps the ones somebody is actively polling, at the
+ * moment they notice; this reaps the rest, so a reviewer who closed the tab does not leave a row
+ * that reads as still-running forever, and the admin AI list never shows phantom work in flight.
+ *
  * Deliberately **not** here: purging "recommendation sets superseded by a newer result" (the third
  * M11 candidate). Phase C's M4 fix already makes `generateFor` delete every prior set for the
  * student before writing the new one, so an active student never accumulates superseded sets — a
@@ -33,6 +41,7 @@ const RESET_TOKEN_TTL_MINUTES = 60;
 export interface CleanupResult {
   expiredTokens: number;
   staleResetTokens: number;
+  stalledAiRequests: number;
 }
 
 export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
@@ -51,5 +60,14 @@ export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
     .where(lt(passwordResetTokens.createdAt, resetCutoff))
     .returning({ email: passwordResetTokens.email });
 
-  return { expiredTokens: expired.length, staleResetTokens: stale.length };
+  // An UPDATE, not a DELETE: a stalled request is evidence, not litter. It is the only record that
+  // a reviewer asked for something and the system never answered, and §13.7's audit trail is worth
+  // more than the row is expensive.
+  const stalled = await reapStaleAiRequests(db);
+
+  return {
+    expiredTokens: expired.length,
+    staleResetTokens: stale.length,
+    stalledAiRequests: stalled,
+  };
 }

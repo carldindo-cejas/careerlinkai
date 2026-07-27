@@ -8,21 +8,20 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { QuestionWorkspace } from '@/features/assessment-builder/components/QuestionWorkspace';
 import {
   useAddDimensions,
-  useAddQuestions,
   useBuilderTemplate,
-  useConfirmMapping,
   useCreateVersion,
   useGenerateFromDescription,
   useGenerateFromDocument,
   useGenerationStatus,
   usePublishVersion,
-  useUpdateQuestion,
   useVersionReview,
+  type GenerationProgress,
 } from '@/features/assessment-builder/hooks/useBuilder';
 import { extractText, ExtractionError } from '@/features/admin/utils/extractText';
-import type { AuthorQuestion, BuilderTemplate, VersionReview } from '@/types/builder';
+import type { BuilderDimension, BuilderTemplate, VersionReview } from '@/types/builder';
 
 /**
  * The assessment builder + the §31 review screen (Phase 5b — FULLPLAN §25, §31).
@@ -73,7 +72,14 @@ export function TemplateBuilderPage() {
       />
 
       {activeVersionId !== null ? (
-        <VersionWorkspace key={activeVersionId} versionId={activeVersionId} templateId={template.id} />
+        <VersionWorkspace
+          key={activeVersionId}
+          versionId={activeVersionId}
+          templateId={template.id}
+          /* The template owns the dimensions (they are shared by every version, §12), so they are
+             passed down rather than re-fetched inside the workspace. */
+          dimensions={template.dimensions ?? []}
+        />
       ) : null}
     </div>
   );
@@ -209,7 +215,15 @@ function VersionsCard({
 
 // --- The working version: generation, review, manual questions, publish -------------------------
 
-function VersionWorkspace({ versionId, templateId }: { versionId: string; templateId: string }) {
+function VersionWorkspace({
+  versionId,
+  templateId,
+  dimensions,
+}: {
+  versionId: string;
+  templateId: string;
+  dimensions: BuilderDimension[];
+}) {
   const { data: review, isLoading, isError, error } = useVersionReview(versionId);
 
   if (isLoading) {
@@ -225,31 +239,63 @@ function VersionWorkspace({ versionId, templateId }: { versionId: string; templa
   return (
     <>
       {draft ? <GeneratePanel review={review} /> : null}
-      <ReviewCard review={review} draft={draft} />
-      {draft ? <ManualQuestionCard review={review} /> : null}
+
+      {/*
+        The workspace replaces what used to be two cards — a read-only review list and a separate
+        "add a question by hand" form. Splitting them meant an author added an item at the bottom of
+        the page and then scrolled up to find it, could not reorder anything, and could only edit the
+        question *text*: type, options and the scoring mapping were all fixed at creation. One
+        editable surface is what the §31 review step and manual authoring were always describing.
+
+        `key` on the version id so switching versions resets the selection rather than pointing the
+        editor at a question that belongs to a different version.
+      */}
+      <QuestionWorkspace
+        key={review.id}
+        review={review}
+        dimensions={dimensions}
+        editable={draft}
+      />
+
       {draft ? <PublishCard review={review} templateId={templateId} /> : null}
     </>
   );
 }
 
-/** §31's two entry modes, side by side. Mode A reuses the §33 browser extraction utility. */
+/**
+ * §31's two entry modes, side by side. Mode A reuses the §33 browser extraction utility.
+ *
+ * Mode A has three phases the reviewer should be able to tell apart, because they fail for
+ * completely different reasons: parsing the file (a scanned PDF has no text layer), posting the
+ * extracted text (auth, rate limit, a version that published underneath them), and then the queued
+ * generation itself. They used to share one `extracting` boolean and one "Extracting text…" line,
+ * so a slow upload read as a slow parse.
+ */
+type DocumentPhase = 'idle' | 'extracting' | 'queuing';
+
 function GeneratePanel({ review }: { review: VersionReview }) {
   const generateFromDescription = useGenerateFromDescription(review.id);
   const generateFromDocument = useGenerateFromDocument(review.id);
   const [description, setDescription] = useState('');
   const [aiRequestId, setAiRequestId] = useState<string | null>(null);
   const [extractionProblem, setExtractionProblem] = useState<string | null>(null);
-  const [extracting, setExtracting] = useState(false);
+  const [documentPhase, setDocumentPhase] = useState<DocumentPhase>('idle');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const status = useGenerationStatus(aiRequestId, review.id);
+  const busy = documentPhase !== 'idle' || generateFromDescription.isPending || status.isPolling;
 
   async function handleFile(file: File) {
     setExtractionProblem(null);
-    setExtracting(true);
+    // A retry must not leave the previous attempt's outcome on screen while the new one runs.
+    setAiRequestId(null);
+    setDocumentPhase('extracting');
 
     try {
       const text = await extractText(file);
+
+      setDocumentPhase('queuing');
+
       const queued = await generateFromDocument.mutateAsync(text);
 
       setAiRequestId(queued.ai_request_id);
@@ -260,7 +306,7 @@ function GeneratePanel({ review }: { review: VersionReview }) {
           : 'The generation request failed.',
       );
     } finally {
-      setExtracting(false);
+      setDocumentPhase('idle');
 
       if (fileInput.current) {
         fileInput.current.value = '';
@@ -289,12 +335,18 @@ function GeneratePanel({ review }: { review: VersionReview }) {
           />
           <div className="mt-2">
             <Button
-              disabled={generateFromDescription.isPending || description.trim().length < 20}
-              onClick={() =>
+              disabled={busy || description.trim().length < 20}
+              onClick={() => {
+                setExtractionProblem(null);
+                setAiRequestId(null);
+
                 void generateFromDescription
                   .mutateAsync(description.trim())
                   .then((queued) => setAiRequestId(queued.ai_request_id))
-              }
+                  // The mutation's own `isError` renders the message; this keeps the rejection
+                  // from surfacing as an unhandled promise rejection in the console.
+                  .catch(() => undefined);
+              }}
             >
               {generateFromDescription.isPending ? 'Queuing…' : 'Generate from description'}
             </Button>
@@ -309,7 +361,7 @@ function GeneratePanel({ review }: { review: VersionReview }) {
             type="file"
             accept=".pdf,.docx"
             className="block text-sm text-muted-foreground file:mr-3 file:rounded-none file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground/80 hover:file:bg-secondary"
-            disabled={extracting || generateFromDocument.isPending}
+            disabled={busy}
             onChange={(event) => {
               const file = event.target.files?.[0];
 
@@ -318,225 +370,117 @@ function GeneratePanel({ review }: { review: VersionReview }) {
               }
             }}
           />
-          {extracting ? <p className="text-sm text-muted-foreground">Extracting text…</p> : null}
+          {documentPhase === 'extracting' ? (
+            <p className="mt-1 text-sm text-muted-foreground" role="status" aria-live="polite">
+              Reading the document in your browser…
+            </p>
+          ) : null}
+          {documentPhase === 'queuing' ? (
+            <p className="mt-1 text-sm text-muted-foreground" role="status" aria-live="polite">
+              Text extracted — sending it for generation…
+            </p>
+          ) : null}
         </div>
 
         {generateFromDescription.isError ? <Alert>{generateFromDescription.error.message}</Alert> : null}
         {generateFromDocument.isError ? <Alert>{generateFromDocument.error.message}</Alert> : null}
         {extractionProblem ? <Alert>{extractionProblem}</Alert> : null}
 
-        {aiRequestId !== null ? (
-          <div className="rounded-none bg-muted p-3 text-sm text-foreground/80">
-            {status.data === undefined || status.data.status === 'PENDING' ? (
-              <p>Generating… the draft appears below when it lands (this can take a minute).</p>
-            ) : null}
-            {status.data?.status === 'DRAFTED' ? (
-              <div className="flex flex-col gap-1">
-                <p>
-                  Draft ready: <strong>{status.data.question_count} question(s)</strong> added below
-                  for review.
-                </p>
-                {(status.data.suggested_dimensions?.length ?? 0) > 0 ? (
-                  <p className="text-muted-foreground">
-                    The AI also suggested dimensions (inert until you add one yourself):{' '}
-                    {status.data.suggested_dimensions!
-                      .map((suggestion) => suggestion.name)
-                      .join(', ')}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-            {status.data?.status === 'FAILED' || status.data?.status === 'VALIDATION_FAILED' ? (
-              <p>
-                Generation failed and nothing was drafted — {status.data.failure_reason ?? 'the model was unavailable'}.
-                You can request a fresh generation.
-              </p>
-            ) : null}
-          </div>
-        ) : null}
+        {aiRequestId !== null ? <GenerationProgressPanel progress={status} /> : null}
       </CardContent>
     </Card>
   );
 }
 
-/** The §31 review list: everything the player payload hides, shown to the person confirming it. */
-function ReviewCard({ review, draft }: { review: VersionReview; draft: boolean }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>
-          Questions · v{review.version_number} <Badge>{review.status}</Badge>
-        </CardTitle>
-        <CardDescription>
-          {review.publish_readiness.total > 0
-            ? `${review.publish_readiness.confirmed} of ${review.publish_readiness.total} scoring mappings confirmed.`
-            : 'No scoring mappings — this version would publish as an ungraded survey.'}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {review.questions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No questions yet.</p>
-        ) : (
-          review.questions.map((question) => (
-            <QuestionRow key={question.id} question={question} versionId={review.id} draft={draft} />
-          ))
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+/**
+ * The live state of one queued generation (§20's poll, rendered).
+ *
+ * Every branch here is reachable and terminal-or-progressing — there is no "and otherwise keep
+ * spinning" fallthrough, which is what the previous version amounted to: anything that was not
+ * DRAFTED, FAILED or VALIDATION_FAILED (including a status the client did not recognise, or a poll
+ * that had stopped answering) rendered as "Generating…", indefinitely and identically to real
+ * progress. A spinner has to be a claim the code can defend.
+ */
+function GenerationProgressPanel({ progress }: { progress: GenerationProgress }) {
+  const { data, isPolling, timedOut, pollError } = progress;
 
-function QuestionRow({
-  question,
-  versionId,
-  draft,
-}: {
-  question: AuthorQuestion;
-  versionId: string;
-  draft: boolean;
-}) {
-  const confirm = useConfirmMapping(versionId);
-  const update = useUpdateQuestion(versionId);
-  const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(question.question_text);
+  if (timedOut) {
+    return (
+      <Alert>
+        Generation did not finish in time and has been abandoned. Nothing was drafted — please
+        request a fresh generation. If this keeps happening, the AI queue consumer may not be
+        running in this environment.
+      </Alert>
+    );
+  }
 
-  return (
-    <div className="rounded-none border border-border p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1">
-          {editing ? (
-            <div className="flex flex-col gap-2">
-              <Textarea value={text} onChange={(event) => setText(event.target.value)} />
-              <div className="flex gap-2">
-                <Button
-                  disabled={update.isPending || text.trim().length === 0}
-                  onClick={() =>
-                    void update
-                      .mutateAsync({ questionId: question.id, question_text: text.trim() })
-                      .then(() => setEditing(false))
-                  }
-                >
-                  Save
-                </Button>
-                <Button variant="secondary" onClick={() => setEditing(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <p className="text-sm text-foreground">
-              {question.order_number}. {question.question_text}
-            </p>
-          )}
+  if (pollError !== null) {
+    return (
+      <Alert>
+        We lost contact with the server while waiting for this draft — {pollError.message}. The
+        generation may still complete; reload this page to check.
+      </Alert>
+    );
+  }
 
-          <p className="mt-1 text-xs text-muted-foreground">
-            {question.options.map((option) => `${option.label} (${option.score})`).join (' · ')}
+  if (data?.status === 'FAILED' || data?.status === 'VALIDATION_FAILED') {
+    return (
+      <Alert>
+        Generation failed and nothing was drafted —{' '}
+        {data.failure_reason ?? 'the model was unavailable'} You can request a fresh generation.
+      </Alert>
+    );
+  }
+
+  if (data?.status === 'DRAFTED') {
+    return (
+      <div className="flex flex-col gap-1 rounded-none border border-border bg-muted p-3 text-sm text-foreground/80">
+        <p>
+          Draft ready: <strong>{data.question_count} question(s)</strong> added below for review.
+          Confirm each scoring mapping before publishing.
+        </p>
+        {(data.suggested_dimensions?.length ?? 0) > 0 ? (
+          <p className="text-muted-foreground">
+            The AI also suggested dimensions (inert until you add one yourself):{' '}
+            {data.suggested_dimensions!.map((suggestion) => suggestion.name).join(', ')}
           </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {question.source === 'AI_GENERATED' ? <Badge>AI draft</Badge> : <Badge>Manual</Badge>}
-          {draft && !editing ? (
-            <Button variant="secondary" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
-          ) : null}
-        </div>
+        ) : null}
       </div>
+    );
+  }
 
-      {question.dimensions.length > 0 ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          {question.dimensions.map((mapping) => (
-            <span key={mapping.mapping_id} className="flex items-center gap-1">
-              <Badge tone={mapping.confirmed ? 'success' : undefined}>
-                measures {mapping.name}
-                {mapping.confirmed ? ' ✓' : ' — unconfirmed'}
-              </Badge>
-              {draft && !mapping.confirmed ? (
-                <Button
-                  variant="secondary"
-                  disabled={confirm.isPending}
-                  onClick={() => confirm.mutate(mapping.mapping_id)}
-                >
-                  Confirm
-                </Button>
-              ) : null}
-            </span>
-          ))}
-        </div>
-      ) : null}
+  if (isPolling) {
+    return (
+      <div
+        className="flex items-center gap-2 rounded-none bg-muted p-3 text-sm text-foreground/80"
+        role="status"
+        aria-live="polite"
+      >
+        <span
+          aria-hidden
+          className="size-3 shrink-0 animate-spin rounded-full border-2 border-foreground/25 border-t-foreground/70"
+        />
+        <span>
+          {data?.status === 'PROCESSING'
+            ? 'Drafting your questions — the model is working. They appear below when they land.'
+            : 'Queued for generation — waiting for a worker to pick this up.'}
+        </span>
+      </div>
+    );
+  }
 
-      {confirm.isError ? <Alert>{confirm.error.message}</Alert> : null}
-      {update.isError ? <Alert>{update.error.message}</Alert> : null}
-    </div>
-  );
+  return null;
 }
 
-/** The manual editor — a typed question is confirmed at insert (§25: a human wrote it). */
-function ManualQuestionCard({ review }: { review: VersionReview }) {
-  const addQuestions = useAddQuestions(review.id);
-  const [text, setText] = useState('');
-  const [dimensionCode, setDimensionCode] = useState('');
+/*
+  `ReviewCard`, `QuestionRow` and `ManualQuestionCard` lived here and are now `QuestionWorkspace`.
 
-  const LIKERT_OPTIONS = [
-    { label: 'Strongly Agree', value: 'strongly_agree', score: 5 },
-    { label: 'Agree', value: 'agree', score: 4 },
-    { label: 'Neutral', value: 'neutral', score: 3 },
-    { label: 'Disagree', value: 'disagree', score: 2 },
-    { label: 'Strongly Disagree', value: 'strongly_disagree', score: 1 },
-  ];
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Add a question by hand</CardTitle>
-        <CardDescription>
-          A 5-point Likert item. Typed questions need no review step — you are the human.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <div>
-          <Label htmlFor="manual-question">Question</Label>
-          <Textarea
-            id="manual-question"
-            value={text}
-            placeholder="I review my notes within a day of each class."
-            onChange={(event) => setText(event.target.value)}
-          />
-        </div>
-        <div className="flex items-end gap-3">
-          <div>
-            <Label htmlFor="manual-dimension">Dimension code (blank = unscored)</Label>
-            <Input
-              id="manual-dimension"
-              value={dimensionCode}
-              placeholder="TM"
-              onChange={(event) => setDimensionCode(event.target.value.toUpperCase())}
-            />
-          </div>
-          <Button
-            variant="secondary"
-            disabled={addQuestions.isPending || text.trim().length === 0}
-            onClick={() => {
-              addQuestions.mutate([
-                {
-                  question_text: text.trim(),
-                  question_type: 'LIKERT',
-                  options: LIKERT_OPTIONS,
-                  dimension_codes: dimensionCode.trim() === '' ? [] : [dimensionCode.trim()],
-                },
-              ]);
-              setText('');
-            }}
-          >
-            {addQuestions.isPending ? 'Adding…' : 'Add question'}
-          </Button>
-        </div>
-        {addQuestions.isError ? <Alert>{addQuestions.error.message}</Alert> : null}
-      </CardContent>
-    </Card>
-  );
-}
+  They were three components doing one job badly: a read-only list, an inline text-only editor, and
+  a bottom-of-page "add a question" form. Reordering was impossible, a question's type and options
+  were fixed at creation, and confirming a mapping meant hunting for the item it belonged to. The
+  workspace is one editable surface with the same rules behind it — MANUAL means confirmed (§25),
+  a published version is frozen (invariant 1), and there is still no "confirm all" shortcut (§31).
+*/
 
 function PublishCard({ review, templateId }: { review: VersionReview; templateId: string }) {
   const publish = usePublishVersion(review.id, templateId);
