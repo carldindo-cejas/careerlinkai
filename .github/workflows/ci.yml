@@ -56,11 +56,18 @@ jobs:
       # Phase 4.5 Step 2 — the Miniflare-blind limits, asserted statically: no [limits] block
       # (Free rejects it, code 100328), every environment carries the full binding set including
       # AUTH_DO, and deriveBits is called nowhere outside the Durable Object.
-      - name: Platform gates (config shape, DO boundary)
+      #
+      # Plus the single-Worker routing invariants: every profile that serves the SPA must also
+      # list `run_worker_first = ["/api/*"]`, because `not_found_handling` is evaluated before the
+      # Worker and would otherwise answer /api/v1/health with the HTML shell — a failure the app
+      # itself never shows, since a loaded page's `fetch()` keeps working.
+      - name: Platform gates (config shape, asset routing, DO boundary)
         run: npm run gate:platform
 
       # The gzipped Worker must stay under 2.5 MB against the Free plan's 3 MB cap. This is a
-      # dry-run build — it needs no Cloudflare credentials.
+      # dry-run build — it needs no Cloudflare credentials. Static assets are stored separately by
+      # the platform and count against no bundle limit, so this still measures only the script;
+      # the script's `[build]` hook is skipped here (this job installs backend deps only).
       - name: Platform gate (bundle size)
         run: npm run gate:bundle
 
@@ -96,6 +103,14 @@ jobs:
         run: npm test
 
       # The build is part of the gate, not a deploy step: `tsc --noEmit` passing does not prove Vite
-      # can actually bundle the thing, and the first place that would surface is a deploy.
+      # can actually bundle the thing, and the first place that would surface is a deploy — which,
+      # since the consolidation, is the *same* deploy that ships the API. A frontend that cannot
+      # build now blocks the backend from shipping too, so proving it here matters more than before.
       - name: Build
         run: npm run build
+
+      # `dist/_headers` is what grants the year-long immutable caching on hashed chunks, and it
+      # arrives there only because Vite copies `public/` verbatim. Nothing else would notice its
+      # absence: the site works perfectly, just slower on every repeat visit, forever.
+      - name: Assert the asset cache policy shipped
+        run: test -f dist/_headers && grep -q immutable dist/_headers

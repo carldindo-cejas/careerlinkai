@@ -4,7 +4,7 @@ import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useResults } from '@/features/student/hooks/useAssessment';
-import { resultPath } from '@/routes/paths';
+import { paths, resultPath, type ResultPageState } from '@/routes/paths';
 
 /**
  * "My results" (FULLPLAN §37).
@@ -56,7 +56,17 @@ export function ResultListPage() {
                 </p>
               </div>
 
-              <Button variant="secondary" onClick={() => navigate(resultPath(result.attempt_id))}>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  navigate(resultPath(result.attempt_id), {
+                    state: {
+                      from: paths.studentResults,
+                      fromLabel: 'My results',
+                    } satisfies ResultPageState,
+                  })
+                }
+              >
                 See breakdown
               </Button>
             </CardContent>

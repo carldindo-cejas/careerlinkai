@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 
 import { createDatabase } from '@/db/client';
-import { assessmentDimensions } from '@/db/schema';
+import { assessmentDimensions, gradeLevels, shsStrands } from '@/db/schema';
 import type { AppEnv } from '@/env';
 import { paginate, successEnvelope } from '@/lib/envelope';
 import { clientIp, parseBody, parseQuery } from '@/lib/validation';
@@ -69,17 +69,72 @@ studentRoutes.use('*', ensureRole('student'));
 
 studentRoutes.get('/profile', async (c) => {
   const service = new StudentProfileService(createDatabase(c.env.DB));
-  const profile = await service.forStudent(requireUser(c));
+  const view = await service.viewFor(requireUser(c));
 
-  return c.json(successEnvelope(serializeStudentProfile(profile), 'Profile retrieved.'));
+  return c.json(
+    successEnvelope(
+      serializeStudentProfile(view.profile, {
+        gradeLevel: view.gradeLevel,
+        strand: view.strand,
+        derivedFrom: view.derivedFrom,
+      }),
+      'Profile retrieved.',
+    ),
+  );
 });
 
 studentRoutes.patch('/profile', async (c) => {
   const input = await parseBody(c, updateStudentProfileSchema);
   const service = new StudentProfileService(createDatabase(c.env.DB));
-  const profile = await service.update(requireUser(c), input);
 
-  return c.json(successEnvelope(serializeStudentProfile(profile), 'Profile updated.'));
+  await service.update(requireUser(c), input);
+
+  // Re-read through the same path GET uses, rather than serializing the row `update` returned.
+  // The two are not the same object: the derived-field flags and the resolved lookup names come
+  // from other tables, and a PATCH response missing them would leave the screen thinking a field
+  // it just saved is now editable.
+  const view = await service.viewFor(requireUser(c));
+
+  return c.json(
+    successEnvelope(
+      serializeStudentProfile(view.profile, {
+        gradeLevel: view.gradeLevel,
+        strand: view.strand,
+        derivedFrom: view.derivedFrom,
+      }),
+      'Profile updated.',
+    ),
+  );
+});
+
+/**
+ * The two §13.1 lookups, for the profile screen's selects (migration 0017).
+ *
+ * On `/student` rather than `/admin` because a student is who needs them, and unguarded by any
+ * policy beyond the role gate above: `grade_levels` and `shs_strands` are reference data with two
+ * rows each, identical for every user in the system. There is nothing here to scope.
+ */
+studentRoutes.get('/profile/options', async (c) => {
+  const db = createDatabase(c.env.DB);
+  const [levels, strands] = await Promise.all([
+    db.select().from(gradeLevels).orderBy(gradeLevels.orderNumber),
+    db.select().from(shsStrands).orderBy(shsStrands.orderNumber),
+  ]);
+
+  return c.json(
+    successEnvelope(
+      {
+        grade_levels: levels.map((row) => ({ id: row.id, code: row.code, name: row.name })),
+        shs_strands: strands.map((row) => ({
+          id: row.id,
+          code: row.code,
+          name: row.name,
+          description: row.description,
+        })),
+      },
+      'Profile options retrieved.',
+    ),
+  );
 });
 
 studentRoutes.get('/assignments', async (c) => {

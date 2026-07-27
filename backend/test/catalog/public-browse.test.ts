@@ -157,7 +157,14 @@ describe('GET /careers/public and /employment-outlooks/public', () => {
     expect(served).toBeDefined();
     expect(served.salary_min).toBe(40000);
     expect(served.salary_max).toBe(120000);
-    expect(served.employment_outlook).toEqual({ id: outlookId, name: 'High Demand' });
+    // `display_order` travels with the outlook (2026-07-27): it is a curated sequence — Low →
+    // Moderate → High → Emerging — and a client sorting on it has no other way to know that
+    // "Emerging Field" outranks "Low Demand". Sorting on the name would order them E, H, L, M.
+    expect(served.employment_outlook).toEqual({
+      id: outlookId,
+      name: 'High Demand',
+      display_order: 3,
+    });
   });
 
   it('omits archived careers', async () => {

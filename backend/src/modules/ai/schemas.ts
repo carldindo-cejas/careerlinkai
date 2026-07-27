@@ -41,3 +41,25 @@ export const listKnowledgeDocumentsQuerySchema = z.object({
 });
 
 export type UpdateAiPolicyInput = z.infer<typeof updateAiPolicySchema>;
+
+/**
+ * One chat turn (migration 0019).
+ *
+ * The length cap is a real control, not tidiness: every message becomes a model call charged
+ * against a hard daily neuron quota (§45), and an unbounded prompt is the cheapest way to spend
+ * the school's whole day of AI on one paste. `.strict()` because the *only* thing a client may
+ * send is the question — the recommendation context is loaded server-side from the caller's own
+ * token, and a client that could supply its own context could have the model explain any numbers
+ * it liked as though they were this student's results.
+ */
+export const askChatSchema = z
+  .object({
+    message: z
+      .string()
+      .trim()
+      .min(1, 'Type a question first.')
+      .max(1000, 'Keep your question under 1000 characters.'),
+  })
+  .strict();
+
+export type AskChatInput = z.infer<typeof askChatSchema>;

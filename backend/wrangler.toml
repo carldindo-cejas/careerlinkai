@@ -3,6 +3,56 @@ main = "src/index.ts"
 compatibility_date = "2026-07-13"
 compatibility_flags = ["nodejs_compat"]
 
+# --- The frontend, served by this same Worker (single-deployment architecture) ---------
+# `wrangler deploy` builds `../frontend` first (see [build] below) and uploads `dist/` to
+# Cloudflare's static-asset store. There is no second deployment and no Cloudflare Pages
+# project any more: careerlinkai.online resolves to this Worker script, which answers both
+# the SPA and the API from one origin.
+#
+# ── The three lines that make this work, and why each is load-bearing ──────────────────
+#
+# `directory` — the Vite build output, referenced in place. The frontend is not copied into
+# the backend; the two packages keep their own trees, their own package.json and their own
+# test suites exactly as before. Assets are stored separately from the Worker script and do
+# **not** count against the Free plan's 3 MB gzipped bundle cap (`npm run gate:bundle`
+# measures the script only), which is what lets an 11 MB `dist/` — pdf.worker.mjs and the
+# artwork — ship on the same free deploy as the API.
+#
+# `not_found_handling` — a request that matches no asset gets `/index.html` with **200**,
+# so React Router owns /login, /student/assessments, and every other path that is not a
+# file. This replaces the Pages `_redirects` rule (`/* /index.html 200`), which was deleted:
+# Workers static assets do not implement 200-status rewrites in `_redirects`, so keeping
+# that file would have silently done nothing and every hard refresh would 404.
+#
+# `run_worker_first` — **the one line this whole design turns on.** `not_found_handling`
+# runs *before* the Worker, so with SPA fallback alone a browser navigation to
+# /api/v1/health returns the HTML shell instead of JSON, and the API is unreachable from the
+# address bar (a client-side `fetch()` would still work, which is what makes this failure so
+# easy to ship — the app looks fine and only direct hits, curl, and the health check break).
+# Listing /api/* here forces those paths to the Worker before the asset router sees them.
+# Everything else keeps the default asset-first path, so a hashed JS chunk is served from the
+# edge without ever invoking — or billing — the Worker.
+#
+# The whole API lives under the §17 `/api/v1` mount, so this single pattern covers /auth,
+# /ai, /admin, /counselor, /student and the rest; they are `/api/v1/auth`, `/api/v1/ai`, …
+# not top-level paths.
+[assets]
+directory = "../frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# `wrangler deploy` and nothing else (the stated deployment contract). Wrangler runs this
+# custom build before it bundles, so the `dist/` that `[assets]` points at is always the one
+# built from the commit being deployed — never a stale local artifact, which is the classic
+# way a "successful" deploy ships last week's frontend.
+#
+# `SKIP_FRONTEND_BUILD=1` short-circuits it for `wrangler deploy --dry-run` in the bundle
+# gate, where CI has backend dependencies only and the frontend is built and tested by its
+# own job. See scripts/build-frontend.mjs.
+[build]
+command = "node scripts/build-frontend.mjs"
+
 # --- CPU budget (§38, §45 v1.5) --------------------------------------------------------
 # There is NO [limits] block in this file, permanently, and the platform gate
 # (scripts/platform-gates.mjs) fails the build if one appears: the Free plan is a ratified
@@ -141,16 +191,33 @@ crons = ["0 3 * * *"]
 
 [env.staging.vars]
 APP_ENV = "staging"
-# The deployed staging frontend, and the *only* origin CORS admits (§41 — app.ts reads this
-# var; there is no wildcard). A frontend served from anywhere else, including a local Vite on
-# :5173, is refused by the browser. Point this at whatever origin actually serves the app.
-FRONTEND_URL = "https://careerlinkai-staging.pages.dev"
+# The origin that serves the app — which, since the consolidation, is **this Worker itself**.
+# It was `https://careerlinkai-staging.pages.dev`, the separate Pages deployment that no longer
+# exists.
+#
+# The frontend no longer reads this value in any form: it calls the relative path `/api/v1`, so
+# it is same-origin by construction and cannot be pointed at the wrong backend. What still reads
+# it is §41's CORS allow-list in app.ts, which now describes a case that no longer arises in
+# normal operation — a same-origin request is not subject to CORS at all. It stays exact rather
+# than becoming a wildcard, so that if anything ever *does* call this API cross-origin, the
+# answer is a deliberate one origin rather than "anyone".
+FRONTEND_URL = "https://careerlinkai-staging.cejascarldindo.workers.dev"
 WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
 STAFF_TOKEN_TTL_HOURS = "168"
 ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+
+# Declared per environment rather than inherited, exactly like every binding in this file.
+# Wrangler's docs do not state whether `assets` is an inheritable key; an omission that turned
+# out to be inherited costs nothing, and one that turned out *not* to be would deploy a Worker
+# with no frontend at all. Explicit is the cheap side of that bet.
+[env.staging.assets]
+directory = "../frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
 
 [[env.staging.d1_databases]]
 binding = "DB"
@@ -219,6 +286,8 @@ crons = ["0 3 * * *"]
 
 [env.production.vars]
 APP_ENV = "production"
+# Unchanged in value, but it now means something different: careerlinkai.online is the origin
+# of *this Worker*, not of a separate Pages site that talked to it. See the staging note above.
 FRONTEND_URL = "https://careerlinkai.online"
 WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
@@ -226,6 +295,12 @@ STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
 STAFF_TOKEN_TTL_HOURS = "168"
 ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+
+[env.production.assets]
+directory = "../frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
 
 [[env.production.d1_databases]]
 binding = "DB"

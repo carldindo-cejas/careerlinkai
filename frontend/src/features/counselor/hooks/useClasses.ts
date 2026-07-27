@@ -10,7 +10,17 @@ import type { CreateClassPayload, UpdateClassPayload } from '@/types/class';
 export const classKeys = {
   all: ['classes'] as const,
   detail: (id: string) => ['classes', id] as const,
+  options: ['classes', 'options'] as const,
 };
+
+/** Two rows each, identical for every user in the system — cached for the session. */
+export function useClassOptions() {
+  return useQuery({
+    queryKey: classKeys.options,
+    queryFn: () => classApi.options(),
+    staleTime: Infinity,
+  });
+}
 
 export function useClasses() {
   return useQuery({

@@ -20,12 +20,29 @@ import { RIASEC_DIMENSIONS } from '@/db/enums';
  * | Case | Resolution | Why not the alternative |
  * |---|---|---|
  * | A career with no `typical_riasec_code` | RIASEC compatibility = neutral 50 | §27's only stated no-signal default is the program's "defaults to 50 if the program has no linked careers". Excluding the career instead would silently hide a live catalog row from every student. |
- * | A student with no `strand` | Strand alignment = neutral 70, not the 40 mismatch | 40 means "we know your track and it is the wrong one". An unfilled profile field is not a wrong answer, and §27 already maps an unknown GWA to a neutral-leaning-positive 70. |
- * | The eligibility clause when GWA is below 75 | Omit the clause | §27's template hardcodes the words "meets the typical academic profile". A GWA of 72 does not meet it, and the engine must not tell a student something untrue to fill a slot in a string. |
+ * | A student with no `strand` | Strand alignment = neutral 70, not the 40 mismatch | 40 means "we know your track and it is the wrong one". An unfilled profile field is not a wrong answer, and §27 already maps an unknown academic average to a neutral-leaning-positive 70. |
+ * | The eligibility clause when the academic average is below 75 | Omit the clause | §27's template hardcodes the words "meets the typical academic profile". A 72 does not meet it, and the engine must not tell a student something untrue to fill a slot in a string. |
  * | Ranking ties | Break by title/name, ascending | §26 promises reproducibility. Two careers on an identical score would otherwise rank in whatever order the catalog query happened to return. |
  *
  * All four are decisions, not defaults — if a later revision of FULLPLAN rules differently,
  * change them here and the tests will tell you what moved.
+ *
+ * ## The academic signal is no longer the GWA (prompt-driven, 2026-07-27)
+ *
+ * §27 wrote `academic_fit` and `program_eligibility` against `student_profiles.gwa`. That field has
+ * been removed from the student profile, so both now read the **average of whichever of Math,
+ * Science and English the student filled in**.
+ *
+ * Nothing else moved. The weights are untouched (`academicFit` 0.20, `programEligibility` 0.10),
+ * the anchors are untouched (75 floor, 95 ceiling), and the neutral values for "no signal" are
+ * untouched — a student who filled in none of the three lands on exactly the 60/70 that a NULL GWA
+ * used to produce. The change is *which number* is fed in, not what is done with it, which is why
+ * §28's worked example still computes: it names an academic input of 88, and 88 is now the mean of
+ * the subject grades rather than a GWA column.
+ *
+ * The average is over **present** fields only, not over three with blanks read as zero. A student
+ * who knows their Math grade and not their Science grade has given one real signal, and averaging
+ * it against a zero would turn that into a punishment for honesty.
  */
 
 // --- The §27 constants ---------------------------------------------------------------------
@@ -69,16 +86,21 @@ export const PROGRAM_WEIGHTS = {
  */
 export const STUDENT_PREFERENCE = 70;
 
-/** §27's GWA anchors: 75 is the PH SHS passing minimum, 95 a practical high-end anchor. */
-const GWA_FLOOR = 75;
-const GWA_CEILING = 95;
+/**
+ * §27's academic anchors: 75 is the PH SHS passing minimum, 95 a practical high-end anchor.
+ *
+ * Unchanged by the move off GWA — a subject grade and a general weighted average are on the same
+ * 60–100 Philippine scale, so the same two anchors bound both.
+ */
+const ACADEMIC_FLOOR = 75;
+const ACADEMIC_CEILING = 95;
 
 /** §27: "defaults to 50 if the program has no linked careers yet" — the no-RIASEC-signal value. */
 const NEUTRAL_RIASEC = 50;
 
-/** §27: an unknown GWA is "neutral-leaning-positive", not a failure. */
-const NEUTRAL_UNKNOWN_GWA_FIT = 60;
-const NEUTRAL_UNKNOWN_GWA_ELIGIBILITY = 70;
+/** §27: an unknown academic average is "neutral-leaning-positive", not a failure. */
+const NEUTRAL_UNKNOWN_ACADEMIC_FIT = 60;
+const NEUTRAL_UNKNOWN_ACADEMIC_ELIGIBILITY = 70;
 
 /** SILENCE: an unfilled strand is unknown, not mismatched. See the file header. */
 const NEUTRAL_UNKNOWN_STRAND = 70;
@@ -123,7 +145,12 @@ export interface StudentSignals {
    * is display-only prose (§23, v1.2).
    */
   careerConfidenceIndex: number;
-  gwa: number | null;
+  /**
+   * The academic average — the mean of whichever subject grades the student filled in, or NULL
+   * when they filled in none. Callers build it with `academicAverage()` rather than assembling it
+   * themselves, so there is one definition of "the student's academic signal" in the system.
+   */
+  academicAverage: number | null;
   strand: Strand | null;
 }
 
@@ -199,13 +226,37 @@ export function programRiasecCompatibility(
   return total / linkedCareerCodes.length;
 }
 
-/** §27 — a linear GWA fit between the passing floor and a high-end anchor. */
-export function academicFit(gwa: number | null): number {
-  if (gwa === null) {
-    return NEUTRAL_UNKNOWN_GWA_FIT;
+/**
+ * The student's academic signal: the mean of whichever subject grades are present, or NULL.
+ *
+ * **Present fields only.** A blank is not a zero — a student who knows their Math grade and not
+ * their Science grade has given one real signal, and averaging it against a zero would convert
+ * honesty about a gap into a penalty. All-blank returns NULL, which the two formulas below map to
+ * their neutral values, exactly as a NULL GWA used to.
+ */
+export function academicAverage(grades: {
+  mathGrade: number | null;
+  scienceGrade: number | null;
+  englishGrade: number | null;
+}): number | null {
+  const present = [grades.mathGrade, grades.scienceGrade, grades.englishGrade].filter(
+    (grade): grade is number => grade !== null && Number.isFinite(grade),
+  );
+
+  if (present.length === 0) {
+    return null;
   }
 
-  return clamp(((gwa - GWA_FLOOR) / (GWA_CEILING - GWA_FLOOR)) * 100, 0, 100);
+  return present.reduce((sum, grade) => sum + grade, 0) / present.length;
+}
+
+/** §27 — a linear academic fit between the passing floor and a high-end anchor. */
+export function academicFit(average: number | null): number {
+  if (average === null) {
+    return NEUTRAL_UNKNOWN_ACADEMIC_FIT;
+  }
+
+  return clamp(((average - ACADEMIC_FLOOR) / (ACADEMIC_CEILING - ACADEMIC_FLOOR)) * 100, 0, 100);
 }
 
 /**
@@ -229,17 +280,20 @@ export function strandAlignment(
   return studentStrand === programStrand ? STRAND_ALIGNED : STRAND_MISMATCH;
 }
 
-/** §27 — the deterministic eligibility tier. An unknown GWA leans positive, never punitive. */
-export function programEligibility(gwa: number | null): number {
-  if (gwa === null) {
-    return NEUTRAL_UNKNOWN_GWA_ELIGIBILITY;
+/**
+ * §27 — the deterministic eligibility tier. An unknown academic average leans positive, never
+ * punitive.
+ */
+export function programEligibility(average: number | null): number {
+  if (average === null) {
+    return NEUTRAL_UNKNOWN_ACADEMIC_ELIGIBILITY;
   }
 
-  if (gwa >= 80) {
+  if (average >= 80) {
     return 100;
   }
 
-  if (gwa >= GWA_FLOOR) {
+  if (average >= ACADEMIC_FLOOR) {
     return 70;
   }
 
@@ -320,9 +374,9 @@ export function scoreProgram(
   const components: ProgramMatchComponents = {
     riasecCompatibility: programRiasecCompatibility(student.riasec, linkedCareerCodes),
     careerConfidenceIndex: student.careerConfidenceIndex,
-    academicFit: academicFit(student.gwa),
+    academicFit: academicFit(student.academicAverage),
     strandAlignment: strandAlignment(student.strand, program.recommendedStrand),
-    programEligibility: programEligibility(student.gwa),
+    programEligibility: programEligibility(student.academicAverage),
     studentPreference: STUDENT_PREFERENCE,
   };
 
@@ -409,9 +463,14 @@ function buildReason(
 
   // SILENCE: §27 hardcodes "meets the typical academic profile". Below the passing floor that
   // is simply false, so the clause is omitted rather than made to lie.
-  if (student.gwa !== null && student.gwa >= GWA_FLOOR) {
+  //
+  // The sentence names "subject average" rather than "GWA" because that is now what the number
+  // is. Telling a student their GWA is 88 when they never gave one — and when 88 is the mean of
+  // the three subjects they did give — would be a small, avoidable lie in the one paragraph the
+  // system promises is reproducible from its inputs (§26).
+  if (student.academicAverage !== null && student.academicAverage >= ACADEMIC_FLOOR) {
     clauses.push(
-      `Your GWA of ${formatNumber(student.gwa)} meets the typical academic profile for this path.`,
+      `Your subject average of ${formatNumber(student.academicAverage)} meets the typical academic profile for this path.`,
     );
   }
 

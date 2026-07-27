@@ -28,24 +28,26 @@ function profile(overrides: Partial<StudentProfile> = {}): StudentProfile {
     last_name: 'Dela Cruz',
     birthdate: null,
     gender: null,
+    grade_level_id: null,
+    shs_strand_id: null,
     grade_level: null,
     strand: null,
-    gwa: null,
     math_grade: null,
     science_grade: null,
     english_grade: null,
     guardian_name: null,
     guardian_contact: null,
     is_complete_for_recommendations: false,
-    missing_for_recommendations: ['strand', 'gwa'],
+    missing_for_recommendations: ['strand', 'subject_grades'],
+    derived: { grade_level: false, shs_strand: false, class_name: null },
     profiling: {
       is_complete: false,
       missing: [
-        { field: 'strand', label: 'Academic track / strand' },
-        { field: 'grade_level', label: 'Grade level' },
-        { field: 'gwa', label: 'General weighted average' },
+        { field: 'shs_strand_id', label: 'Academic track / strand' },
+        { field: 'grade_level_id', label: 'Grade level' },
+        { field: 'subject_grades', label: 'At least one subject grade' },
       ],
-      required_fields: ['strand', 'grade_level', 'gwa'],
+      required_fields: ['shs_strand_id', 'grade_level_id', 'subject_grades'],
     },
     ...overrides,
   };
@@ -78,7 +80,8 @@ describe('ProfilingBanner', () => {
     // The labels come from the server, so the banner cannot describe a different rule from the one
     // that decides completeness.
     expect(screen.getByText(/academic track \/ strand/i)).toBeInTheDocument();
-    expect(screen.getByText(/general weighted average/i)).toBeInTheDocument();
+    // GWA was removed on 2026-07-27; the academic signal §27 needs is now a subject grade.
+    expect(screen.getByText(/at least one subject grade/i)).toBeInTheDocument();
 
     expect(screen.getByRole('button', { name: /complete profile/i })).toBeInTheDocument();
   });
@@ -89,13 +92,13 @@ describe('ProfilingBanner', () => {
       profile({
         grade_level: 'Grade 12',
         strand: 'Academic',
-        gwa: '88.00',
+        math_grade: '88.00',
         is_complete_for_recommendations: true,
         missing_for_recommendations: [],
         profiling: {
           is_complete: true,
           missing: [],
-          required_fields: ['strand', 'grade_level', 'gwa'],
+          required_fields: ['shs_strand_id', 'grade_level_id', 'subject_grades'],
         },
       }),
     );
@@ -160,7 +163,7 @@ describe('ProfilingBanner', () => {
         profiling: {
           is_complete: true,
           missing: [],
-          required_fields: ['strand', 'grade_level', 'gwa'],
+          required_fields: ['shs_strand_id', 'grade_level_id', 'subject_grades'],
         },
       }),
     );

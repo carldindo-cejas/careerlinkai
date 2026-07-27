@@ -16,17 +16,29 @@
  *
  * ── Running it ──────────────────────────────────────────────────────────────────────────────
  *
+ *  **`--app` and `--api` are now the same origin.** Since the single-Worker consolidation, one
+ *  deployment serves both the SPA and `/api/v1`; the two flags survive because the script is also
+ *  run against a split local loop (Vite on :5173, Worker on :8787), and because a walkthrough that
+ *  cannot be pointed at two hosts cannot prove they are one.
+ *
  *  Against STAGING:
  *     1. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Staging --env staging \
- *          --verify-url https://<worker>/api/v1
+ *          --verify-url https://careerlinkai-staging.cejascarldindo.workers.dev/api/v1
  *        → prints a fresh temporary password. Both staff accounts are back to
  *          `must_change_password = 1`, which is what leg A and leg B start from.
  *     2. node scripts/walkthrough.mjs \
- *          --app https://careerlinkai-staging.pages.dev \
- *          --api https://<worker>/api/v1 \
+ *          --app https://careerlinkai-staging.cejascarldindo.workers.dev \
+ *          --api https://careerlinkai-staging.cejascarldindo.workers.dev/api/v1 \
  *          --password '<the temp password>'
  *
- *  Against LOCAL:
+ *  Against a LOCAL single-origin Worker — the closest local shape to what actually deploys, and
+ *  the one that exercises SPA fallback and `run_worker_first` rather than Vite's dev proxy:
+ *     1. cd backend && npm run preview        (builds the frontend, then serves both on :8787)
+ *     2. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --local --password ChangeMe123
+ *     3. node scripts/walkthrough.mjs --app http://localhost:8787 \
+ *          --api http://localhost:8787/api/v1 --password ChangeMe123
+ *
+ *  Against LOCAL with HMR (two ports, Vite proxying /api to the Worker):
  *     1. cd backend && npm run dev            (wrangler.local.toml, port 8787)
  *        (~3s boot, fully offline — it drops the [ai] and [[vectorize]] bindings, which have no
  *         local emulation and always dial out to Cloudflare, but it DOES run the queue consumers.
@@ -35,7 +47,9 @@
  *        NOTE: the offline config has no AI. To drive the Phase 5 RAG/generation legs locally,
  *        boot the mixed-mode config instead — `npm run dev:remote` (wrangler.dev.toml): local
  *        storage but real Workers AI + the staging Vectorize index. Needs `wrangler login`.
- *     2. cd frontend && npx vite --port 5173   (5173 is the Worker's CORS allow-list, FRONTEND_URL.)
+ *     2. cd frontend && npm run dev            (Vite on :5173, proxying /api to :8787 — so the
+ *                                               browser sees one origin here too, and CORS is not
+ *                                               in the picture even in this split loop.)
  *     3. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --local --password ChangeMe123
  *     4. node scripts/walkthrough.mjs --app http://localhost:5173 \
  *          --api http://localhost:8787/api/v1 --password ChangeMe123

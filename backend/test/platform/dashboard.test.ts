@@ -10,6 +10,7 @@ import {
   createStaffUser,
   enrolStudents,
   login,
+  profileLookups,
 } from '../helpers';
 
 /**
@@ -223,10 +224,11 @@ describe('GET /student/dashboard', () => {
     // The assignment fan-out (§44) already landed one unread notification.
     expect(before.body.data.unread_notifications).toBeGreaterThanOrEqual(1);
 
-    // Complete the profile (§27's two engine inputs) and the assignment.
+    // Complete the profile (§27's two engine inputs — a strand and an academic signal, which
+    // since 2026-07-27 is a subject grade rather than the removed GWA) and the assignment.
     const profile = await api('PATCH', '/student/profile', {
       token: studentToken,
-      body: { strand: 'Academic', gwa: 91 },
+      body: { shs_strand_id: (await profileLookups()).academic, math_grade: 91 },
     });
     expect(profile.status).toBe(200);
 

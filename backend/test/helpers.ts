@@ -10,9 +10,11 @@ import {
   classes,
   colleges,
   counselorProfiles,
+  gradeLevels,
   passwordResetTokens,
   programCareers,
   programs,
+  shsStrands,
   users,
 } from '@/db/schema';
 import { hashPassword } from '@/do/auth-guard';
@@ -199,14 +201,29 @@ export async function login(user: StaffUserFixture): Promise<string> {
  */
 export async function createClass(
   token: string,
-  overrides: { name?: string; academic_year?: string; grade_level?: string } = {},
+  overrides: {
+    name?: string;
+    academic_year?: string;
+    grade_level_id?: string | null;
+    shs_strand_id?: string | null;
+  } = {},
 ): Promise<any> {
   const response = await api('POST', '/counselor/classes', {
     token,
     body: {
       name: overrides.name ?? 'Grade 12 STEM A',
       academic_year: overrides.academic_year ?? '2026-2027',
-      grade_level: overrides.grade_level ?? 'Grade 12',
+      /**
+       * **Both default to NULL**, and every fixture that wants a derived grade level or strand
+       * asks for one explicitly (migration 0017).
+       *
+       * That is the safer default by a distance: a class carrying a strand *locks* its students'
+       * profile fields, so defaulting to "Grade 12 / Academic" here would silently make the
+       * majority of the suite's students unable to PATCH their own strand — and every test that
+       * does so would fail for a reason that has nothing to do with what it is testing.
+       */
+      grade_level_id: overrides.grade_level_id ?? null,
+      shs_strand_id: overrides.shs_strand_id ?? null,
     },
   });
 
@@ -215,6 +232,44 @@ export async function createClass(
   }
 
   return response.body.data;
+}
+
+/**
+ * The §13.1 lookup ids (migration 0017), resolved by `code`.
+ *
+ * By code rather than pasted UUIDs, for the same reason `assessmentTaxonomy()` above does it: a
+ * test that hard-coded `91000001-…` would still pass if the seeded row came to mean something
+ * else, and this way the fixture fails loudly if the migration ever stops shipping the reference
+ * rows that validation and the derivation both read.
+ */
+export async function profileLookups(): Promise<{
+  grade11: string;
+  grade12: string;
+  academic: string;
+  technical: string;
+}> {
+  const database = db();
+  const [levels, strands] = await Promise.all([
+    database.select().from(gradeLevels),
+    database.select().from(shsStrands),
+  ]);
+
+  const byCode = <T extends { code: string; id: string }>(rows: T[], code: string): string => {
+    const row = rows.find((candidate) => candidate.code === code);
+
+    if (row === undefined) {
+      throw new Error(`Migration 0017 did not seed the "${code}" reference row.`);
+    }
+
+    return row.id;
+  };
+
+  return {
+    grade11: byCode(levels, 'GRADE_11'),
+    grade12: byCode(levels, 'GRADE_12'),
+    academic: byCode(strands, 'ACADEMIC'),
+    technical: byCode(strands, 'TECHNICAL_PROFESSIONAL'),
+  };
 }
 
 /** Enrol students via preview → confirm, the only path that ever creates a student. */

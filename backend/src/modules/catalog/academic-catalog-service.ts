@@ -7,6 +7,7 @@ import {
   colleges,
   employmentOutlooks,
   programCareers,
+  programCatalog,
   programs,
   provinces,
   regions,
@@ -15,8 +16,10 @@ import {
   type College,
   type EmploymentOutlook,
   type Program,
+  type ProgramCatalogEntry,
   type User,
 } from '@/db/schema';
+import type { CatalogStatus } from '@/db/enums';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { isUniqueViolation } from '@/lib/db-errors';
@@ -303,10 +306,27 @@ export class AcademicCatalogService {
 
     const timestamp = now();
 
+    /**
+     * Which canonical program this offering *is* (migration 0018).
+     *
+     * An explicit `program_catalog_id` from the admin form wins; otherwise the code is normalized
+     * and matched, and an unmatched code creates the canonical entry. Auto-creating rather than
+     * refusing is deliberate: an admin adding "BS Marine Biology" to a college should not first
+     * have to visit a second screen to declare that BS Marine Biology exists. The canonical page
+     * is where a wrong grouping gets merged, not a gate a program has to pass to be saved.
+     */
+    const canonical = await this.resolveCanonicalProgram(
+      input.program_catalog_id,
+      input.code,
+      input.name,
+      timestamp,
+    );
+
     const program: Program = {
       id: uuid(),
       // From the route, never the body — a program cannot be moved between institutions.
       collegeId: college.id,
+      programCatalogId: canonical?.id ?? null,
       code: input.code,
       name: input.name,
       departmentName: input.department_name ?? null,
@@ -347,7 +367,16 @@ export class AcademicCatalogService {
       await this.assertProgramCodeFree(existing.collegeId, input.code, existing.id);
     }
 
+    // Re-pointing an offering at a different canonical program is the correction path for a
+    // mis-grouped row, so it is an ordinary field here. An explicit NULL unlinks it — which is a
+    // real state ("we have not decided what this is"), not a way of saying "leave it alone".
+    const canonical =
+      input.program_catalog_id === undefined
+        ? undefined
+        : await this.requireCanonicalProgram(input.program_catalog_id);
+
     const changes = {
+      ...(canonical !== undefined ? { programCatalogId: canonical?.id ?? null } : {}),
       ...(input.code !== undefined ? { code: input.code } : {}),
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.department_name !== undefined ? { departmentName: input.department_name } : {}),
@@ -393,6 +422,332 @@ export class AcademicCatalogService {
       oldValues: { code: existing.code, name: existing.name },
       ipAddress,
     });
+  }
+
+  // --- The canonical program catalog (migration 0018) -----------------------------------
+
+  /**
+   * The normalization the whole table rests on: upper-cased, with the punctuation people vary on
+   * removed. 'BS-CS', 'bs cs' and 'BSCS' are one code, which is what stops a hyphen from silently
+   * splitting a program across two canonical rows.
+   *
+   * It is deliberately conservative — it does not strip 'BS' or expand abbreviations, because a
+   * normalization that guesses is one that merges 'BSA' (Accountancy) with 'BSA' (Agriculture)
+   * and gives an admin no way to see that it happened.
+   */
+  static normalizeProgramCode(code: string): string {
+    return code
+      .trim()
+      .toUpperCase()
+      .replace(/[\s\-.]/g, '');
+  }
+
+  async listCanonicalPrograms(page: number, perPage: number): Promise<PaginatedData<ProgramCatalogEntry>> {
+    const scope = isNull(programCatalog.deletedAt);
+
+    const [total] = await this.db.select({ value: count() }).from(programCatalog).where(scope);
+
+    const items = await this.db
+      .select()
+      .from(programCatalog)
+      .where(scope)
+      .orderBy(asc(programCatalog.name))
+      .limit(perPage)
+      .offset((page - 1) * perPage);
+
+    return paginate(items, total?.value ?? 0, page, perPage);
+  }
+
+  /** Every canonical entry, for the admin form's picker. Two dozen rows at thesis scale. */
+  async allCanonicalPrograms(): Promise<ProgramCatalogEntry[]> {
+    return this.db
+      .select()
+      .from(programCatalog)
+      .where(and(eq(programCatalog.status, 'active'), isNull(programCatalog.deletedAt)))
+      .orderBy(asc(programCatalog.name));
+  }
+
+  async findCanonicalProgram(id: string): Promise<ProgramCatalogEntry> {
+    const entry = await this.db.query.programCatalog.findFirst({
+      where: eq(programCatalog.id, id),
+    });
+
+    if (entry?.deletedAt !== null) {
+      throw ApiError.notFound('Canonical program not found.');
+    }
+
+    return entry;
+  }
+
+  async createCanonicalProgram(
+    user: User,
+    input: { code: string; name: string; description?: string | null },
+    ipAddress: string | null,
+  ): Promise<ProgramCatalogEntry> {
+    const code = AcademicCatalogService.normalizeProgramCode(input.code);
+
+    await this.assertCanonicalCodeFree(code);
+
+    const timestamp = now();
+    const entry: ProgramCatalogEntry = {
+      id: uuid(),
+      code,
+      name: input.name.trim(),
+      description: input.description ?? null,
+      status: 'active',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deletedAt: null,
+    };
+
+    await this.db.insert(programCatalog).values(entry);
+
+    await this.audit.write({
+      action: 'CANONICAL_PROGRAM_CREATED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'program_catalog',
+      targetId: entry.id,
+      newValues: { code: entry.code, name: entry.name },
+      ipAddress,
+    });
+
+    return entry;
+  }
+
+  async updateCanonicalProgram(
+    user: User,
+    id: string,
+    input: { code?: string; name?: string; description?: string | null; status?: CatalogStatus },
+    ipAddress: string | null,
+  ): Promise<ProgramCatalogEntry> {
+    const existing = await this.findCanonicalProgram(id);
+    const code =
+      input.code === undefined ? undefined : AcademicCatalogService.normalizeProgramCode(input.code);
+
+    if (code !== undefined && code !== existing.code) {
+      await this.assertCanonicalCodeFree(code, existing.id);
+    }
+
+    const changes = {
+      ...(code !== undefined ? { code } : {}),
+      ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.status !== undefined ? { status: input.status } : {}),
+      updatedAt: now(),
+    };
+
+    await this.db.update(programCatalog).set(changes).where(eq(programCatalog.id, existing.id));
+
+    await this.audit.write({
+      action: 'CANONICAL_PROGRAM_UPDATED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'program_catalog',
+      targetId: existing.id,
+      oldValues: { code: existing.code, name: existing.name, status: existing.status },
+      newValues: { ...input },
+      ipAddress,
+    });
+
+    return { ...existing, ...changes };
+  }
+
+  /**
+   * Merge one canonical entry into another — the admin correction for a grouping the 0018 backfill
+   * got wrong, and the reason this feature ships with a page rather than only a column.
+   *
+   * Every offering pointed at `sourceId` is re-pointed at `targetId`, then the source is
+   * soft-deleted. It is not reversible from the UI, so the route confirms first.
+   */
+  async mergeCanonicalPrograms(
+    user: User,
+    sourceId: string,
+    targetId: string,
+    ipAddress: string | null,
+  ): Promise<{ moved: number; target: ProgramCatalogEntry }> {
+    if (sourceId === targetId) {
+      throw ApiError.validation({ target_id: ['A canonical program cannot be merged into itself.'] });
+    }
+
+    const source = await this.findCanonicalProgram(sourceId);
+    const target = await this.findCanonicalProgram(targetId);
+    const timestamp = now();
+
+    const moved = await this.db
+      .update(programs)
+      .set({ programCatalogId: target.id, updatedAt: timestamp })
+      .where(eq(programs.programCatalogId, source.id))
+      .returning({ id: programs.id });
+
+    await this.db
+      .update(programCatalog)
+      .set({ deletedAt: timestamp, updatedAt: timestamp })
+      .where(eq(programCatalog.id, source.id));
+
+    await this.audit.write({
+      action: 'CANONICAL_PROGRAM_MERGED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'program_catalog',
+      targetId: target.id,
+      oldValues: { source_id: source.id, source_code: source.code, source_name: source.name },
+      newValues: { target_id: target.id, offerings_moved: moved.length },
+      ipAddress,
+    });
+
+    return { moved: moved.length, target };
+  }
+
+  /**
+   * **"Which colleges offer this program?"** — the question migration 0018 exists to answer.
+   *
+   * Scoped to the same `active` chain §27 uses for recommendability: an active program under an
+   * archived college is not offered, and showing it to a student would be advertising a door that
+   * is not open. Ordered by college name so the list is reproducible (§26).
+   */
+  async collegesOfferingCanonical(
+    canonicalId: string,
+  ): Promise<{ college: College; program: Program }[]> {
+    return this.db
+      .select({ college: colleges, program: programs })
+      .from(programs)
+      .innerJoin(colleges, eq(programs.collegeId, colleges.id))
+      .where(
+        and(
+          eq(programs.programCatalogId, canonicalId),
+          eq(programs.status, 'active'),
+          isNull(programs.deletedAt),
+          eq(colleges.status, 'active'),
+          isNull(colleges.deletedAt),
+        ),
+      )
+      .orderBy(asc(colleges.name));
+  }
+
+  /**
+   * **"Which college programs lead to this career?"** — `program_careers`, read in the direction
+   * nothing needed until now.
+   *
+   * §27 only ever traversed program → careers (to average their Holland codes). The student-facing
+   * "View related college programs" button traverses career → programs, over the same rows and the
+   * same `active` chain.
+   */
+  async programsForCareer(
+    careerId: string,
+  ): Promise<{ program: Program; college: College; canonical: ProgramCatalogEntry | null }[]> {
+    return this.db
+      .select({ program: programs, college: colleges, canonical: programCatalog })
+      .from(programCareers)
+      .innerJoin(programs, eq(programCareers.programId, programs.id))
+      .innerJoin(colleges, eq(programs.collegeId, colleges.id))
+      .leftJoin(programCatalog, eq(programs.programCatalogId, programCatalog.id))
+      .where(
+        and(
+          eq(programCareers.careerId, careerId),
+          eq(programs.status, 'active'),
+          isNull(programs.deletedAt),
+          eq(colleges.status, 'active'),
+          isNull(colleges.deletedAt),
+        ),
+      )
+      .orderBy(asc(programs.name), asc(colleges.name));
+  }
+
+  /**
+   * How many live college offerings point at each canonical entry — **one query for the whole
+   * page**, not one per row.
+   *
+   * The N+1 version of this is the exact shape of the bug §45's subrequest budget exists to catch:
+   * a 20-row admin page would spend 20 of a Free-plan request's 50 D1 calls on a count nobody
+   * asked to be accurate to the millisecond.
+   */
+  async offeringCountsFor(canonicalIds: string[]): Promise<Map<string, number>> {
+    if (canonicalIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.db
+      .select({ canonicalId: programs.programCatalogId, value: count() })
+      .from(programs)
+      .where(
+        and(
+          inArray(programs.programCatalogId, canonicalIds),
+          eq(programs.status, 'active'),
+          isNull(programs.deletedAt),
+        ),
+      )
+      .groupBy(programs.programCatalogId);
+
+    const counts = new Map<string, number>();
+
+    for (const row of rows) {
+      if (row.canonicalId !== null) {
+        counts.set(row.canonicalId, row.value);
+      }
+    }
+
+    return counts;
+  }
+
+  private async assertCanonicalCodeFree(code: string, exceptId?: string): Promise<void> {
+    const clash = await this.db.query.programCatalog.findFirst({
+      where: and(eq(programCatalog.code, code), isNull(programCatalog.deletedAt)),
+    });
+
+    if (clash !== undefined && clash.id !== exceptId) {
+      throw ApiError.validation({
+        code: [`The canonical program "${clash.name}" already uses the code ${code}.`],
+      });
+    }
+  }
+
+  /** NULL unlinks; a non-null id must name a live canonical entry. */
+  private async requireCanonicalProgram(id: string | null): Promise<ProgramCatalogEntry | null> {
+    if (id === null) return null;
+
+    return this.findCanonicalProgram(id);
+  }
+
+  /** See `createProgram` for why an unmatched code creates the entry rather than refusing. */
+  private async resolveCanonicalProgram(
+    explicitId: string | null | undefined,
+    code: string,
+    name: string,
+    timestamp: string,
+  ): Promise<ProgramCatalogEntry | null> {
+    if (explicitId !== undefined) {
+      return this.requireCanonicalProgram(explicitId);
+    }
+
+    const normalized = AcademicCatalogService.normalizeProgramCode(code);
+
+    if (normalized === '') {
+      return null;
+    }
+
+    const existing = await this.db.query.programCatalog.findFirst({
+      where: and(eq(programCatalog.code, normalized), isNull(programCatalog.deletedAt)),
+    });
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const entry: ProgramCatalogEntry = {
+      id: uuid(),
+      code: normalized,
+      name: name.trim(),
+      description: null,
+      status: 'active',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deletedAt: null,
+    };
+
+    await this.db.insert(programCatalog).values(entry);
+
+    return entry;
   }
 
   // --- Careers -------------------------------------------------------------------------

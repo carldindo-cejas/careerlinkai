@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 
-import { createDatabase } from '@/db/client';
+import { createDatabase, type Database } from '@/db/client';
 import type { AppEnv } from '@/env';
 import {
   AI_REQUEST_LIMIT,
@@ -8,13 +8,23 @@ import {
   aiRateLimitGuard,
 } from '@/lib/auth-guard';
 import { successEnvelope, ApiError } from '@/lib/envelope';
+import { parseBody } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
 import { AiPolicyService } from '@/modules/ai/ai-policy-service';
+import { ChatService } from '@/modules/ai/chat-service';
 import { ExplanationService } from '@/modules/ai/explanation-service';
 import { aiGatewayFrom, retrievalFrom } from '@/modules/ai/factory';
-import { serializeExplanation } from '@/modules/ai/serializers';
+import { askChatSchema } from '@/modules/ai/schemas';
+import { serializeChatMessage, serializeExplanation } from '@/modules/ai/serializers';
+import { AcademicCatalogService } from '@/modules/catalog/academic-catalog-service';
+import {
+  serializeCanonicalProgram,
+  serializeCareer,
+  serializeCollege,
+  serializeProgram,
+} from '@/modules/catalog/serializers';
 import { RecommendationService } from '@/modules/recommendation/recommendation-service';
 import { serializeRecommendationSet } from '@/modules/recommendation/serializers';
 import { authorizeStudentRecommendations } from '@/policies/recommendation';
@@ -54,6 +64,18 @@ export const studentRecommendationRoutes = new Hono<AppEnv>();
  */
 studentRecommendationRoutes.use('*', authenticate());
 studentRecommendationRoutes.use('*', ensureRole('student'));
+
+/**
+ * The chat assistant's dependencies, assembled in one place.
+ *
+ * The active AI policy is read per request rather than cached: it is the one database-editable
+ * part of the system prompt (§13.7), and an admin who edits it expects the next message to obey it.
+ */
+async function chatServiceForAsync(db: Database, c: Context<AppEnv>): Promise<ChatService> {
+  const policy = await new AiPolicyService(db).activeGlobal();
+
+  return new ChatService(db, aiGatewayFrom(db, c.env), retrievalFrom(db, c.env), policy);
+}
 
 /**
  * `GET /student/recommendations` and `/recommendations/latest` are **the same thing in v1**, and
@@ -155,6 +177,166 @@ studentRecommendationRoutes.post('/recommendations/:id/explain', async (c) => {
         : 'Explanation generated.',
     ),
   );
+});
+
+/**
+ * `GET /student/careers/{id}/programs` — **"which college programs lead to this career?"**
+ *
+ * The `program_careers` mapping, read in the direction nothing needed until now: §27 only ever
+ * traversed program → careers, to average their Holland codes. Same rows, same `active` chain.
+ *
+ * Not scoped to the student's own recommendations, and deliberately so. A student looking at
+ * "Software Engineer" is asking what they could study to get there — answering with only the two
+ * programs that happen to be in their own top ten would be answering a different, smaller question
+ * and would hide the rest of the catalog behind a ranking they did not ask about.
+ *
+ * The career id is not a leak: `GET /careers/public` already serves the whole active career list to
+ * anyone at all, so nothing here is reachable that was not already public. It lives under
+ * `/student` because it needs no other scoping and the student shell is where it is used.
+ */
+studentRecommendationRoutes.get('/careers/:id/programs', async (c) => {
+  const service = new AcademicCatalogService(createDatabase(c.env.DB));
+  const career = await service.findCareer(c.req.param('id'));
+  const rows = await service.programsForCareer(career.id);
+
+  return c.json(
+    successEnvelope(
+      {
+        career: serializeCareer(career),
+        programs: rows.map(({ program, college, canonical }) => ({
+          program: serializeProgram(program, undefined, { canonical }),
+          college: serializeCollege(college),
+        })),
+      },
+      rows.length === 0
+        ? 'No college programs are mapped to this career yet.'
+        : 'College programs retrieved.',
+    ),
+  );
+});
+
+/**
+ * `GET /student/programs/{id}/colleges` — **"which colleges offer this program?"**
+ *
+ * Answered through `program_catalog` (migration 0018) rather than by matching strings: the program
+ * named in the URL is one college's offering, its canonical entry is what it *is*, and the sibling
+ * offerings of that entry are the answer.
+ *
+ * A program with no canonical entry answers 200 with an empty list and `canonical: null`, not a
+ * 404. "We have not decided what this program canonically is" is a real state of the data and the
+ * screen says so, rather than implying the program does not exist.
+ */
+studentRecommendationRoutes.get('/programs/:id/colleges', async (c) => {
+  const service = new AcademicCatalogService(createDatabase(c.env.DB));
+  const program = await service.findProgram(c.req.param('id'));
+
+  if (program.programCatalogId === null) {
+    return c.json(
+      successEnvelope(
+        { canonical: null, offerings: [] },
+        'This program has not been matched to the shared program catalog yet.',
+      ),
+    );
+  }
+
+  const canonical = await service.findCanonicalProgram(program.programCatalogId);
+  const rows = await service.collegesOfferingCanonical(canonical.id);
+
+  return c.json(
+    successEnvelope(
+      {
+        canonical: serializeCanonicalProgram(canonical),
+        offerings: rows.map(({ college, program: offering }) => ({
+          college: serializeCollege(college),
+          program: serializeProgram(offering),
+        })),
+      },
+      'Colleges retrieved.',
+    ),
+  );
+});
+
+// --- The recommendations chat assistant (migration 0019) --------------------------------------
+//
+// Three endpoints, all "mine": read the transcript, add a turn, clear it. Same reasoning as the
+// rest of this router — there is no student id in any URL, so none of these can be made to mean
+// somebody else's conversation by editing a parameter.
+
+/** `GET /student/chat` — the transcript, or an empty one. Never a 404: "no messages" is a state. */
+studentRecommendationRoutes.get('/chat', async (c) => {
+  const user = requireUser(c);
+  const db = createDatabase(c.env.DB);
+  const service = await chatServiceForAsync(db, c);
+
+  const conversation = await service.currentFor(user.id);
+  const messages =
+    conversation === null ? [] : await service.messagesFor(user.id, conversation.id);
+
+  return c.json(
+    successEnvelope(
+      {
+        conversation_id: conversation?.id ?? null,
+        messages: messages.map(serializeChatMessage),
+      },
+      'Conversation retrieved.',
+    ),
+  );
+});
+
+/**
+ * `POST /student/chat` — ask one question.
+ *
+ * Rate-limited on the same §41 counter as `explain`: 10 AI requests per minute per user, charged
+ * atomically in an `AuthGuardDO` instance. It is the same limiter rather than a second one because
+ * it guards the same thing — a hard daily neuron quota (§45) that both features draw from. Two
+ * independent 10/min budgets would be a 20/min budget wearing a disguise.
+ */
+studentRecommendationRoutes.post('/chat', async (c) => {
+  const user = requireUser(c);
+  const input = await parseBody(c, askChatSchema);
+  const db = createDatabase(c.env.DB);
+
+  const guard = aiRateLimitGuard(c.env, user.id);
+  const state = await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
+
+  if (state.locked) {
+    throw ApiError.tooManyRequests({
+      message: [`You are sending messages too quickly. Try again in ${state.retryAfterSeconds} seconds.`],
+    });
+  }
+
+  // The student's own set, loaded server-side. It is never accepted from the client: a chat that
+  // took its "context" from the request body would let anyone put any numbers in front of the
+  // model and have it explain them as though they were that student's results.
+  const recommendations = await new RecommendationService(db).latestFor(user.id);
+  const chat = await chatServiceForAsync(db, c);
+  const turn = await chat.ask(user.id, input.message, recommendations);
+
+  return c.json(
+    successEnvelope(
+      {
+        conversation_id: turn.conversation.id,
+        question: serializeChatMessage(turn.question),
+        answer: serializeChatMessage(turn.answer),
+        failure: turn.failure,
+      },
+      turn.failure === null
+        ? 'Answer generated.'
+        : 'The assistant is unavailable right now — your computed results are shown instead.',
+    ),
+    201,
+  );
+});
+
+/** `DELETE /student/chat` — the student's own transcript, cleared on their own say-so. */
+studentRecommendationRoutes.delete('/chat', async (c) => {
+  const db = createDatabase(c.env.DB);
+
+  const chat = await chatServiceForAsync(db, c);
+
+  await chat.clearFor(requireUser(c).id);
+
+  return c.json(successEnvelope({ cleared: true }, 'Conversation cleared.'));
 });
 
 // --- /counselor (role: counselor or admin) ---------------------------------------------------

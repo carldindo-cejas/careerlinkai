@@ -1,4 +1,9 @@
-import type { AiPolicy, KnowledgeDocument, RecommendationExplanation } from '@/db/schema';
+import type {
+  AiPolicy,
+  ChatMessage,
+  KnowledgeDocument,
+  RecommendationExplanation,
+} from '@/db/schema';
 
 /**
  * Allow-list serializers (F-L2 discipline): a column added next year cannot leak through a
@@ -41,5 +46,22 @@ export function serializeExplanation(
     explanation_text: explanation.explanationText,
     ai_model: explanation.aiModel,
     created_at: explanation.createdAt,
+  };
+}
+
+/**
+ * One chat message (migration 0019).
+ *
+ * `ai_request_id` travels because it is the provenance link (§13.7) and because its absence is
+ * *meaningful* to the client: an assistant message with no request behind it is the deterministic
+ * fallback, and the panel labels it as such rather than presenting computed text as a generation.
+ */
+export function serializeChatMessage(message: ChatMessage): Record<string, unknown> {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    ai_request_id: message.aiRequestId,
+    created_at: message.createdAt,
   };
 }

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { QUESTION_TYPES, SCORING_ALGORITHMS, STRANDS } from '@/db/enums';
+import { QUESTION_TYPES, SCORING_ALGORITHMS } from '@/db/enums';
 
 /**
  * The assessment module's write contracts (FULLPLAN §37, `docs/api/phase-3-assessment-engine.md`).
@@ -9,10 +9,10 @@ import { QUESTION_TYPES, SCORING_ALGORITHMS, STRANDS } from '@/db/enums';
 /**
  * Grades are bounded **60–100**, and this is real validation rather than decoration.
  *
- * §27 *scores* a GWA — `academic_fit = ((gwa - 75) / 20) × 100` — rather than sanity-checking it.
- * A typo'd `9.2` would sail through, clamp to 0, and quietly wreck every program recommendation
- * the student ever sees, with nothing anywhere reporting an error. **This endpoint is the only
- * place in the system that can catch it.**
+ * §27 *scores* a subject average — `academic_fit = ((average - 75) / 20) × 100` — rather than
+ * sanity-checking it. A typo'd `9.2` would sail through, clamp to 0, and quietly wreck every
+ * program recommendation the student ever sees, with nothing anywhere reporting an error. **This
+ * endpoint is the only place in the system that can catch it.**
  */
 const grade = z
   .number()
@@ -20,19 +20,38 @@ const grade = z
   .max(100, 'A grade cannot exceed 100.');
 
 /**
- * `strand` is the strict two-value enum (§13.1, v1.2).
+ * The student-editable half of the profile.
  *
- * "STEM" is a *track within* Academic and is rejected. §27 is built on exactly two branches, and
- * offering four options that silently map down to two would be a lie about what the engine can
- * actually tell apart.
+ * ## Three fields are conspicuously absent
+ *
+ * `first_name` / `last_name` belong to the counselor's roster (§16) — a student renaming
+ * themselves would break the roster the counselor confirmed and the username derived from it.
+ *
+ * `gwa` is gone entirely (prompt-driven, 2026-07-27). §27's academic components now read the mean
+ * of the three subject grades below.
+ *
+ * `.strict()` is what turns "we do not read that field" into "that field is **rejected**", so an
+ * attempt to send any of them is a 422 rather than a silent no-op. That matters most for the two
+ * fields below.
+ *
+ * ## Grade level and strand are ids, and only when nothing else supplies them
+ *
+ * Both are now FKs into the §13.1 lookups (migration 0017), and both are **derived from the class
+ * the counselor enrolled the student in**. A student whose class carries a value may not change it
+ * — `StudentProfileService.update` refuses with a 422 rather than ignoring the field, because
+ * silently discarding an edit a student watched themselves make is the data-loss bug the profile
+ * screen's own comments warn about. Passing them here is only legal when no class supplies them.
+ *
+ * The raw `strand` **string** is not accepted at any privilege level: `student_profiles.strand` is
+ * a derived mirror of `shs_strands.name` with exactly one writer (§13.1 note in `schema.ts`), and
+ * a second way to set it is precisely how a mirror becomes a second opinion.
  */
 export const updateStudentProfileSchema = z
   .object({
     birthdate: z.string().date().nullable(),
     gender: z.string().max(30).nullable(),
-    grade_level: z.string().max(20).nullable(),
-    strand: z.enum(STRANDS).nullable(),
-    gwa: grade.nullable(),
+    grade_level_id: z.string().uuid().nullable(),
+    shs_strand_id: z.string().uuid().nullable(),
     math_grade: grade.nullable(),
     science_grade: grade.nullable(),
     english_grade: grade.nullable(),
@@ -40,9 +59,6 @@ export const updateStudentProfileSchema = z
     guardian_contact: z.string().max(30).nullable(),
   })
   .partial()
-  // `first_name` / `last_name` are absent on purpose — they belong to the counselor's roster
-  // (§16), and `.strict()` is what turns "we do not read that field" into "that field is
-  // rejected", so an attempt to rename oneself is an error rather than a silent no-op.
   .strict();
 
 export type UpdateStudentProfileInput = z.infer<typeof updateStudentProfileSchema>;

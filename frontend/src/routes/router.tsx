@@ -4,6 +4,7 @@ import { AddressPage } from '@/features/admin/pages/AddressPage';
 import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage';
 import { AiPolicyPage } from '@/features/admin/pages/AiPolicyPage';
 import { AuditLogPage } from '@/features/admin/pages/AuditLogPage';
+import { CanonicalProgramPage } from '@/features/admin/pages/CanonicalProgramPage';
 import { CareerListPage } from '@/features/admin/pages/CareerListPage';
 import { CollegeDetailPage } from '@/features/admin/pages/CollegeDetailPage';
 import { CollegeListPage } from '@/features/admin/pages/CollegeListPage';
@@ -99,6 +100,7 @@ export function AppRoutes() {
           <Route path={paths.adminColleges} element={<CollegeListPage />} />
           <Route path={paths.adminCollegeDetail} element={<CollegeDetailPage />} />
           <Route path={paths.adminCareers} element={<CareerListPage />} />
+          <Route path={paths.adminCanonicalPrograms} element={<CanonicalProgramPage />} />
           {/* Phase 5a: what the AI may know, and what it may say (§33, §13.7). */}
           <Route path={paths.adminKnowledge} element={<KnowledgeListPage />} />
           <Route path={paths.adminAiPolicy} element={<AiPolicyPage />} />

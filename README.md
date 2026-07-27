@@ -72,10 +72,19 @@ npm run dev               # offline dev server (Miniflare emulates D1/KV/R2/Queu
 ```bash
 cd frontend
 npm install
-npm run dev               # Vite on http://localhost:5173 (the API's CORS allow-list origin)
+npm run dev               # Vite on http://localhost:5173, proxying /api to the Worker on :8787
 ```
 
-The frontend expects the API at `http://localhost:8787/api/v1` when running the local backend.
+The frontend calls the **relative** path `/api/v1` in every environment — it is same-origin with its
+API by construction, because one Worker serves both. In the dev loop above Vite's proxy provides that
+same origin, so there is no `VITE_API_BASE_URL` to configure and no CORS in the picture.
+
+To see the deployed shape locally instead — one port, real SPA fallback, real asset caching:
+
+```bash
+cd backend
+npm run preview           # builds the frontend, then serves app + API on http://localhost:8787
+```
 
 ---
 
@@ -88,6 +97,7 @@ through the network (per-file isolated storage and zero-credential CI depend on 
 |---|---|---|---|---|---|
 | Hermetic suite | `npm test` | local (isolated per file) | stubbed / absent | no | the gate on every push · CI |
 | Offline dev | `npm run dev` | local | absent | no | default loop — auth, classes, assessments, recs |
+| Single-origin preview | `npm run preview` | local | absent | no | the deployed routing shape: SPA fallback, `/api/*`, cache headers |
 | Mixed-mode dev | `npm run dev:remote` | local (disposable) | **real** (`remote = true`) | yes | Phase 5 RAG/generation — real model + real index |
 | Staging | `npm run deploy:staging` | real staging | real | yes | **pre-prod fidelity gate** |
 
@@ -120,20 +130,32 @@ every push and PR, with **no Cloudflare credentials** — the backend suite is f
 
 ## Deployment
 
-```bash
-# Backend (cd backend)
-npm run db:migrate:staging      # apply migrations to remote staging D1
-npm run deploy:staging          # publish the careerlinkai-staging Worker
-npm run db:migrate:production
-npm run deploy:production        # publish the careerlinkai.online Worker
+**One Worker serves the whole application** — the React SPA, its static assets, and the Hono API,
+from a single origin. There is no Cloudflare Pages project and no second deployment.
 
-# Frontend (cd frontend)
-npm run deploy:staging          # build + wrangler pages deploy
+```bash
+# From backend/ — this builds the frontend and publishes both halves.
+npm run db:migrate:staging      # apply migrations to remote staging D1 (always first)
+npm run deploy:staging          # publish careerlinkai-staging
+
+npm run db:migrate:production
+npm run deploy:production       # publish careerlinkai.online
 ```
+
+`wrangler deploy` on its own is the whole contract: `[build]` in `wrangler.toml` runs the Vite
+build, so the `dist/` that ships is always the one built from the commit being deployed.
+
+| Path | Served by |
+|---|---|
+| `/api/*` | the Hono app (`run_worker_first` — always the Worker, never the SPA shell) |
+| `/assets/*` | static assets, immutable for a year (content-hashed names) |
+| everything else | `index.html`, HTTP 200 — React Router takes it from there |
 
 Staging and production are two Wrangler environments of the same Worker with **separate** D1, KV, R2,
 Vectorize, and queues — staging can never write to production data. Secrets go through
 `wrangler secret put NAME`, never into committed config.
+
+Full runbook — migration, rollback, validation: [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ## API
 

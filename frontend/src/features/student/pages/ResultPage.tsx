@@ -1,8 +1,10 @@
-import { useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useResult } from '@/features/student/hooks/useAssessment';
+import { paths, type ResultPageState } from '@/routes/paths';
 import type { AssessmentResult, DimensionScore } from '@/types/assessment';
 
 /**
@@ -19,6 +21,18 @@ import type { AssessmentResult, DimensionScore } from '@/types/assessment';
 export function ResultPage() {
   const { attemptId = '' } = useParams();
   const { data: result, isLoading, error } = useResult(attemptId);
+  const navigate = useNavigate();
+
+  /**
+   * Where the student came from, if the sending screen said so (see `ResultPageState`).
+   *
+   * Deliberately **not** `navigate(-1)`. The player replaces itself in the history stack when it
+   * submits, so "one entry back" from a freshly finished assessment is whatever preceded the
+   * player — which is usually right but occasionally is the login screen or nothing at all. A
+   * named destination cannot land somewhere meaningless, and it lets the button say where it goes.
+   */
+  const returnTo = (useLocation().state ?? null) as ResultPageState | null;
+  const showReturn = returnTo !== null && returnTo.from !== paths.studentAssessments;
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading your result…</p>;
   if (error || !result) return <Alert tone="danger">This result could not be loaded.</Alert>;
@@ -49,6 +63,25 @@ export function ResultPage() {
           ))}
         </CardContent>
       </Card>
+
+      {/*
+        The way out. "Back to assessments" is always offered because it is always a valid
+        destination; the "Return to…" button appears only when another screen told us it sent the
+        student here, and names that screen rather than saying "back".
+      */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Button onClick={() => navigate(paths.studentAssessments)}>Back to assessments</Button>
+
+        {showReturn ? (
+          <Button variant="secondary" onClick={() => navigate(returnTo.from)}>
+            Return to {returnTo.fromLabel.toLowerCase()}
+          </Button>
+        ) : null}
+
+        <Button variant="ghost" onClick={() => navigate(paths.studentRecommendations)}>
+          See my recommendations
+        </Button>
+      </div>
     </div>
   );
 }

@@ -36,8 +36,15 @@ export interface Career {
   salary_min: number | null;
   salary_max: number | null;
   employment_outlook_id: string | null;
-  /** The resolved outlook `{ id, name }`, or null where the API did not load the lookup. */
-  employment_outlook: Place | null;
+  /**
+   * The resolved outlook, or null where the API did not load the lookup.
+   *
+   * `display_order` travels with it because the outlook is a **curated sequence** — Low → Moderate
+   * → High → Emerging — not an alphabet. The "sort by job outlook" control has no other way to know
+   * that "Emerging Field" outranks "Low Demand"; sorting on the name would order them E, H, L, M,
+   * which is not a ranking of anything.
+   */
+  employment_outlook: (Place & { display_order: number }) | null;
   /**
    * A Holland code, e.g. "IEC" — up to three distinct RIASEC letters, most dominant
    * first. Null is valid: the career is in the catalog but cannot be RIASEC-matched.
@@ -58,10 +65,50 @@ export interface Program {
   /** Null means "no strand requirement" — §27 scores that as a full 100, not as a gap. */
   recommended_strand: Strand | null;
   status: ProgramStatus;
+  /**
+   * Which canonical program this offering is (migration 0018) — what makes "which colleges offer
+   * this?" a join rather than a string match. NULL means nobody has decided yet, which the UI
+   * states rather than hides.
+   */
+  program_catalog_id: string | null;
+  /** Resolved where the endpoint joined it. */
+  canonical?: CanonicalProgram | null;
   /** Present only where the API loaded the mapping (the nested college view). */
   careers?: Career[];
   created_at: string | null;
   updated_at: string | null;
+}
+
+/**
+ * A program as a thing in the world — "BS Computer Science" — of which each `Program` is one
+ * college's offering (migration 0018).
+ */
+export interface CanonicalProgram {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  status: CatalogStatus;
+  /** On the admin list only: how many live college offerings point here. */
+  offerings_count?: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CreateCanonicalProgramPayload {
+  code: string;
+  name: string;
+  description?: string | null;
+}
+
+export type UpdateCanonicalProgramPayload = Partial<
+  CreateCanonicalProgramPayload & { status: CatalogStatus }
+>;
+
+/** One college's offering of a canonical program, as the student-facing lists return it. */
+export interface ProgramOffering {
+  college: College;
+  program: Program;
 }
 
 export interface College {
@@ -113,6 +160,12 @@ export interface CreateProgramPayload {
   /** Explicitly nullable, not optional: null is the "no requirement" claim. */
   recommended_strand: Strand | null;
   status?: ProgramStatus | undefined;
+  /**
+   * **Omitted** means "work it out from the code" — the normal path, and why adding a program
+   * never requires visiting the canonical page first. An explicit `null` means "not yet decided",
+   * which is a different and legitimate state.
+   */
+  program_catalog_id?: string | null;
 }
 
 export type UpdateProgramPayload = Partial<CreateProgramPayload>;

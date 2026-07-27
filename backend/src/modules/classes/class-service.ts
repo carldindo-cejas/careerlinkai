@@ -1,9 +1,18 @@
 import { and, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
-import { classes, type ClassRoom, type User } from '@/db/schema';
+import {
+  classes,
+  gradeLevels,
+  shsStrands,
+  type ClassRoom,
+  type GradeLevel,
+  type ShsStrand,
+  type User,
+} from '@/db/schema';
 import { applyGlobalAssignments } from '@/events/apply-global-assignments';
 import { dispatch } from '@/events/dispatcher';
+import { syncDerivedProfileFields } from '@/events/sync-derived-profile-fields';
 import { studentJoinCodeTtlDays } from '@/lib/config';
 import { uuid } from '@/lib/crypto';
 import { daysFromNow, now } from '@/lib/datetime';
@@ -122,13 +131,18 @@ export class ClassService {
 
   async create(user: User, input: CreateClassInput, ipAddress: string | null): Promise<ClassRoom> {
     const timestamp = now();
+    const gradeLevel = await this.resolveGradeLevel(input.grade_level_id ?? null);
+    const strand = await this.resolveStrand(input.shs_strand_id ?? null);
 
     const classRoom: ClassRoom = {
       id: uuid(),
       counselorId: user.id,
       name: input.name,
       academicYear: input.academic_year,
-      gradeLevel: input.grade_level ?? null,
+      gradeLevelId: gradeLevel?.id ?? null,
+      shsStrandId: strand?.id ?? null,
+      // The mirror, written with the id exactly as on `student_profiles` (migration 0017).
+      gradeLevel: gradeLevel?.name ?? null,
       joinCode: await this.uniqueJoinCode(),
       joinCodeExpiresAt: daysFromNow(studentJoinCodeTtlDays(this.env)),
       status: 'active',
@@ -185,15 +199,43 @@ export class ClassService {
   ): Promise<ClassRoom> {
     const existing = await this.find(user, id);
 
+    // Resolved before the write so a uuid naming no lookup row is a 422 rather than a dangling FK,
+    // and so the mirror can be written in the same statement as the id.
+    const gradeLevel =
+      input.grade_level_id === undefined ? undefined : await this.resolveGradeLevel(input.grade_level_id);
+    const strand =
+      input.shs_strand_id === undefined ? undefined : await this.resolveStrand(input.shs_strand_id);
+
     const changes = {
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.academic_year !== undefined ? { academicYear: input.academic_year } : {}),
-      ...(input.grade_level !== undefined ? { gradeLevel: input.grade_level } : {}),
+      ...(gradeLevel !== undefined
+        ? { gradeLevelId: gradeLevel?.id ?? null, gradeLevel: gradeLevel?.name ?? null }
+        : {}),
+      ...(strand !== undefined ? { shsStrandId: strand?.id ?? null } : {}),
       ...(input.status !== undefined ? { status: input.status } : {}),
       updatedAt: now(),
     };
 
     await this.db.update(classes).set(changes).where(eq(classes.id, existing.id));
+
+    /**
+     * **Rule 1 of the derivation** (migration 0017): a class whose grade level or strand moved
+     * pushes the new value onto every active student in it, in one statement.
+     *
+     * Through an event rather than a direct call, for the same §11 reason `ClassActivated` is one:
+     * `student_profiles` is written by the Assessment module's `StudentProfileService`, and the
+     * class edit must survive a failed sync.
+     *
+     * Only when one of the two actually changed. Firing on every PATCH would be harmless (the sync
+     * is idempotent) but would spend a D1 write — and an `updated_at` bump on sixty profiles — on
+     * a rename.
+     */
+    if (gradeLevel !== undefined || strand !== undefined) {
+      await dispatch({ type: 'ClassRosterFieldsChanged', classId: existing.id }, [
+        syncDerivedProfileFields(this.db),
+      ]);
+    }
 
     await this.audit.write({
       action: 'CLASS_UPDATED',
@@ -284,6 +326,37 @@ export class ClassService {
   }
 
   // --- internals ---------------------------------------------------------------------
+
+  /**
+   * Resolve a `grade_levels` id, or NULL to clear it.
+   *
+   * Resolving rather than trusting is what makes a bad id a 422 with a field name on it instead of
+   * a foreign-key error at write time — the same reason `assertProgramCodeFree` exists in the
+   * catalog module rather than letting the unique index speak.
+   */
+  private async resolveGradeLevel(id: string | null): Promise<GradeLevel | null> {
+    if (id === null) return null;
+
+    const row = await this.db.query.gradeLevels.findFirst({ where: eq(gradeLevels.id, id) });
+
+    if (row === undefined) {
+      throw ApiError.validation({ grade_level_id: ['That grade level does not exist.'] });
+    }
+
+    return row;
+  }
+
+  private async resolveStrand(id: string | null): Promise<ShsStrand | null> {
+    if (id === null) return null;
+
+    const row = await this.db.query.shsStrands.findFirst({ where: eq(shsStrands.id, id) });
+
+    if (row === undefined) {
+      throw ApiError.validation({ shs_strand_id: ['That strand does not exist.'] });
+    }
+
+    return row;
+  }
 
   private async uniqueJoinCode(): Promise<string> {
     for (let attempt = 0; attempt < JOIN_CODE_ATTEMPTS; attempt += 1) {

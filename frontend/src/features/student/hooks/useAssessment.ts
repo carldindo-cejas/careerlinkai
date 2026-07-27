@@ -9,6 +9,7 @@ import type { UpdateProfilePayload } from '@/types/assessment';
 
 export const assessmentKeys = {
   profile: ['student', 'profile'] as const,
+  profileOptions: ['student', 'profile', 'options'] as const,
   assignments: ['student', 'assignments'] as const,
   attempt: (id: string) => ['student', 'attempts', id] as const,
   results: ['student', 'results'] as const,
@@ -19,6 +20,15 @@ export function useProfile() {
   return useQuery({
     queryKey: assessmentKeys.profile,
     queryFn: () => studentAssessmentApi.getProfile(),
+  });
+}
+
+/** Two rows each, identical for every user in the system — so it is cached for the session. */
+export function useProfileOptions() {
+  return useQuery({
+    queryKey: assessmentKeys.profileOptions,
+    queryFn: () => studentAssessmentApi.getProfileOptions(),
+    staleTime: Infinity,
   });
 }
 

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { api, createClass, createStaffUser, enrolStudents, joinClass, login } from '../helpers';
+import {
+  api,
+  createClass,
+  createStaffUser,
+  enrolStudents,
+  joinClass,
+  login,
+  profileLookups,
+} from '../helpers';
 
 /**
  * Class CRUD + the join-code lifecycle (FULLPLAN §13.2, §20).
@@ -18,9 +26,19 @@ describe('POST /counselor/classes', () => {
     const counselor = await createStaffUser();
     const token = await login(counselor);
 
+    // Grade level is an id into the §13.1 lookup since migration 0017, not free text — and it is
+    // the *source* of every enrolled student's own grade level, which is why it stopped being a
+    // string someone types.
+    const { grade12, academic } = await profileLookups();
+
     const response = await api('POST', '/counselor/classes', {
       token,
-      body: { name: 'Grade 12 STEM A', academic_year: '2026-2027', grade_level: 'Grade 12' },
+      body: {
+        name: 'Grade 12 STEM A',
+        academic_year: '2026-2027',
+        grade_level_id: grade12,
+        shs_strand_id: academic,
+      },
     });
 
     expect(response.status).toBe(201);
@@ -28,6 +46,9 @@ describe('POST /counselor/classes', () => {
       counselor_id: counselor.id,
       name: 'Grade 12 STEM A',
       academic_year: '2026-2027',
+      grade_level_id: grade12,
+      shs_strand_id: academic,
+      // The derived mirror, written beside the id in the same statement.
       grade_level: 'Grade 12',
       status: 'active',
     });

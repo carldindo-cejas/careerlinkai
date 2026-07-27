@@ -19,6 +19,7 @@ import {
   users,
   type User,
 } from '@/db/schema';
+import { academicAverage } from '@/lib/recommendation';
 import { AuditService, type AuditLogView } from '@/modules/platform/audit-service';
 
 /**
@@ -385,9 +386,17 @@ export class DashboardService {
       results_count: scored,
       recommendations_ready: (recommendationCount?.value ?? 0) > 0,
       unread_notifications: unread?.value ?? 0,
-      // §27's two profile inputs with no in-engine fallback questionnaire: strand and GWA.
-      // "Complete" here means "the recommendation engine has your real signals, not neutrals."
-      profile_complete: profile?.strand != null && profile?.gwa != null,
+      // §27's two profile inputs with no in-engine fallback questionnaire: the strand, and an
+      // academic signal — which since 2026-07-27 is the mean of the subject grades rather than
+      // the removed GWA field. "Complete" here means "the recommendation engine has your real
+      // signals, not neutrals", and one subject grade is enough for that to be true.
+      profile_complete:
+        profile?.shsStrandId != null &&
+        academicAverage({
+          mathGrade: profile.mathGrade,
+          scienceGrade: profile.scienceGrade,
+          englishGrade: profile.englishGrade,
+        }) !== null,
     };
   }
 }

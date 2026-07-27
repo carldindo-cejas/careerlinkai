@@ -14,17 +14,31 @@ import { CLASS_STATUSES } from '@/db/enums';
 /** Roster batches cap at 200 names per request (ratified v1.2, §16). */
 const ROSTER_BATCH_MAX = 200;
 
+/**
+ * `grade_level_id` and `shs_strand_id` replaced the free-text `grade_level` (migration 0017).
+ *
+ * They are not merely a tidier input: a class's two values are **the source** of every enrolled
+ * student's grade level and strand, so a counselor typing "Gr 11" here used to produce a profile
+ * field that §27 could not read and a student could not correct. Ids from the §13.1 lookups make
+ * the derivation a join.
+ *
+ * Both are nullish at creation. A counselor who has not decided yet gets a class whose students
+ * keep their own editable values, which is the honest intermediate state — the alternative is
+ * refusing to create a class until a strand is chosen, and the strand is not what a class is for.
+ */
 export const createClassSchema = z.object({
   name: z.string().trim().min(1, 'A class name is required.').max(150),
   academic_year: z.string().trim().min(1, 'An academic year is required.').max(20),
-  grade_level: z.string().trim().max(20).nullish(),
+  grade_level_id: z.string().uuid().nullish(),
+  shs_strand_id: z.string().uuid().nullish(),
 });
 
 export const updateClassSchema = z
   .object({
     name: z.string().trim().min(1).max(150),
     academic_year: z.string().trim().min(1).max(20),
-    grade_level: z.string().trim().max(20).nullable(),
+    grade_level_id: z.string().uuid().nullable(),
+    shs_strand_id: z.string().uuid().nullable(),
     status: z.enum(CLASS_STATUSES),
   })
   .partial();

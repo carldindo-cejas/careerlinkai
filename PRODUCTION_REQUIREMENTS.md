@@ -49,15 +49,20 @@ Bootstrap prints the temp password **once**; accounts land with `must_change_pas
 so first login forces rotation. To-do: add `db:seed:*:production` scripts to
 `backend/package.json` mirroring the `:staging` ones.
 
-### 4. Frontend has no production build target
-`frontend/package.json` has only `deploy:staging`; there is **no `.env.production`** and
-**no `build:production` / `deploy:production` script**. The prod frontend cannot be built or
-deployed as-is. Needed:
-- `frontend/.env.production` with `VITE_API_BASE_URL` pointing at the prod API origin
-  (must match `[env.production].FRONTEND_URL = https://careerlinkai.online` — the only origin
-  CORS admits, §41; no wildcard).
-- `build:production` + `deploy:production` scripts (mirror the staging pair, target the prod
-  Pages project).
+### 4. ~~Frontend has no production build target~~ — RESOLVED by the single-Worker consolidation
+The blocker was real and is now structurally gone rather than filled in: there is no
+per-environment frontend build to be missing, because there is no per-environment frontend
+*artifact*. The React app is served by the same Worker that serves the API, calls the relative
+path `/api/v1`, and is therefore same-origin everywhere — so one `vite build` output is correct
+for local, staging and production alike.
+
+`backend/wrangler.toml`'s `[build]` hook runs that build, which makes `npm run deploy:production`
+(i.e. `wrangler deploy --env production`) publish **both** halves in one versioned deployment.
+`frontend/.env`, `.env.staging` and the `build:staging` / `deploy:staging` Pages scripts were
+deleted; nothing replaced them.
+
+Follow-up, not a blocker: delete the now-unused `careerlinkai-staging` **Pages** project once
+production is verified. See [`DEPLOYMENT.md`](DEPLOYMENT.md) §6.
 
 ---
 

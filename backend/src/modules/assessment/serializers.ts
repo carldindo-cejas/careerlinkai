@@ -380,16 +380,20 @@ export function serializeTemplate(
  * lookup table on each side of the wire.
  */
 const REQUIRED_PROFILING_FIELDS = [
-  { field: 'strand', label: 'Academic track / strand' },
-  { field: 'grade_level', label: 'Grade level' },
-  { field: 'gwa', label: 'General weighted average' },
+  { field: 'shs_strand_id', label: 'Academic track / strand' },
+  { field: 'grade_level_id', label: 'Grade level' },
+  // Replaces the GWA entry (prompt-driven, 2026-07-27). The engine now needs *an* academic
+  // signal rather than one specific field, so what is required is at least one subject grade —
+  // which is also the honest ask: a student who knows two of three has given the engine what it
+  // needs, and demanding the third would be asking for a number they may not have.
+  { field: 'subject_grades', label: 'At least one subject grade' },
 ] as const;
 
 function missingProfiling(profile: StudentProfile): { field: string; label: string }[] {
   const present: Record<string, unknown> = {
-    strand: profile.strand,
-    grade_level: profile.gradeLevel,
-    gwa: profile.gwa,
+    shs_strand_id: profile.shsStrandId,
+    grade_level_id: profile.gradeLevelId,
+    subject_grades: hasAnySubjectGrade(profile) ? true : null,
   };
 
   return REQUIRED_PROFILING_FIELDS.filter(
@@ -397,24 +401,45 @@ function missingProfiling(profile: StudentProfile): { field: string; label: stri
   ).map(({ field, label }) => ({ field, label }));
 }
 
+function hasAnySubjectGrade(profile: StudentProfile): boolean {
+  return (
+    profile.mathGrade !== null || profile.scienceGrade !== null || profile.englishGrade !== null
+  );
+}
+
 /**
  * The §27 inputs a student profile still needs (`docs/api`).
  *
- * `strand` and `gwa` are the two the engine cannot do without — strand gates the alignment
- * component and GWA drives both academic fit and eligibility. The other fields are informational.
+ * `strand` and an academic signal are the two the engine cannot do without — strand gates the
+ * alignment component, and the subject-grade average drives both academic fit and eligibility
+ * (it replaced the GWA on 2026-07-27). The other fields are informational.
+ *
+ * `derived` is new and is what the profile screen locks its two selects on. It is computed on the
+ * server rather than inferred by the client from "is there a class?", because the rule is a server
+ * rule: `StudentProfileService.update` refuses an edit to a derived field with a 422, and a UI that
+ * guessed differently would offer a control whose submission always fails.
  */
-export function serializeStudentProfile(profile: StudentProfile) {
+export function serializeStudentProfile(
+  profile: StudentProfile,
+  context: {
+    gradeLevel?: { id: string; code: string; name: string } | null;
+    strand?: { id: string; code: string; name: string } | null;
+    /** Which fields the class supplies, and therefore which the student may not edit. */
+    derivedFrom?: { className: string; gradeLevel: boolean; strand: boolean } | null;
+  } = {},
+) {
   const missing: string[] = [];
 
-  if (profile.strand === null) {
+  if (profile.shsStrandId === null) {
     missing.push('strand');
   }
 
-  if (profile.gwa === null) {
-    missing.push('gwa');
+  if (!hasAnySubjectGrade(profile)) {
+    missing.push('subject_grades');
   }
 
   const missingProfilingFields = missingProfiling(profile);
+  const derivedFrom = context.derivedFrom ?? null;
 
   return {
     id: profile.id,
@@ -422,9 +447,15 @@ export function serializeStudentProfile(profile: StudentProfile) {
     last_name: profile.lastName,
     birthdate: profile.birthdate,
     gender: profile.gender,
-    grade_level: profile.gradeLevel,
-    strand: profile.strand,
-    gwa: decimal(profile.gwa),
+    grade_level_id: profile.gradeLevelId,
+    shs_strand_id: profile.shsStrandId,
+    /**
+     * The derived mirrors, still on the wire under their original names so every existing consumer
+     * (the counselor's roster view, the result exports, the dashboards) keeps reading what it read
+     * before. They are display strings now — the ids above are what a client sends back.
+     */
+    grade_level: context.gradeLevel?.name ?? profile.gradeLevel,
+    strand: context.strand?.name ?? profile.strand,
     math_grade: decimal(profile.mathGrade),
     science_grade: decimal(profile.scienceGrade),
     english_grade: decimal(profile.englishGrade),
@@ -432,6 +463,15 @@ export function serializeStudentProfile(profile: StudentProfile) {
     guardian_contact: profile.guardianContact,
     is_complete_for_recommendations: missing.length === 0,
     missing_for_recommendations: missing,
+    /**
+     * Which of the two lookup fields the student's class assigns — and therefore which the profile
+     * screen renders read-only, naming the class so the student knows who to ask.
+     */
+    derived: {
+      grade_level: derivedFrom?.gradeLevel ?? false,
+      shs_strand: derivedFrom?.strand ?? false,
+      class_name: derivedFrom?.className ?? null,
+    },
     /** The banner's whole input (v1.6) — see `REQUIRED_PROFILING_FIELDS` on why this is broader. */
     profiling: {
       is_complete: missingProfilingFields.length === 0,

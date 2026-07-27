@@ -9,7 +9,7 @@ import {
   useProfile,
   useStartAttempt,
 } from '@/features/student/hooks/useAssessment';
-import { paths, playerPath, resultPath } from '@/routes/paths';
+import { paths, playerPath, resultPath, type ResultPageState } from '@/routes/paths';
 import type { AssessmentAssignment } from '@/types/assessment';
 
 /**
@@ -39,9 +39,13 @@ export function AssessmentListPage() {
       {/*
         The profile nudge, and why it says *why*.
 
-        §27 cannot recommend a program without knowing the student's strand and GWA — those are
-        inputs to the engine, not decoration. "Complete your profile" is a chore a student will
-        ignore; naming the consequence is the difference between a nag and a reason.
+        §27 cannot recommend a program without knowing the student's strand and an academic signal
+        — those are inputs to the engine, not decoration. "Complete your profile" is a chore a
+        student will ignore; naming the consequence is the difference between a nag and a reason.
+
+        The academic input was the GWA until 2026-07-27 and is now the mean of whichever subject
+        grades the student filled in, so what is named here is `subject_grades` rather than one
+        field the form no longer has.
       */}
       {profile && !profile.is_complete_for_recommendations ? (
         <Alert tone="warning">
@@ -49,7 +53,10 @@ export function AssessmentListPage() {
           <em>program</em> until we know your{' '}
           {profile.missing_for_recommendations.includes('strand') ? 'strand' : null}
           {profile.missing_for_recommendations.length === 2 ? ' and ' : null}
-          {profile.missing_for_recommendations.includes('gwa') ? 'general weighted average' : null}.{' '}
+          {profile.missing_for_recommendations.includes('subject_grades')
+            ? 'subject grades'
+            : null}
+          .{' '}
           <button className="font-medium underline" onClick={() => navigate(paths.studentProfile)}>
             Complete your profile
           </button>
@@ -92,7 +99,14 @@ export function AssessmentListPage() {
               })
             }
             onResume={(attemptId) => navigate(playerPath(attemptId))}
-            onSeeResult={(attemptId) => navigate(resultPath(attemptId))}
+            onSeeResult={(attemptId) =>
+              navigate(resultPath(attemptId), {
+                state: {
+                  from: paths.studentAssessments,
+                  fromLabel: 'My assessments',
+                } satisfies ResultPageState,
+              })
+            }
           />
         ))}
       </div>

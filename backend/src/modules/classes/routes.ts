@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 
 import { createDatabase } from '@/db/client';
+import { gradeLevels, shsStrands } from '@/db/schema';
 import type { AppEnv } from '@/env';
 import { successEnvelope } from '@/lib/envelope';
 import { clientIp, parseBody, parseQuery } from '@/lib/validation';
@@ -42,6 +43,42 @@ function enrollmentService(c: { env: AppEnv['Bindings'] }): ClassEnrollmentServi
   return new ClassEnrollmentService(db, new ClassService(db, c.env));
 }
 
+/**
+ * `GET /counselor/class-options` — the grade-level and strand lookups the class form picks from
+ * (migration 0017).
+ *
+ * The same two reference tables the student's `/student/profile/options` serves, exposed again
+ * here because the two routers are role-gated separately and a counselor cannot call a `/student`
+ * route. Duplicating the *route* rather than the data: both read the same tables, so the dropdown
+ * a counselor sets a class from and the one a student sees cannot offer different values.
+ *
+ * These are the **source** of every enrolled student's own two fields, which is why the class form
+ * gained a picker rather than keeping its free-text box: "Gr 12" typed into a text input produced
+ * a profile field §27 could not read and a student could not correct.
+ */
+counselorRoutes.get('/class-options', async (c) => {
+  const db = createDatabase(c.env.DB);
+  const [levels, strands] = await Promise.all([
+    db.select().from(gradeLevels).orderBy(gradeLevels.orderNumber),
+    db.select().from(shsStrands).orderBy(shsStrands.orderNumber),
+  ]);
+
+  return c.json(
+    successEnvelope(
+      {
+        grade_levels: levels.map((row) => ({ id: row.id, code: row.code, name: row.name })),
+        shs_strands: strands.map((row) => ({
+          id: row.id,
+          code: row.code,
+          name: row.name,
+          description: row.description,
+        })),
+      },
+      'Class options retrieved successfully.',
+    ),
+  );
+});
+
 // --- Classes -------------------------------------------------------------------------
 
 counselorRoutes.get('/classes', async (c) => {
@@ -53,7 +90,7 @@ counselorRoutes.get('/classes', async (c) => {
 
   return c.json(
     successEnvelope(
-      { items: page.items.map(serializeClass), pagination: page.pagination },
+      { items: page.items.map((row) => serializeClass(row)), pagination: page.pagination },
       'Classes retrieved successfully.',
     ),
   );

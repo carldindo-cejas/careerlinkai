@@ -13,6 +13,26 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    /**
+     * Same-origin in development, the way the deployment is same-origin in production.
+     *
+     * The app calls the relative path `/api/v1` everywhere (src/services/httpClient.ts). In a
+     * deploy that lands on the Worker directly, because one Worker serves both halves; here Vite
+     * forwards it to `wrangler dev` on :8787 instead. So the dev loop keeps HMR and still
+     * exercises the exact request shape production does — relative URL, no `Origin` header, no
+     * preflight, no CORS involved on either side.
+     *
+     * `/api` rather than `/api/v1`: the prefix is the API's boundary in the deployed Worker too
+     * (`run_worker_first = ["/api/*"]` in wrangler.toml), and the two should describe the same
+     * split. Everything else — `/login`, `/student/assessments`, the assets — is Vite's, matching
+     * the asset-first routing the Worker applies to those same paths.
+     */
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8787',
+        changeOrigin: false,
+      },
+    },
   },
   test: {
     globals: true,

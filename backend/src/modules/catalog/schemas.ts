@@ -108,6 +108,13 @@ export const createProgramSchema = z.object({
   description: z.string().trim().nullish(),
   recommended_strand: z.enum(STRANDS).nullish(),
   status: z.enum(PROGRAM_STATUSES).optional(),
+  /**
+   * Which canonical program this offering *is* (migration 0018). **Omitted** means "work it out
+   * from the code" — the normal path, and why an admin adding a program never has to visit the
+   * canonical page first. An explicit `null` means "we have not decided", which is a different and
+   * legitimate state; an id pins it.
+   */
+  program_catalog_id: z.string().uuid().nullish(),
 });
 
 export const updateProgramSchema = z
@@ -118,8 +125,33 @@ export const updateProgramSchema = z
     description: z.string().trim().nullable(),
     recommended_strand: z.enum(STRANDS).nullable(),
     status: z.enum(PROGRAM_STATUSES),
+    program_catalog_id: z.string().uuid().nullable(),
   })
   .partial();
+
+/** The canonical-program admin surface (migration 0018, `/admin/canonical-programs`). */
+export const createCanonicalProgramSchema = z.object({
+  // Not `programCode`: a canonical code is normalized by the Service (upper-cased, punctuation
+  // stripped) rather than validated into a shape, so that 'bs-cs' typed here and 'BSCS' typed on a
+  // program form reach the same row.
+  code: z.string().trim().min(1, 'A code is required.').max(30),
+  name: z.string().trim().min(1, 'A name is required.').max(200),
+  description: z.string().trim().nullish(),
+});
+
+export const updateCanonicalProgramSchema = z
+  .object({
+    code: z.string().trim().min(1).max(30),
+    name: z.string().trim().min(1).max(200),
+    description: z.string().trim().nullable(),
+    status: z.enum(CATALOG_STATUSES),
+  })
+  .partial();
+
+export const mergeCanonicalProgramSchema = z.object({
+  /** The entry that survives. The one named in the URL is the one absorbed and retired. */
+  target_id: z.string().uuid(),
+});
 
 /**
  * The Holland code is validated *and normalized* by the schema, so the Service and the

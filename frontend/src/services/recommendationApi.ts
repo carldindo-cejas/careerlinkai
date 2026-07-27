@@ -1,6 +1,12 @@
 import { httpClient, unwrap } from '@/services/httpClient';
 import type { ApiSuccess } from '@/types/api';
-import type { RecommendationSet } from '@/types/recommendation';
+import type {
+  CareerProgramsResponse,
+  ChatTranscript,
+  ChatTurn,
+  ProgramCollegesResponse,
+  RecommendationSet,
+} from '@/types/recommendation';
 
 /**
  * Recommendations (FULLPLAN §20, §27 — Phase 4).
@@ -32,6 +38,53 @@ export const recommendationApi = {
     return unwrap(
       httpClient.get<ApiSuccess<RecommendationSet | null>>(
         `/counselor/students/${studentId}/recommendations`,
+      ),
+    );
+  },
+};
+
+/**
+ * The recommendations chat assistant (migration 0019).
+ *
+ * Every endpoint means "mine" — there is no student id in any URL, so none of them can be made to
+ * mean somebody else's conversation by editing a parameter. The recommendation context the model
+ * sees is loaded **server-side** from the caller's token and is deliberately not something this
+ * client can supply.
+ */
+export const chatApi = {
+  getTranscript(): Promise<ChatTranscript> {
+    return unwrap(httpClient.get<ApiSuccess<ChatTranscript>>('/student/chat'));
+  },
+
+  ask(message: string): Promise<ChatTurn> {
+    return unwrap(httpClient.post<ApiSuccess<ChatTurn>>('/student/chat', { message }));
+  },
+
+  async clear(): Promise<void> {
+    await httpClient.delete('/student/chat');
+  },
+};
+
+/**
+ * The two relationship lookups behind the "View related college programs" and "View colleges
+ * offering this program" buttons (migration 0018).
+ *
+ * Neither is scoped to the student's own recommendation set, and that is deliberate: a student
+ * looking at "Software Engineer" is asking what they could study to get there, and answering with
+ * only the programs that happen to be in their own top ten would hide the rest of the catalog
+ * behind a ranking they did not ask about.
+ */
+export const catalogLinksApi = {
+  programsForCareer(careerId: string): Promise<CareerProgramsResponse> {
+    return unwrap(
+      httpClient.get<ApiSuccess<CareerProgramsResponse>>(`/student/careers/${careerId}/programs`),
+    );
+  },
+
+  collegesForProgram(programId: string): Promise<ProgramCollegesResponse> {
+    return unwrap(
+      httpClient.get<ApiSuccess<ProgramCollegesResponse>>(
+        `/student/programs/${programId}/colleges`,
       ),
     );
   },

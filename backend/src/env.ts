@@ -24,6 +24,18 @@ export interface Env {
   AUTH_DO: DurableObjectNamespace<AuthGuardDO>;
   QUEUE_DEFAULT: Queue;
   QUEUE_AI: Queue;
+  /**
+   * The built React app (`frontend/dist`), served by this same Worker.
+   *
+   * Nothing in `src/` calls it in the normal path and that is by design: `[assets]` in
+   * wrangler.toml routes asset requests and the SPA fallback *before* the Worker is invoked, so
+   * the fast path for a hashed chunk never runs a line of this code. The binding is declared
+   * because the config declares it, and because it is the only way to reach an asset from inside
+   * a handler if a future route ever needs to (server-rendering a shell, gating a file behind
+   * auth). Absent under `wrangler.test.toml`, which binds no assets — do not reach for it in a
+   * code path the suite covers without binding it there first.
+   */
+  ASSETS: Fetcher;
 
   // Vars — TOML has no number type for [vars], so numeric config arrives as strings and is
   // parsed at the point of use (see src/lib/config.ts).

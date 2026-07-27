@@ -1,0 +1,42 @@
+# Cache policy for the static assets this Worker serves (Cloudflare Workers static assets).
+#
+# Cloudflare's default for every asset is `public, max-age=0, must-revalidate` — correct, and
+# needlessly slow for the 5 MB of hashed JavaScript below, every byte of which is immutable by
+# construction. The two rules here are the standard split:
+#
+#   /assets/*  Vite writes content hashes into these names (index-CcjfYenL.js,
+#              index-CE67o2ag.css, pdf.worker.min-DEtVeC4l.mjs). A changed file gets a changed
+#              name, so the URL can be cached for a year and never revalidated. `immutable`
+#              additionally suppresses the revalidation browsers do on a manual reload.
+#
+#   /*         The security headers only — deliberately **no Cache-Control**. Cloudflare's
+#              default for an asset is already `public, max-age=0, must-revalidate`, which is
+#              exactly right for index.html: it is the one file whose URL does not change between
+#              deploys, and it is what names the hashed chunks, so caching it is how a deploy gets
+#              pinned to a stale bundle. The ETag round-trip stays — a 304 on an unchanged deploy,
+#              the new shell the moment there is one.
+#
+# ── Why /* carries no Cache-Control, the hard way ──────────────────────────────────────────────
+# Matching rules **accumulate**; they do not override. `/assets/index-CboRDc_S.js` matches both
+# rules, so writing the default out explicitly under /* produced, verified with curl:
+#
+#     Cache-Control: public, max-age=31536000, immutable, public, max-age=0, must-revalidate
+#
+# — one header carrying two contradictory max-ages plus `must-revalidate`, which is undefined
+# behaviour that browsers resolve conservatively. The year-long immutable caching this file exists
+# to grant was silently cancelled by the line meant to be a harmless restatement of a default.
+# Anything added under /* from here must be a header that is *correct to apply to a hashed asset
+# too*, because it will be.
+#
+# `_headers` applies only to static-asset responses. API responses are the Worker's own and are
+# unaffected — a 401 from /api/v1/auth is not cacheable and nothing here makes it so.
+#
+# Note this file is *consumed* by the asset router rather than served: it is not itself reachable
+# at /_headers.
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

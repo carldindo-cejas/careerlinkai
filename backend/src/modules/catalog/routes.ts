@@ -10,15 +10,19 @@ import { ensureRole } from '@/middleware/ensure-role';
 import { AcademicCatalogService } from '@/modules/catalog/academic-catalog-service';
 import {
   attachCareerSchema,
+  createCanonicalProgramSchema,
   createCareerSchema,
   createCollegeSchema,
   createProgramSchema,
   listCatalogQuerySchema,
+  mergeCanonicalProgramSchema,
+  updateCanonicalProgramSchema,
   updateCareerSchema,
   updateCollegeSchema,
   updateProgramSchema,
 } from '@/modules/catalog/schemas';
 import {
+  serializeCanonicalProgram,
   serializeCareer,
   serializeCollege,
   serializeEmploymentOutlook,
@@ -306,6 +310,113 @@ adminRoutes.delete('/programs/:id/careers/:careerId', async (c) => {
   );
 
   return c.json(successEnvelope(serializeProgram(program, careers), 'Career unlinked successfully.'));
+});
+
+// --- The canonical program catalog (migration 0018) ---------------------------------------
+//
+// `/admin/canonical-programs` — the screen that owns the grouping the 0018 backfill guessed at.
+// It exists because the backfill *is* a guess: it groups on the normalized code, and where two
+// colleges use one code for different programs (or two codes for one), an admin needs somewhere to
+// say so. Without this page the FK would be a column nobody could correct.
+
+adminRoutes.get('/canonical-programs', async (c) => {
+  const query = listQuery(c);
+  const service = catalog(c);
+  const page = await service.listCanonicalPrograms(query.page, query.per_page);
+
+  // The offering counts, in one query for the whole page rather than one per row — the same
+  // N+1 rule the college list follows (§45's subrequest budget counts every D1 call).
+  const counts = await service.offeringCountsFor(page.items.map((entry) => entry.id));
+
+  return c.json(
+    successEnvelope(
+      {
+        items: page.items.map((entry) =>
+          serializeCanonicalProgram(entry, { offeringsCount: counts.get(entry.id) ?? 0 }),
+        ),
+        pagination: page.pagination,
+      },
+      'Canonical programs retrieved successfully.',
+    ),
+  );
+});
+
+/** The unpaginated picker for the program form's combobox. */
+adminRoutes.get('/canonical-programs/options', async (c) => {
+  const entries = await catalog(c).allCanonicalPrograms();
+
+  return c.json(
+    successEnvelope(
+      entries.map((entry) => serializeCanonicalProgram(entry)),
+      'Canonical programs retrieved successfully.',
+    ),
+  );
+});
+
+/** Which colleges offer this canonical program — the admin's view of the student-facing answer. */
+adminRoutes.get('/canonical-programs/:id/colleges', async (c) => {
+  const service = catalog(c);
+  const entry = await service.findCanonicalProgram(c.req.param('id'));
+  const rows = await service.collegesOfferingCanonical(entry.id);
+
+  return c.json(
+    successEnvelope(
+      {
+        canonical: serializeCanonicalProgram(entry),
+        offerings: rows.map(({ college, program }) => ({
+          college: serializeCollege(college),
+          program: serializeProgram(program),
+        })),
+      },
+      'Colleges retrieved successfully.',
+    ),
+  );
+});
+
+adminRoutes.post('/canonical-programs', async (c) => {
+  const input = await parseBody(c, createCanonicalProgramSchema);
+  const entry = await catalog(c).createCanonicalProgram(requireUser(c), input, clientIp(c));
+
+  return c.json(
+    successEnvelope(serializeCanonicalProgram(entry), 'Canonical program created successfully.'),
+    201,
+  );
+});
+
+adminRoutes.patch('/canonical-programs/:id', async (c) => {
+  const input = await parseBody(c, updateCanonicalProgramSchema);
+  const entry = await catalog(c).updateCanonicalProgram(
+    requireUser(c),
+    c.req.param('id'),
+    input,
+    clientIp(c),
+  );
+
+  return c.json(
+    successEnvelope(serializeCanonicalProgram(entry), 'Canonical program updated successfully.'),
+  );
+});
+
+/**
+ * Merge the entry named in the URL **into** `target_id`, re-pointing every offering and retiring
+ * the source. The correction for a grouping the backfill got wrong, and the reason this ships as a
+ * page rather than only a column.
+ */
+adminRoutes.post('/canonical-programs/:id/merge', async (c) => {
+  const input = await parseBody(c, mergeCanonicalProgramSchema);
+  const { moved, target } = await catalog(c).mergeCanonicalPrograms(
+    requireUser(c),
+    c.req.param('id'),
+    input.target_id,
+    clientIp(c),
+  );
+
+  return c.json(
+    successEnvelope(
+      { target: serializeCanonicalProgram(target), offerings_moved: moved },
+      `Merged. ${moved} college ${moved === 1 ? 'offering' : 'offerings'} now point at ${target.name}.`,
+    ),
+  );
 });
 
 // --- Public (§20 "Public / Health") ------------------------------------------------------

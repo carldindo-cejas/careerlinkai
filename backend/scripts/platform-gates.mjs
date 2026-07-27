@@ -24,7 +24,7 @@
  *         node scripts/platform-gates.mjs --bundle  # additionally build and weigh the bundle
  */
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
@@ -217,6 +217,103 @@ for (const file of ['wrangler.toml', 'wrangler.local.toml', 'wrangler.dev.toml']
   );
 }
 
+/**
+ * **Single-Worker routing: the SPA fallback must not shadow the API.**
+ *
+ * `not_found_handling = "single-page-application"` is evaluated by the asset router *before* the
+ * Worker script is invoked. On its own that means a request to /api/v1/health returns
+ * `index.html` with a 200 — the API is unreachable from the address bar, from curl, and from any
+ * health check, while client-side `fetch()` from the loaded app keeps working. That last part is
+ * what makes this worth a gate rather than a comment: the app looks completely fine, and the
+ * first symptom is an uptime monitor that has been green on an HTML page for a week.
+ *
+ * `run_worker_first = ["/api/*"]` is the fix, and it has to be present in *every* profile that
+ * declares assets — including `wrangler.local.toml`, or `npm run preview` proves the wrong thing.
+ */
+console.log('\nAsset routing gates (single-Worker deployment):');
+
+const ASSET_PROFILES = [
+  ['wrangler.toml', wranglerToml],
+  ['wrangler.local.toml', readFileSync(join(backendDir, 'wrangler.local.toml'), 'utf8')],
+  ['wrangler.dev.toml', readFileSync(join(backendDir, 'wrangler.dev.toml'), 'utf8')],
+];
+
+for (const [file, content] of ASSET_PROFILES) {
+  // Every [assets] / [env.*.assets] block in the file, as its own chunk of lines.
+  const blocks = [];
+  let current = null;
+
+  for (const line of content.split(/\r?\n/)) {
+    if (/^\s*\[(?:env\.[a-z]+\.)?assets\]/.test(line)) {
+      current = [];
+      blocks.push(current);
+      continue;
+    }
+
+    if (/^\s*\[/.test(line)) {
+      current = null;
+      continue;
+    }
+
+    current?.push(line);
+  }
+
+  // wrangler.toml carries three scopes (top level, staging, production); the dev profiles one.
+  const expected = file === 'wrangler.toml' ? 3 : 1;
+
+  gate(
+    `${file}: [assets] declared in all ${expected} scope(s)`,
+    blocks.length >= expected,
+    `Found ${blocks.length} [assets] block(s); expected ${expected}. Environments may not inherit it — a missing block deploys an API with no frontend.`,
+  );
+
+  for (const [index, block] of blocks.entries()) {
+    const text = block.join('\n');
+    const label = `${file} [assets] #${index + 1}`;
+
+    gate(
+      `${label}: directory points at the Vite build output`,
+      /directory\s*=\s*"\.\.\/frontend\/dist"/.test(text),
+      'Expected directory = "../frontend/dist" — the one build output every profile shares.',
+    );
+
+    gate(
+      `${label}: not_found_handling = "single-page-application" (React Router owns /login, /student/*, …)`,
+      /not_found_handling\s*=\s*"single-page-application"/.test(text),
+      'Without it a hard refresh on any nested route 404s before the app ever boots.',
+    );
+
+    gate(
+      `${label}: run_worker_first includes "/api/*" (else the SPA fallback swallows the API)`,
+      /run_worker_first\s*=\s*\[[^\]]*"\/api\/\*"/.test(text),
+      'not_found_handling runs BEFORE the Worker: without this pattern, GET /api/v1/health returns index.html with a 200 and every direct API hit is silently served the HTML shell.',
+    );
+  }
+}
+
+/**
+ * The Pages SPA rule, which does *not* work here and does not announce it.
+ *
+ * `frontend/public/_redirects` held `/*  /index.html  200` for Cloudflare Pages. Workers static
+ * assets read `_redirects` too but implement only true redirect statuses (301/302/303/307/308) —
+ * a 200-status rewrite is ignored. Left in place it reads like the SPA fallback is configured
+ * when the thing actually doing the work is `not_found_handling`, and the day someone "simplifies"
+ * that setting away, the file will look like it has the situation covered.
+ */
+const redirectsPath = join(backendDir, '..', 'frontend', 'public', '_redirects');
+
+gate(
+  'frontend/public/_redirects is gone (a Pages-only rule that Workers assets silently ignore)',
+  !existsSync(redirectsPath),
+  'Delete it — SPA fallback is owned by [assets] not_found_handling. A 200-status rewrite in _redirects does nothing on Workers.',
+);
+
+gate(
+  'frontend/public/_headers exists (hashed assets get immutable caching)',
+  existsSync(join(backendDir, '..', 'frontend', 'public', '_headers')),
+  'Without it every asset serves as max-age=0, must-revalidate — including the 5 MB of content-hashed JavaScript that never changes.',
+);
+
 // --- Gate 2: the DO boundary --------------------------------------------------------------
 
 console.log('\nSource gates (src/):');
@@ -262,7 +359,17 @@ if (process.argv.includes('--bundle')) {
     execFileSync(
       'npx',
       ['wrangler', 'deploy', '--dry-run', `--outdir=${outDir}`],
-      { cwd: backendDir, stdio: 'pipe', shell: process.platform === 'win32' },
+      {
+        cwd: backendDir,
+        stdio: 'pipe',
+        shell: process.platform === 'win32',
+        // `[build] command` in wrangler.toml builds the React app before every deploy, and a dry
+        // run is a deploy as far as that hook is concerned. This gate weighs the **Worker script**
+        // — static assets are stored separately and count against no bundle limit — so the build
+        // is pure cost here, and in CI it would fail outright: the backend job installs backend
+        // dependencies only. See scripts/build-frontend.mjs.
+        env: { ...process.env, SKIP_FRONTEND_BUILD: '1' },
+      },
     );
 
     let gzippedBytes = 0;

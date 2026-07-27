@@ -25,6 +25,11 @@ export const paths = {
   adminColleges: '/admin/colleges',
   adminCollegeDetail: '/admin/colleges/:collegeId',
   adminCareers: '/admin/careers',
+  /**
+   * The canonical program catalog (backend migration 0018) — the grouping behind every student's
+   * "which colleges offer this program?" list, and the only place a wrong grouping can be fixed.
+   */
+  adminCanonicalPrograms: '/admin/canonical-programs',
   // Phase 5a (§33, §37): the knowledge base and the AI governance text.
   adminKnowledge: '/admin/knowledge',
   adminAiPolicy: '/admin/ai-policy',
@@ -74,6 +79,23 @@ export function playerPath(attemptId: string): string {
 
 export function resultPath(attemptId: string): string {
   return `/student/results/${attemptId}`;
+}
+
+/**
+ * What a screen hands the results page about where the student came from.
+ *
+ * The results page is reached from three places — finishing an attempt, the results list, and the
+ * assessment list's "See result" — and "go back" means something different from each. Rather than
+ * calling `navigate(-1)` and hoping the history stack says what we think it says (it does not,
+ * after the player replaces itself), the sending screen states its own identity and the results
+ * page renders a button that names it.
+ *
+ * Absent state is not an error: a student who typed the URL or opened a bookmark gets the
+ * "Back to assessments" default and nothing broken.
+ */
+export interface ResultPageState {
+  from: string;
+  fromLabel: string;
 }
 
 export function collegeDetailPath(collegeId: string): string {

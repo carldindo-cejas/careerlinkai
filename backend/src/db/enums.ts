@@ -184,3 +184,13 @@ export const AI_REQUEST_IN_FLIGHT_STATUSES = ['PENDING', 'PROCESSING'] as const;
 /** §13.7 — GLOBAL is the only v1 scope; the column extends to finer scopes later (§63). */
 export const AI_POLICY_SCOPES = ['GLOBAL'] as const;
 export type AiPolicyScope = (typeof AI_POLICY_SCOPES)[number];
+
+/**
+ * The two roles a stored chat transcript contains (migration 0019).
+ *
+ * There is deliberately no `system` value. The system prompt is assembled at call time from the
+ * prompt module plus the active AI policy (§32) precisely so that it is editable in one place; a
+ * stored copy per message would be a stale duplicate of something meant to change.
+ */
+export const CHAT_ROLES = ['user', 'assistant'] as const;
+export type ChatRole = (typeof CHAT_ROLES)[number];

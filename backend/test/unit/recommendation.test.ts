@@ -30,11 +30,11 @@ import {
  * are the rows Phase 4 will actually read.
  */
 
-/** §28's student, exactly: RIASEC profile, SCCT index, GWA and strand. */
+/** §28's student, exactly: RIASEC profile, SCCT index, academic average and strand. */
 const WORKED_EXAMPLE_STUDENT: StudentSignals = {
   riasec: { I: 84.0, A: 71.0, S: 62.0, C: 55.0, E: 48.0, R: 30.0 },
   careerConfidenceIndex: 72.3,
-  gwa: 88,
+  academicAverage: 88,
   strand: 'Academic',
 };
 
@@ -348,7 +348,7 @@ describe('the deterministic reason string', () => {
     });
 
     expect(reason).not.toMatch(/track/);
-    expect(reason).not.toMatch(/GWA/);
+    expect(reason).not.toMatch(/subject average/);
   });
 
   it('adds both clauses on an aligned program match', () => {
@@ -359,7 +359,7 @@ describe('the deterministic reason string', () => {
     );
 
     expect(reason).toContain('Matches your Academic track.');
-    expect(reason).toContain('Your GWA of 88 meets the typical academic profile for this path.');
+    expect(reason).toContain('Your subject average of 88 meets the typical academic profile for this path.');
   });
 
   it('states no track match when the strands differ', () => {
@@ -373,29 +373,29 @@ describe('the deterministic reason string', () => {
   });
 
   /**
-   * SILENCE: §27's template hardcodes the words "meets the typical academic profile". At a GWA
+   * SILENCE: §27's template hardcodes the words "meets the typical academic profile". At an average
    * of 72 that is simply false — the engine must not tell a student something untrue in order to
    * fill a slot in a string.
    */
-  it('omits the eligibility clause when the GWA does not actually meet the bar', () => {
+  it('omits the eligibility clause when the subject average does not actually meet the bar', () => {
     const { reason } = scoreProgram(
-      { ...WORKED_EXAMPLE_STUDENT, gwa: 72 },
+      { ...WORKED_EXAMPLE_STUDENT, academicAverage: 72 },
       { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
       ['IEC'],
     );
 
-    expect(reason).not.toMatch(/GWA/);
+    expect(reason).not.toMatch(/subject average/);
     expect(reason).toContain('Matches your Academic track.');
   });
 
-  it('omits the eligibility clause when the GWA is unknown', () => {
+  it('omits the eligibility clause when no subject grade was given', () => {
     const { reason } = scoreProgram(
-      { ...WORKED_EXAMPLE_STUDENT, gwa: null },
+      { ...WORKED_EXAMPLE_STUDENT, academicAverage: null },
       { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
       ['IEC'],
     );
 
-    expect(reason).not.toMatch(/GWA/);
+    expect(reason).not.toMatch(/subject average/);
   });
 
   /**
@@ -410,7 +410,7 @@ describe('the deterministic reason string', () => {
       typicalRiasecCode: null,
     });
 
-    expect(reason).not.toMatch(/GWA/);
+    expect(reason).not.toMatch(/subject average/);
     expect(reason).not.toMatch(/track/);
     // And it claims no alignment with a "typical profile" that is not there.
     expect(reason).not.toMatch(/typical profile/);
@@ -436,13 +436,13 @@ describe('the composite weights', () => {
     const perfect: StudentSignals = {
       riasec: profile({ R: 100, I: 100, A: 100, S: 100, E: 100, C: 100 }),
       careerConfidenceIndex: 100,
-      gwa: 100,
+      academicAverage: 100,
       strand: 'Academic',
     };
     const empty: StudentSignals = {
       riasec: profile(),
       careerConfidenceIndex: 0,
-      gwa: 0,
+      academicAverage: 0,
       strand: null,
     };
     const program = { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' as const };

@@ -39,8 +39,17 @@ function serializeBase(recommendation: CareerRecommendation['recommendation']) {
   };
 }
 
-export function serializeCareerRecommendation({ recommendation, career }: CareerRecommendation) {
-  return { ...serializeBase(recommendation), career: serializeCareer(career) };
+export function serializeCareerRecommendation({
+  recommendation,
+  career,
+  outlook,
+}: CareerRecommendation) {
+  return {
+    ...serializeBase(recommendation),
+    // The outlook is resolved by `forResult` (one query for the four-row lookup) so the card can
+    // show the demand label and the "sort by job outlook" control has a key to sort on.
+    career: serializeCareer(career, { outlook: outlook ?? null }),
+  };
 }
 
 export function serializeProgramRecommendation({

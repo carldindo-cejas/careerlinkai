@@ -11,6 +11,7 @@ import type {
   AssignmentStatus,
   AttemptStatus,
   CatalogStatus,
+  ChatRole,
   ClassStatus,
   EnrollmentStatus,
   KnowledgeVisibility,
@@ -129,6 +130,50 @@ export const counselorProfiles = sqliteTable(
   (table) => [uniqueIndex('counselor_profiles_user_id_unique').on(table.userId)],
 );
 
+/**
+ * The two §13.1 lookups (migration 0017). Grade level and SHS strand stopped being things a
+ * student types and became things a counselor assigns, which is what makes them normalizable.
+ *
+ * `shs_strands.name` is byte-identical to the §13.1 `Strand` union — that is load-bearing, not
+ * cosmetic: `studentProfiles.strand` is a derived mirror of it and §27 compares that mirror
+ * directly against `programs.recommendedStrand`.
+ */
+export const gradeLevels = sqliteTable(
+  'grade_levels',
+  {
+    id: text('id').primaryKey().notNull(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    orderNumber: integer('order_number').notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('grade_levels_code_unique').on(table.code),
+    uniqueIndex('grade_levels_name_unique').on(table.name),
+    index('grade_levels_order_number_index').on(table.orderNumber),
+  ],
+);
+
+export const shsStrands = sqliteTable(
+  'shs_strands',
+  {
+    id: text('id').primaryKey().notNull(),
+    code: text('code').notNull(),
+    /** Must equal a `Strand` value exactly — see the note above. */
+    name: text('name').$type<Strand>().notNull(),
+    description: text('description'),
+    orderNumber: integer('order_number').notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('shs_strands_code_unique').on(table.code),
+    uniqueIndex('shs_strands_name_unique').on(table.name),
+    index('shs_strands_order_number_index').on(table.orderNumber),
+  ],
+);
+
 export const studentProfiles = sqliteTable(
   'student_profiles',
   {
@@ -141,9 +186,24 @@ export const studentProfiles = sqliteTable(
     lastName: text('last_name'),
     birthdate: text('birthdate'),
     gender: text('gender'),
+    /**
+     * **Derived mirrors, never inputs** (migration 0017). `gradeLevelId`/`shsStrandId` are the
+     * source of truth; these two text columns hold the corresponding `name` so that §27 and the
+     * `programs.recommendedStrand` comparison keep working unchanged.
+     *
+     * `StudentProfileService` is the only writer of all four, and it writes them together. Nothing
+     * else may set them — the Zod schema does not accept a raw strand or grade-level string.
+     */
     gradeLevel: text('grade_level'),
     strand: text('strand').$type<Strand>(),
-    gwa: real('gwa'),
+    gradeLevelId: text('grade_level_id').references(() => gradeLevels.id, { onDelete: 'set null' }),
+    shsStrandId: text('shs_strand_id').references(() => shsStrands.id, { onDelete: 'set null' }),
+    /**
+     * **`gwa` is gone** (prompt-driven, 2026-07-27). The column still exists in D1 — dropping it
+     * would destroy data for no gain — but nothing in this codebase reads or writes it, and it is
+     * absent here so that nothing can. §27's `academicFit` and `programEligibility` now read the
+     * average of whichever subject grades below are present.
+     */
     mathGrade: real('math_grade'),
     scienceGrade: real('science_grade'),
     englishGrade: real('english_grade'),
@@ -152,7 +212,11 @@ export const studentProfiles = sqliteTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (table) => [uniqueIndex('student_profiles_user_id_unique').on(table.userId)],
+  (table) => [
+    uniqueIndex('student_profiles_user_id_unique').on(table.userId),
+    index('student_profiles_grade_level_id_index').on(table.gradeLevelId),
+    index('student_profiles_shs_strand_id_index').on(table.shsStrandId),
+  ],
 );
 
 // --- Infrastructure (§13.1 — not part of the 28-table domain count) ------------------
@@ -193,7 +257,15 @@ export const classes = sqliteTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     academicYear: text('academic_year').notNull(),
+    /** A derived mirror of `gradeLevelId`, exactly as on `studentProfiles` (migration 0017). */
     gradeLevel: text('grade_level'),
+    /**
+     * **The source of every enrolled student's grade level and strand** (migration 0017). The
+     * counselor sets these once per class; `StudentProfileService.syncFromClass` copies them onto
+     * each student's profile at enrollment and whenever the class is edited.
+     */
+    gradeLevelId: text('grade_level_id').references(() => gradeLevels.id, { onDelete: 'set null' }),
+    shsStrandId: text('shs_strand_id').references(() => shsStrands.id, { onDelete: 'set null' }),
     /** Generated at creation, never accepted as client input (§38). */
     joinCode: text('join_code').notNull(),
     joinCodeExpiresAt: timestamp('join_code_expires_at'),
@@ -206,6 +278,8 @@ export const classes = sqliteTable(
     uniqueIndex('classes_join_code_unique').on(table.joinCode),
     index('classes_counselor_id_index').on(table.counselorId),
     index('classes_status_index').on(table.status),
+    index('classes_grade_level_id_index').on(table.gradeLevelId),
+    index('classes_shs_strand_id_index').on(table.shsStrandId),
   ],
 );
 
@@ -279,6 +353,35 @@ export const colleges = sqliteTable(
   ],
 );
 
+/**
+ * The canonical program (migration 0018) — "BS Computer Science" as a thing in the world, of which
+ * each `programs` row is one college's offering.
+ *
+ * It exists because `programs.collegeId` is NOT NULL, which makes "which colleges offer this
+ * program?" unanswerable by any join: UP Diliman's BSCS and DLSU's BSCS share only a string. This
+ * is the same promotion v1.1 applied to `colleges` (§13.3), for the same reason — a relationship
+ * should be a join, not a string match that drifts the first time someone types a hyphen.
+ */
+export const programCatalog = sqliteTable(
+  'program_catalog',
+  {
+    id: text('id').primaryKey().notNull(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    /** `active` / `archived` — no `draft`, which belongs to an *offering*, not to the thing itself. */
+    status: text('status').$type<CatalogStatus>().notNull().default('active'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at'),
+  },
+  (table) => [
+    uniqueIndex('program_catalog_code_unique').on(table.code),
+    index('program_catalog_name_index').on(table.name),
+    index('program_catalog_status_index').on(table.status),
+  ],
+);
+
 export const programs = sqliteTable(
   'programs',
   {
@@ -286,6 +389,14 @@ export const programs = sqliteTable(
     collegeId: text('college_id')
       .notNull()
       .references(() => colleges.id, { onDelete: 'cascade' }),
+    /**
+     * Which canonical program this offering *is* (migration 0018). Nullable: a program entered
+     * before anyone has decided what it canonically is must still be savable, and "which colleges
+     * offer this?" simply has no answer for such a row — which the UI states rather than hides.
+     */
+    programCatalogId: text('program_catalog_id').references(() => programCatalog.id, {
+      onDelete: 'set null',
+    }),
     code: text('code').notNull(),
     name: text('name').notNull(),
     departmentName: text('department_name'),
@@ -301,6 +412,7 @@ export const programs = sqliteTable(
     index('programs_college_id_index').on(table.collegeId),
     index('programs_status_index').on(table.status),
     index('programs_college_code_index').on(table.collegeId, table.code),
+    index('programs_program_catalog_id_index').on(table.programCatalogId),
   ],
 );
 
@@ -1114,6 +1226,66 @@ export const aiPolicies = sqliteTable(
 // --- Platform (§13.8) ----------------------------------------------------------------
 
 /**
+ * The recommendation chat assistant (migration 0019).
+ *
+ * History is server-side because a transcript in React state resets on refresh — on the shared
+ * school computer this system actually runs on, that is most of the time — and because a model
+ * call whose inputs the server never saw cannot honestly be the `ai_requests` row that §29
+ * principle 6 requires it to be.
+ */
+export const chatConversations = sqliteTable(
+  'chat_conversations',
+  {
+    id: text('id').primaryKey().notNull(),
+    studentId: text('student_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Which recommendation set this is about. Nullable and SET NULL: regenerating recommendations
+     * replaces the rows (§20), and the conversation a student had about the previous set stays
+     * readable rather than vanishing with it.
+     */
+    assessmentResultId: text('assessment_result_id').references(() => assessmentResults.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index('chat_conversations_student_id_index').on(table.studentId),
+    index('chat_conversations_student_updated_index').on(table.studentId, table.updatedAt),
+  ],
+);
+
+export const chatMessages = sqliteTable(
+  'chat_messages',
+  {
+    id: text('id').primaryKey().notNull(),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => chatConversations.id, { onDelete: 'cascade' }),
+    role: text('role').$type<ChatRole>().notNull(),
+    content: text('content').notNull(),
+    /**
+     * Provenance into `ai_requests` (§13.7). NULL on every user message, and on an assistant
+     * message that is the deterministic fallback rather than a generation — §29 is explicit that
+     * the fallback is not model output and must not be recorded as one.
+     */
+    aiRequestId: text('ai_request_id').references(() => aiRequests.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index('chat_messages_conversation_id_index').on(table.conversationId),
+    index('chat_messages_conversation_created_index').on(
+      table.conversationId,
+      table.createdAt,
+      table.id,
+    ),
+    index('chat_messages_ai_request_id_index').on(table.aiRequestId),
+  ],
+);
+
+/**
  * In-app notifications (§13.8, §44) — Phase 6, the 28th and last domain table. Created by
  * `NotificationService.send()` at the end of the §44 listeners; `read_at` is the only status
  * that will ever exist (NULL = unread).
@@ -1174,7 +1346,10 @@ export type ApiToken = typeof apiTokens.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type ClassRoom = typeof classes.$inferSelect;
 export type ClassStudent = typeof classStudents.$inferSelect;
+export type GradeLevel = typeof gradeLevels.$inferSelect;
+export type ShsStrand = typeof shsStrands.$inferSelect;
 export type College = typeof colleges.$inferSelect;
+export type ProgramCatalogEntry = typeof programCatalog.$inferSelect;
 export type Program = typeof programs.$inferSelect;
 export type Career = typeof careers.$inferSelect;
 export type EmploymentOutlook = typeof employmentOutlooks.$inferSelect;
@@ -1204,4 +1379,6 @@ export type KnowledgeDocument = typeof knowledgeDocuments.$inferSelect;
 export type KnowledgeChunk = typeof knowledgeChunks.$inferSelect;
 export type AiRequest = typeof aiRequests.$inferSelect;
 export type AiPolicy = typeof aiPolicies.$inferSelect;
+export type ChatConversation = typeof chatConversations.$inferSelect;
+export type ChatMessage = typeof chatMessages.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;

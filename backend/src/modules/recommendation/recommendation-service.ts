@@ -17,6 +17,7 @@ import {
   studentProfiles,
   type Career,
   type College,
+  type EmploymentOutlook,
   type Program,
   type Recommendation,
   type RecommendationExplanation,
@@ -24,6 +25,7 @@ import {
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import {
+  academicAverage,
   rankTop,
   scoreCareer,
   scoreProgram,
@@ -99,6 +101,8 @@ export function chunkForD1<T>(rows: T[], size: number = ROWS_PER_INSERT): T[][] 
 export interface CareerRecommendation {
   recommendation: Recommendation;
   career: Career;
+  /** The resolved employment-outlook row, for the card's demand label and the outlook sort. */
+  outlook?: EmploymentOutlook | null;
 }
 
 export interface ProgramRecommendation {
@@ -299,6 +303,17 @@ export class RecommendationService {
       programRows.map((row) => row.targetProgramId).filter((id): id is string => id !== null),
     );
 
+    /**
+     * The employment-outlook lookup, resolved for the career cards (2026-07-27).
+     *
+     * It was previously left unjoined here, on the reasoning that a recommendation card shows a
+     * title and a Holland code and does not need a demand label. That reasoning stopped holding
+     * when the cards gained a **"sort by job outlook"** control: the field was on the wire, always
+     * null, so the card's outlook line never rendered and the sort would have had nothing to sort
+     * on. One query for a four-row table, once per page.
+     */
+    const outlooks = await this.catalog.outlooksById();
+
     return {
       assessmentResultId,
       generatedAt: rows[0]!.createdAt,
@@ -307,7 +322,18 @@ export class RecommendationService {
 
         // A career deleted since generation. The row cascades away with a real DELETE, so this is
         // only reachable in a race — but a card with a blank title is worse than one card fewer.
-        return career === undefined ? [] : [{ recommendation, career }];
+        return career === undefined
+          ? []
+          : [
+              {
+                recommendation,
+                career,
+                outlook:
+                  career.employmentOutlookId === null
+                    ? null
+                    : (outlooks.get(career.employmentOutlookId) ?? null),
+              },
+            ];
       }),
       programs: programRows.flatMap((recommendation) => {
         const found = programById.get(recommendation.targetProgramId!);
@@ -615,18 +641,30 @@ export class RecommendationService {
     careerConfidenceIndex: number,
   ): Promise<StudentSignals> {
     const [profile] = await this.db
-      .select({ gwa: studentProfiles.gwa, strand: studentProfiles.strand })
+      .select({
+        strand: studentProfiles.strand,
+        mathGrade: studentProfiles.mathGrade,
+        scienceGrade: studentProfiles.scienceGrade,
+        englishGrade: studentProfiles.englishGrade,
+      })
       .from(studentProfiles)
       .where(eq(studentProfiles.userId, studentId))
       .limit(1);
 
     // No profile row at all is the same signal as an empty one: unknown. §27 maps unknown to a
-    // neutral value, never to a penalty — a student who has not filled in their GWA has not
+    // neutral value, never to a penalty — a student who has not filled in their grades has not
     // failed anything.
     return {
       riasec,
       careerConfidenceIndex,
-      gwa: profile?.gwa ?? null,
+      academicAverage:
+        profile === undefined
+          ? null
+          : academicAverage({
+              mathGrade: profile.mathGrade,
+              scienceGrade: profile.scienceGrade,
+              englishGrade: profile.englishGrade,
+            }),
       strand: profile?.strand ?? null,
     };
   }

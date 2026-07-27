@@ -16,7 +16,17 @@ export interface ClassRoom {
   counselor_id: string;
   name: string;
   academic_year: string;
+  /**
+   * The §13.1 lookup FKs (migration 0017), and **the source of every enrolled student's own grade
+   * level and strand**. That is why the class form gained pickers: "Gr 12" typed into a text box
+   * produced a profile field §27 could not read and a student could not correct.
+   */
+  grade_level_id: string | null;
+  shs_strand_id: string | null;
+  /** The derived text mirror, kept so existing consumers read what they always did. */
   grade_level: string | null;
+  /** Resolved for display where the endpoint joined it. */
+  shs_strand: string | null;
   join_code: string;
   join_code_expires_at: string | null;
   status: ClassStatus;
@@ -82,14 +92,23 @@ export interface Paginated<TItem> {
 export interface CreateClassPayload {
   name: string;
   academic_year: string;
-  grade_level?: string | undefined;
+  /** Both nullable: a counselor who has not decided yet gets a class whose students stay editable. */
+  grade_level_id?: string | null;
+  shs_strand_id?: string | null;
 }
 
 export interface UpdateClassPayload {
   name?: string | undefined;
   academic_year?: string | undefined;
-  grade_level?: string | undefined;
+  grade_level_id?: string | null;
+  shs_strand_id?: string | null;
   status?: ClassStatus | undefined;
+}
+
+/** The two §13.1 lookups the class form picks from (migration 0017). */
+export interface ClassOptions {
+  grade_levels: { id: string; code: string; name: string }[];
+  shs_strands: { id: string; code: string; name: string; description: string | null }[];
 }
 
 /** A student's display name, which for a mononym is just the one name they have. */

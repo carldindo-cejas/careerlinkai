@@ -16,6 +16,7 @@ import {
   RECOMMENDATION_EXPLANATION_PROMPT_VERSION,
   RECOMMENDATION_EXPLANATION_SYSTEM_PROMPT,
 } from '@/prompts/recommendation-explanation.v1';
+import { academicAverage } from '@/lib/recommendation';
 import type { AiGatewayService, GenerateOptions } from '@/modules/ai/ai-gateway-service';
 import type { RetrievalService, RetrievedChunk } from '@/modules/ai/retrieval-service';
 import { RecommendationService } from '@/modules/recommendation/recommendation-service';
@@ -199,7 +200,7 @@ export class ExplanationService {
     student: {
       topDimensions: { name: string; score: number }[];
       strand: string | null;
-      gwa: number | null;
+      academicAverage: number | null;
       gradeLevel: string | null;
     },
     retrieved: RetrievedChunk[],
@@ -213,7 +214,13 @@ export class ExplanationService {
         .map((dimension) => `${dimension.name} (${dimension.score.toFixed(1)}/100)`)
         .join(', ')}`,
       student.strand === null ? null : `Strand: ${student.strand}`,
-      student.gwa === null ? null : `General weighted average: ${student.gwa}`,
+      // Named as what it is. The GWA field was removed on 2026-07-27 and this is the mean of the
+      // subject grades the student gave; calling it a GWA in a prompt would invite the model to
+      // repeat that word back to a student who never supplied one (§40 — only named, accurate
+      // fields reach a prompt).
+      student.academicAverage === null
+        ? null
+        : `Average of reported subject grades: ${student.academicAverage.toFixed(1)}`,
       student.gradeLevel === null ? null : `Grade level: ${student.gradeLevel}`,
     ]
       .filter((line): line is string => line !== null)
@@ -264,7 +271,7 @@ export class ExplanationService {
   private async studentContextFor(recommendation: Recommendation): Promise<{
     topDimensions: { name: string; score: number }[];
     strand: string | null;
-    gwa: number | null;
+    academicAverage: number | null;
     gradeLevel: string | null;
   }> {
     // The recommendation anchors to the RIASEC result (§13.6) — its dimension scores are the
@@ -284,7 +291,9 @@ export class ExplanationService {
     const [profile] = await this.db
       .select({
         strand: studentProfiles.strand,
-        gwa: studentProfiles.gwa,
+        mathGrade: studentProfiles.mathGrade,
+        scienceGrade: studentProfiles.scienceGrade,
+        englishGrade: studentProfiles.englishGrade,
         gradeLevel: studentProfiles.gradeLevel,
       })
       .from(studentProfiles)
@@ -294,7 +303,14 @@ export class ExplanationService {
     return {
       topDimensions,
       strand: profile?.strand ?? null,
-      gwa: profile?.gwa ?? null,
+      academicAverage:
+        profile === undefined
+          ? null
+          : academicAverage({
+              mathGrade: profile.mathGrade,
+              scienceGrade: profile.scienceGrade,
+              englishGrade: profile.englishGrade,
+            }),
       gradeLevel: profile?.gradeLevel ?? null,
     };
   }

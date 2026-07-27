@@ -145,9 +145,15 @@ export interface StudentProfile {
   last_name: string | null;
   birthdate: string | null;
   gender: string | null;
+  /** The §13.1 lookup FKs (migration 0017) — what the form sends back. */
+  grade_level_id: string | null;
+  shs_strand_id: string | null;
+  /**
+   * The derived text mirrors. Display strings now, not inputs: they are written by the server from
+   * the ids above, and §27 reads them.
+   */
   grade_level: string | null;
   strand: Strand | null;
-  gwa: string | null;
   math_grade: string | null;
   science_grade: string | null;
   english_grade: string | null;
@@ -156,6 +162,20 @@ export interface StudentProfile {
   /** What Part VII (§27) still needs before it can recommend anything. */
   is_complete_for_recommendations: boolean;
   missing_for_recommendations: string[];
+  /**
+   * Which of the two lookup fields the student's class assigns, and therefore which the form
+   * renders read-only (migration 0017).
+   *
+   * Computed on the server because the rule *is* a server rule —  answers
+   * 422 for a derived field, so a UI that guessed differently would offer a control whose
+   * submission always fails.
+   */
+  derived: {
+    grade_level: boolean;
+    shs_strand: boolean;
+    /** The class that set them, so the student knows who to ask. Null when nothing is derived. */
+    class_name: string | null;
+  };
   /**
    * What the **student** was asked for, which is a deliberately broader set than the two inputs the
    * engine cannot run without (v1.6). Grade level is required here and not there: §27 never reads
@@ -175,12 +195,26 @@ export interface StudentProfile {
 export type UpdateProfilePayload = Partial<{
   birthdate: string | null;
   gender: string | null;
-  grade_level: string | null;
-  strand: Strand | null;
-  gwa: number | null;
+  /**
+   * Ids, not strings — and only accepted when no class supplies them. The raw  string is
+   * rejected at any privilege level: it is a derived mirror with exactly one writer.
+   */
+  grade_level_id: string | null;
+  shs_strand_id: string | null;
   math_grade: number | null;
   science_grade: number | null;
   english_grade: number | null;
   guardian_name: string | null;
   guardian_contact: string | null;
 }>;
+
+/**
+ * The §13.1 lookups behind the profile screen's two selects (migration 0017).
+ *
+ * Served from the API rather than hard-coded in the client for the reason the tables exist at all:
+ * a dropdown transcribed into TypeScript is a second copy of a list, and two copies drift.
+ */
+export interface ProfileOptions {
+  grade_levels: { id: string; code: string; name: string }[];
+  shs_strands: { id: string; code: string; name: string; description: string | null }[];
+}

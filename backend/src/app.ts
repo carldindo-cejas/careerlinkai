@@ -47,8 +47,17 @@ export function createApp() {
   //
   // `origin` is given as a callback because the value lives on the per-request `env`, which
   // a Worker only has inside a request — there is no module-scope config to read it from.
+  //
+  // **Since the single-Worker consolidation this middleware no longer runs in production.** The
+  // app is served by this same Worker, so `fetch('/api/v1/...')` is same-origin: the browser
+  // sends no `Origin` header, performs no preflight, and applies no CORS check to the response.
+  // Deleting it would be a defensible simplification and is deliberately not done — the local
+  // `VITE_API_BASE_URL` escape hatch (a Vite dev server pointed at a deployed API) is genuinely
+  // cross-origin, and an allow-list that is present and narrow beats one that has to be
+  // reconstructed correctly under time pressure. Scoped to `/api/*` rather than `*` so it
+  // describes the surface it actually guards.
   app.use(
-    '*',
+    '/api/*',
     cors({
       // Hono types the callback's context as `Context<any>`, so it is annotated back to the
       // app's own env — otherwise `c.env` is `any` and FRONTEND_URL could be misspelled here

@@ -4,6 +4,7 @@ import type { BatchItem } from 'drizzle-orm/batch';
 import type { Database } from '@/db/client';
 import {
   classStudents,
+  shsStrands,
   studentProfiles,
   users,
   type ClassRoom,
@@ -111,6 +112,28 @@ export class ClassEnrollmentService {
     const timestamp = now();
     const statements: BatchItem<'sqlite'>[] = [];
 
+    /**
+     * The class's grade level and strand, copied onto every profile this batch creates
+     * (migration 0017).
+     *
+     * Written **here, in the same batch**, rather than dispatched as a `ClassRosterFieldsChanged`
+     * event afterwards. The event exists for the *edit* path, where the profiles already exist and
+     * the write must not be able to fail the counselor's edit. Here the profile row is being
+     * created in this very statement list, so setting its fields correctly at insert is strictly
+     * better than inserting them blank and immediately updating: one write instead of two, atomic
+     * with the rest of the provisioning, and no window in which a newly rostered student's profile
+     * says they have no strand.
+     *
+     * This module already inserts `student_profiles` rows — roster provisioning is the only thing
+     * that creates a student (§16) — so no new boundary is crossed by filling two more columns.
+     */
+    const strand =
+      classRoom.shsStrandId === null
+        ? null
+        : ((await this.db.query.shsStrands.findFirst({
+            where: eq(shsStrands.id, classRoom.shsStrandId),
+          })) ?? null);
+
     for (const student of input.students) {
       const userId = uuid();
       // An empty last name is normalised to NULL rather than stored: `""` and "this person
@@ -136,6 +159,11 @@ export class ClassEnrollmentService {
           userId,
           firstName: student.first_name,
           lastName,
+          // Derived from the class, with each id's text mirror beside it (migration 0017).
+          gradeLevelId: classRoom.gradeLevelId,
+          gradeLevel: classRoom.gradeLevel,
+          shsStrandId: classRoom.shsStrandId,
+          strand: strand?.name ?? null,
           createdAt: timestamp,
           updatedAt: timestamp,
         }),

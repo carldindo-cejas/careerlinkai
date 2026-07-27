@@ -41,8 +41,28 @@ main = "src/index.ts"
 compatibility_date = "2026-07-13"
 compatibility_flags = ["nodejs_compat"]
 
+# The same single-origin shape the deploy config has, so the routing that ships can be exercised
+# locally rather than first observed in staging. Two scripts use this profile for two purposes:
+#
+#   npm run dev      Vite owns the frontend on :5173 and proxies /api here. `dist/` is created
+#                    empty if absent and never read — the browser never asks this Worker for HTML.
+#   npm run preview  Builds the frontend first, so :8787 alone is the whole app: SPA fallback on
+#                    /student/assessments, `run_worker_first` keeping /api/v1/* on the Worker,
+#                    `_headers` applying its cache policy. This is the production shape, offline.
+#
+# `directory` is relative to this file, i.e. the same ../frontend/dist the deploy config uses;
+# there is one build output and every profile points at it.
+[assets]
+directory = "../frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
 [vars]
 APP_ENV = "local"
+# Vite's origin in the `npm run dev` loop. Under `npm run preview` the app is served by this
+# Worker on :8787 and is same-origin with its API, so §41's CORS allow-list is not consulted at
+# all — same as staging and production.
 FRONTEND_URL = "http://localhost:5173"
 WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"

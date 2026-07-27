@@ -4,7 +4,8 @@
     "wrangler": "^4.110.0"
   },
   "scripts": {
-    "deploy": "wrangler deploy",
-    "preview": "wrangler dev"
+    "deploy:staging": "npm --prefix backend run deploy:staging",
+    "deploy:production": "npm --prefix backend run deploy:production",
+    "preview": "npm --prefix backend run preview"
   }
 }

@@ -13,7 +13,13 @@ export interface SerializedClass {
   counselor_id: string;
   name: string;
   academic_year: string;
+  /** The `grade_levels` FK — what the counselor's form sends back (migration 0017). */
+  grade_level_id: string | null;
+  shs_strand_id: string | null;
+  /** The derived text mirror, kept on the wire so existing consumers read what they always did. */
   grade_level: string | null;
+  /** Resolved for display, when the caller joined it. */
+  shs_strand: string | null;
   join_code: string;
   join_code_expires_at: string | null;
   status: string;
@@ -22,13 +28,19 @@ export interface SerializedClass {
 }
 
 /** A class as its **counselor** sees it. Carries the join code. */
-export function serializeClass(classRoom: ClassRoom): SerializedClass {
+export function serializeClass(
+  classRoom: ClassRoom,
+  context: { strandName?: string | null } = {},
+): SerializedClass {
   return {
     id: classRoom.id,
     counselor_id: classRoom.counselorId,
     name: classRoom.name,
     academic_year: classRoom.academicYear,
+    grade_level_id: classRoom.gradeLevelId,
+    shs_strand_id: classRoom.shsStrandId,
     grade_level: classRoom.gradeLevel,
+    shs_strand: context.strandName ?? null,
     join_code: classRoom.joinCode,
     join_code_expires_at: classRoom.joinCodeExpiresAt,
     status: classRoom.status,

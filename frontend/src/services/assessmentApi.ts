@@ -5,6 +5,7 @@ import type {
   AssessmentAttempt,
   AssessmentResult,
   AssessmentTemplate,
+  ProfileOptions,
   StudentProfile,
   UpdateProfilePayload,
 } from '@/types/assessment';
@@ -56,6 +57,11 @@ export const studentAssessmentApi = {
 
   updateProfile(payload: UpdateProfilePayload): Promise<StudentProfile> {
     return unwrap(httpClient.patch<ApiSuccess<StudentProfile>>('/student/profile', payload));
+  },
+
+  /** The grade-level and strand lookups the form's selects are built from (migration 0017). */
+  getProfileOptions(): Promise<ProfileOptions> {
+    return unwrap(httpClient.get<ApiSuccess<ProfileOptions>>('/student/profile/options'));
   },
 
   // The player (§37) -------------------------------------------------------

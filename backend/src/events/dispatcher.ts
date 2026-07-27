@@ -93,12 +93,38 @@ export interface ClassActivatedEvent {
   reason: 'CREATED' | 'REACTIVATED';
 }
 
+/**
+ * The sixth event (migration 0017) — **"the grade level or strand a class assigns has changed"**.
+ *
+ * An event for the same reason `ClassActivated` is one, and the reasoning transfers exactly: a
+ * student's grade level and strand now derive from their class, so *something* has to copy the new
+ * value onto `student_profiles` — and `student_profiles` is written by
+ * `StudentProfileService`, which lives in the Assessment module. The Class module calling it
+ * directly would put a profile concern inside class editing and reach across a §11 module boundary
+ * to do it.
+ *
+ * The failure mode is the deciding argument, as it was there: **a counselor must still get the
+ * class edit they asked for if the profile sync fails.** `dispatch` guarantees that, and the
+ * recovery is a re-save — the sync is idempotent, since it writes the class's current value rather
+ * than a delta.
+ *
+ * Fires on class edit and on enrollment. `studentIds` scopes it: absent means "every active student
+ * in this class" (the edit path), present means exactly these (the enrollment path), so a roster
+ * confirmation does not rewrite sixty profiles to set two.
+ */
+export interface ClassRosterFieldsChangedEvent {
+  type: 'ClassRosterFieldsChanged';
+  classId: string;
+  studentIds?: string[];
+}
+
 export type DomainEvent =
   | AssessmentCompletedEvent
   | RecommendationGeneratedEvent
   | AssessmentDraftGeneratedEvent
   | KnowledgeDocumentProcessedEvent
-  | ClassActivatedEvent;
+  | ClassActivatedEvent
+  | ClassRosterFieldsChangedEvent;
 
 export type Listener<E extends DomainEvent> = (event: E) => Promise<void>;
 

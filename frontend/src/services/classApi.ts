@@ -1,6 +1,7 @@
 import { httpClient, unwrap } from '@/services/httpClient';
 import type { ApiSuccess } from '@/types/api';
 import type {
+  ClassOptions,
   ClassRoom,
   CreateClassPayload,
   Paginated,
@@ -18,6 +19,14 @@ import type {
 const CLASSES_PAGE_SIZE = 100;
 
 export const classApi = {
+  /**
+   * The grade-level and strand lookups the class form picks from (migration 0017). Two rows each
+   * and identical for every user, so callers cache it for the session.
+   */
+  options(): Promise<ClassOptions> {
+    return unwrap(httpClient.get<ApiSuccess<ClassOptions>>('/counselor/class-options'));
+  },
+
   list(): Promise<Paginated<ClassRoom>> {
     return unwrap(httpClient.get<ApiSuccess<Paginated<ClassRoom>>>('/counselor/classes'));
   },

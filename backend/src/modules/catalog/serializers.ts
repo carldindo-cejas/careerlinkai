@@ -1,4 +1,10 @@
-import type { Career, College, EmploymentOutlook, Program } from '@/db/schema';
+import type {
+  Career,
+  College,
+  EmploymentOutlook,
+  Program,
+  ProgramCatalogEntry,
+} from '@/db/schema';
 import type { ResolvedLocation, ResolvedPlace } from '@/modules/catalog/academic-catalog-service';
 
 /**
@@ -31,11 +37,14 @@ export interface SerializedCareer {
   salary_max: number | null;
   employment_outlook_id: string | null;
   /**
-   * The resolved outlook `{ id, name }`, when the caller loaded the lookup. Absent (null) where it
-   * did not — the recommendation module serializes careers without joining the four-row table, and a
-   * card that shows a career's title and Holland code does not need its demand label.
+   * The resolved outlook, when the caller loaded the lookup; null where it did not.
+   *
+   * `display_order` travels with it because the outlook is a **curated sequence** — Low → Moderate
+   * → High → Emerging — not an alphabet, and the client's "sort by job outlook" control has no
+   * other way to know that "Emerging Field" outranks "Low Demand". Sorting on the name would order
+   * them E, H, L, M, which is not a ranking of anything.
    */
-  employment_outlook: { id: string; name: string } | null;
+  employment_outlook: { id: string; name: string; display_order: number } | null;
   typical_riasec_code: string | null;
   status: string;
   created_at: string | null;
@@ -53,7 +62,13 @@ export function serializeCareer(
     salary_min: career.salaryMin,
     salary_max: career.salaryMax,
     employment_outlook_id: career.employmentOutlookId,
-    employment_outlook: extra.outlook ? { id: extra.outlook.id, name: extra.outlook.name } : null,
+    employment_outlook: extra.outlook
+      ? {
+          id: extra.outlook.id,
+          name: extra.outlook.name,
+          display_order: extra.outlook.displayOrder,
+        }
+      : null,
     typical_riasec_code: career.typicalRiasecCode,
     status: career.status,
     created_at: career.createdAt,
@@ -70,10 +85,42 @@ export interface SerializedProgram {
   description: string | null;
   recommended_strand: string | null;
   status: string;
+  /** Which canonical program this offering is (migration 0018). NULL = not yet decided. */
+  program_catalog_id: string | null;
+  /** Resolved where the caller joined it — the canonical name a student is shown. */
+  canonical?: SerializedCanonicalProgram | null;
   /** Present only where the API loaded the mapping — the frontend types it optional. */
   careers?: SerializedCareer[];
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface SerializedCanonicalProgram {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  status: string;
+  /** How many college offerings point at this entry — the admin page's whole reason to exist. */
+  offerings_count?: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export function serializeCanonicalProgram(
+  entry: ProgramCatalogEntry,
+  context: { offeringsCount?: number } = {},
+): SerializedCanonicalProgram {
+  return {
+    id: entry.id,
+    code: entry.code,
+    name: entry.name,
+    description: entry.description,
+    status: entry.status,
+    ...(context.offeringsCount !== undefined ? { offerings_count: context.offeringsCount } : {}),
+    created_at: entry.createdAt,
+    updated_at: entry.updatedAt,
+  };
 }
 
 /**
@@ -86,7 +133,11 @@ export interface SerializedProgram {
  * changes is that §27 stops counting it, which is a *scoring* decision made in
  * `rankablePrograms()`, not a serialization one made here.
  */
-export function serializeProgram(program: Program, careers?: Career[]): SerializedProgram {
+export function serializeProgram(
+  program: Program,
+  careers?: Career[],
+  context: { canonical?: ProgramCatalogEntry | null } = {},
+): SerializedProgram {
   return {
     id: program.id,
     college_id: program.collegeId,
@@ -96,6 +147,13 @@ export function serializeProgram(program: Program, careers?: Career[]): Serializ
     description: program.description,
     recommended_strand: program.recommendedStrand,
     status: program.status,
+    program_catalog_id: program.programCatalogId,
+    ...(context.canonical !== undefined
+      ? {
+          canonical:
+            context.canonical === null ? null : serializeCanonicalProgram(context.canonical),
+        }
+      : {}),
     // The mapping chips show a career's title and status, not its salary or outlook, so the careers
     // here are serialized without the outlook lookup (`employment_outlook` comes out null).
     ...(careers !== undefined ? { careers: careers.map((career) => serializeCareer(career)) } : {}),

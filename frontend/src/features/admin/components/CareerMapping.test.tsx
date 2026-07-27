@@ -42,6 +42,7 @@ function program(careers: Career[] = []): Program {
     description: null,
     recommended_strand: 'Academic',
     status: 'active',
+    program_catalog_id: null,
     careers,
     created_at: null,
     updated_at: null,

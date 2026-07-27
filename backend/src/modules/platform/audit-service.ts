@@ -60,6 +60,12 @@ export type AuditAction =
   | 'PROGRAM_CREATED'
   | 'PROGRAM_UPDATED'
   | 'PROGRAM_DELETED'
+  // The canonical program catalog (migration 0018). `MERGED` is audited as its own action rather
+  // than as an UPDATE because it silently re-points every offering that named the absorbed entry —
+  // the row records how many moved, which is the only trace of a change nothing else logs.
+  | 'CANONICAL_PROGRAM_CREATED'
+  | 'CANONICAL_PROGRAM_UPDATED'
+  | 'CANONICAL_PROGRAM_MERGED'
   | 'CAREER_CREATED'
   | 'CAREER_UPDATED'
   | 'CAREER_DELETED'
@@ -223,6 +229,9 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   PROGRAM_CREATED: 'CREATE',
   PROGRAM_UPDATED: 'UPDATE',
   PROGRAM_DELETED: 'DELETE',
+  CANONICAL_PROGRAM_CREATED: 'CREATE',
+  CANONICAL_PROGRAM_UPDATED: 'UPDATE',
+  CANONICAL_PROGRAM_MERGED: 'UPDATE',
   CAREER_CREATED: 'CREATE',
   CAREER_UPDATED: 'UPDATE',
   CAREER_DELETED: 'DELETE',

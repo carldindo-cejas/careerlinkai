@@ -1401,6 +1401,172 @@ checklist's own order:
 
 ---
 
+## Student Module enhancements (prompt-driven, 2026-07-27)
+
+Seven changes across the assessment player, the recommendations screen and the student profile.
+Migrations **0017–0019**; gate green at **786 backend + 104 frontend** tests, tsc · ESLint ·
+platform gates · bundle 259 KiB.
+
+### 1. The assessment player skipped questions — fixed
+
+**The bug, precisely.** `AssessmentPlayerPage` auto-advanced on a 150 ms `setTimeout` after an
+answer was tapped, and offered a **Skip** button that moved on unconditionally. Two taps inside one
+timeout window queued two advances, so a student could land two questions past what they had
+answered — and then be refused at submit with a count but no indication of *which* item was missing.
+
+Three parts, all needed:
+
+1. **Saves are serialized** through one promise chain. N rapid taps on one question produce N
+   ordered POSTs whose last write is the student's last choice; two unordered in-flight upserts
+   could otherwise land in either order.
+2. **Advancing awaits that chain**, so the answer is durable before the question leaves the screen —
+   which is what makes resume-where-you-left-off honest.
+3. **A synchronous ref latches the advance.** `disabled` alone is insufficient: React state applies
+   asynchronously, so a double-click inside one frame passes a state-based guard twice.
+
+Auto-advance and Skip are gone; **Next** is disabled until a *required* question is answered and
+while its save is in flight. Optional questions (`assessment_questions.required = 0`) remain
+passable — treating every question as mandatory would refuse to let a student past an item the
+author deliberately marked skippable. All three §13.4 question types are single-select over
+`question_options`, so one control and one rule covers `LIKERT`, `MULTIPLE_CHOICE` and `BOOLEAN`;
+a parameterized test asserts that rather than assuming it.
+
+### 2. Completion flow
+
+**Finish assessment** replaces Next on the final question. It awaits the pending save, re-checks
+every required answer client-side (the server enforces §24 independently), and on a gap **jumps to
+the first unanswered question** rather than reporting a count. The results page is entered with
+`replace: true` — the player refuses to reopen a submitted attempt, so leaving it on the history
+stack would put a dead screen one Back press away.
+
+The results page gained **Back to assessments** always, plus **Return to …** naming the screen that
+sent the student there (`ResultPageState`). Deliberately not `navigate(-1)`: after the player
+replaces itself, "one entry back" is not reliably anywhere meaningful.
+
+### 3. The recommendations chat assistant (migration 0019)
+
+`chat_conversations` + `chat_messages`, and `ChatService` — `ExplanationService` for a conversation,
+keeping the same promise: **the student always sees something true.** Every failure mode (model
+down, quota spent, §34 guardrail trip) converges on a deterministic reply built from the student's
+own §27 results, and the panel **labels it** — an assistant message with no `ai_request_id` was not
+generated. The whole trust model rests on a student being able to tell a computed fact from a
+generated sentence.
+
+Two decisions worth recording:
+
+* **Retrieval failure is not fatal here**, unlike §30's explanation path. That pipeline refuses to
+  generate ungrounded because an ungrounded paragraph attached to a computed score reads as evidence
+  for it. "Which of my top three pays best?" is answerable from the student's own data, and refusing
+  it because the PDF corpus is silent on salaries would refuse a question the system can answer.
+* **The context is loaded server-side from the caller's token.** The request schema is `.strict()`
+  and carries only `message` — a client that could supply its own context could have the model
+  explain any numbers it liked as though they were this student's results.
+
+Rate-limited on the **same** §41 counter as `explain` (10/min, `AuthGuardDO`), because both draw on
+the same hard daily neuron quota (§45). Two independent 10/min budgets would be a 20/min budget
+wearing a disguise.
+
+### 4. Top 3 → Top 5, with a sort
+
+Both sections collapse to three and expand to five. **The candidate set is always the engine's top
+five by match score, taken before any re-ordering** — sorting the persisted ten by salary and then
+slicing would silently swap in careers the engine ranked seventh and eighth, which is a different
+set of recommendations wearing the label of this one. Sort offers match score (the §27 order,
+default), highest salary, and best job outlook.
+
+**A real gap the sort exposed:** `RecommendationService.forResult` never joined the
+`employment_outlooks` lookup, so `employment_outlook` was always `null` on recommendation cards —
+the existing card's outlook line had never rendered, and the new sort would have had nothing to sort
+on. Now resolved in one query for the four-row table. `display_order` was added to the serialized
+outlook because it is a *curated* sequence (Low → Moderate → High → Emerging); sorting on the name
+would order them E, H, L, M, which is not a ranking of anything.
+
+### 5. The canonical program catalog (migration 0018)
+
+`programs.college_id` is NOT NULL — a `programs` row *is* "this program, at this college" — which
+left **"which colleges offer BS Computer Science?"** unanswerable by any join. `program_catalog`
+promotes the string to a row, the same promotion v1.1 applied to `colleges` (§13.3), so both
+directions become joins:
+
+* `GET /student/careers/{id}/programs` — `program_careers` read backwards (§27 only ever traversed
+  program → careers, to average their Holland codes).
+* `GET /student/programs/{id}/colleges` — the sibling offerings of the program's canonical entry,
+  each with its existing **View on Google Maps** link reused verbatim.
+
+Neither is scoped to the student's own recommendation set: a student looking at "Software Engineer"
+is asking what they could study to get there, and answering with only the two programs in their own
+top ten would hide the catalog behind a ranking they did not ask about.
+
+The 0018 backfill groups on the **normalized code**, which is a guess — so it ships with
+`/admin/canonical-programs`, where an admin can merge a wrong grouping. Without that page the FK
+would be a column nobody could correct. `CANONICAL_PROGRAM_MERGED` is audited as its own action
+because the row records how many offerings moved, which is the only trace of a change nothing else
+logs.
+
+### 6. Grade level & SHS strand are lookups, derived from the class (migration 0017)
+
+`grade_levels` and `shs_strands` replace free text and the raw enum as *inputs*; `classes` gains the
+same two FKs and is **the source** of every enrolled student's values.
+
+**`shs_strands` holds the two track values, not the seven strands a student would name.** §13.1
+collapsed strand to a strict two-value enum in v1.2, §27 is built on exactly two branches, and
+`programs.recommended_strand` carries the same two. Seeding STEM/ABM/HUMSS/… would offer a
+distinction the engine cannot act on — which the profile screen's own comment already calls "a lie
+about what the engine can tell apart". `code` is the extension point.
+
+**The text columns survive as a derived mirror**, because §27 and the `programs.recommended_strand`
+comparison read them. The usual objection — two writable representations drift — does not apply:
+after this there is exactly **one writer**. `StudentProfileService` writes the id and copies
+`shs_strands.name` in the same statement, the Zod schema no longer accepts a raw strand string at
+any privilege level, and a student whose class supplies a value is **refused with a 422**, never
+silently ignored. Silently discarding an edit a student watched themselves make is the data-loss bug
+the profile screen's own comments warn about, and it is the version nobody reports.
+
+A student in no class with a value set keeps both fields editable — that is what makes this a
+derivation rather than a lockout, and what a student who joins before their counselor has finished
+setting the class up actually needs.
+
+The class → profile sync runs through a **sixth domain event** (`ClassRosterFieldsChanged`), for the
+same §11 reason `ClassActivated` is one: `student_profiles` is written by the Assessment module, and
+a counselor must still get the class edit they asked for if the sync fails. Enrollment is the
+exception — the profile row is created in that very batch, so its fields are set at insert rather
+than blanked and immediately updated.
+
+### 7. GWA removed; academic fit re-based on subject grades
+
+`student_profiles.gwa` is gone from the Drizzle schema, the validation, the serializers, the AI
+prompt, `missing_for_recommendations`, and the dashboard's `profile_complete`. The physical column
+is left in D1 — dropping it would destroy data for no gain — and nothing can read it.
+
+§27's `academicFit` and `programEligibility` now read the **mean of whichever of Maths, Science and
+English the student filled in**. Nothing else moved: the weights are untouched (0.20 / 0.10), the
+anchors are untouched (75 floor, 95 ceiling), and a student who filled in none of the three lands on
+exactly the 60/70 a NULL GWA used to produce. **§28's worked example still computes** — it names an
+academic input of 88, and 88 is now the mean of the subject grades rather than a GWA column.
+
+The average is over *present* fields only. A student who knows their Maths grade and not their
+Science grade has given one real signal; averaging it against a zero would turn honesty about a gap
+into a punishment. One subject grade is therefore enough for "complete for §27" — demanding all
+three would ask for numbers a student may not have, to satisfy an engine that averages whatever it
+is given.
+
+The §27 reason string now says **"Your subject average of 88 …"** rather than "Your GWA of 88 …":
+telling a student their GWA is 88 when they never gave one would be a small, avoidable lie in the
+one paragraph the system promises is reproducible from its inputs (§26).
+
+### Not done, and why
+
+**These migrations have not been applied to staging, and nothing here has run against the edge.**
+Everything above is green locally, which — per the lesson at the top of this file — is exactly the
+state in which the three worst bugs in this project's history were also green. In particular:
+Workers AI has no local emulation, so **every chat test stubs the gateway**; the panel's real
+generation latency, its token cost against the §45 neuron budget, and its behaviour under a genuine
+quota exhaustion are unmeasured. The hermetic suite proves the *pipeline* and the worst-day fallback
+(the AI binding is genuinely absent in `wrangler.test.toml`, so the fallback path is exercised for
+real) — it cannot prove the model is any good.
+
+---
+
 ## Next Incremental Phase
 
 > **Phases 0–5b are all deployed and proven on staging.** The gate stands at tsc · ESLint ·

@@ -1,34 +1,55 @@
+import { ChevronDown, ChevronUp, GraduationCap, Loader2, MapPin, School } from 'lucide-react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select } from '@/components/ui/select';
+import { RecommendationChatPanel } from '@/features/student/components/RecommendationChatPanel';
 import {
+  useCareerPrograms,
   useExplainRecommendation,
   useMyRecommendations,
+  useProgramColleges,
 } from '@/features/student/hooks/useRecommendations';
 import { paths } from '@/routes/paths';
 import { formatSalaryRange } from '@/types/catalog';
-import type { CareerRecommendation, ProgramRecommendation } from '@/types/recommendation';
+import type {
+  CareerRecommendation,
+  CareerSort,
+  ProgramRecommendation,
+} from '@/types/recommendation';
 
 /**
- * "My recommendations" (FULLPLAN §37, Phase 4).
+ * "My recommendations" (FULLPLAN §37, Phase 4; extended 2026-07-27).
  *
  * Every number on this page was computed by ordinary arithmetic with a known formula (§27) and can
- * be reproduced from the same inputs (§26). **No AI is involved anywhere in it**, and the page says
- * so — not as a disclaimer, but because §3's first principle is that a student is never told "the
- * AI recommends this". Phase 5a will add an "Explain more" button that calls a model; the reason
- * text already on every card is not that, and does not depend on it.
+ * be reproduced from the same inputs (§26). **No AI produced any of it**, and the page says so —
+ * not as a disclaimer, but because §3's first principle is that a student is never told "the AI
+ * recommends this". The "Explain more" button and the assistant panel are the two places a model
+ * speaks, and both are visually and verbally separate from the computed figures.
  *
  * Careers and programs are two separate lists because they are two separate rankings: their scores
  * come from different formulas with different weights (§27), so a career at 69.1 and a program at
  * 76.1 are not two entries in one league table. Interleaving them would invent a comparison the
  * engine never made.
+ *
+ * ## Three by default, five on request
+ *
+ * The engine persists ten of each (§27's `TOP_N`), and the page used to render all ten. A student
+ * reading twenty ranked cards is not choosing between twenty things; they are being asked to hold
+ * a shortlist in their head that nobody shortlisted for them. Three is a shortlist. The next two
+ * are one click away, and the sort control below re-orders **the same five** rather than reaching
+ * further into the list — which matters, because a sort that changed the membership of the set
+ * would be a second ranking the engine never made.
  */
 export function RecommendationPage() {
   const { data: set, isLoading, isError, error } = useMyRecommendations();
   const navigate = useNavigate();
+
+  const [careerSort, setCareerSort] = useState<CareerSort>('match');
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Working out your recommendations…</p>;
@@ -46,67 +67,226 @@ export function RecommendationPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold text-foreground">My recommendations</h1>
-        <p className="text-sm text-muted-foreground">
-          Ranked from your RIASEC interests, your SCCT confidence, and your academic profile. Every
-          score here is calculated — no AI decided any of it.
-        </p>
+    <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:gap-8">
+      <div className="flex min-w-0 flex-1 flex-col gap-6">
+        <div>
+          <h1 className="text-xl font-semibold text-foreground">My recommendations</h1>
+          <p className="text-sm text-muted-foreground">
+            Ranked from your RIASEC interests, your SCCT confidence, and your academic profile.
+            Every score here is calculated — no AI decided any of it.
+          </p>
+        </div>
+
+        {/*
+          `!set` rather than `set === null`: TanStack types `data` as `T | undefined` on top of the
+          API's own `null`, and both mean the same thing here — nothing to show. Distinguishing them
+          would be distinguishing "the server said you have none" from "the query has not resolved",
+          and the isLoading branch above has already ruled the second one out.
+        */}
+        {!set ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Not yet — finish both assessments</CardTitle>
+              <CardDescription>
+                Recommendations need <strong>both</strong> your RIASEC interest profile and your
+                SCCT confidence scores. Complete whichever you have left and they will appear here
+                straight away.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button onClick={() => navigate(paths.studentAssessments)}>
+                Go to my assessments
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <>
+            <CollapsibleSection
+              title="Careers"
+              description="Matched against your interest profile and your confidence scores."
+              items={set.careers}
+              sort={
+                <CareerSortControl value={careerSort} onChange={setCareerSort} />
+              }
+              order={careerSort}
+              render={(recommendation) => (
+                <CareerCard key={recommendation.id} recommendation={recommendation} />
+              )}
+            />
+
+            <CollapsibleSection
+              title="Programs"
+              description="These also weigh your strand and your subject grades — which is why a program can rank differently from the careers it leads to."
+              items={set.programs}
+              render={(recommendation) => (
+                <ProgramCard key={recommendation.id} recommendation={recommendation} />
+              )}
+            />
+          </>
+        )}
       </div>
 
-      {/*
-        `!set` rather than `set === null`: TanStack types `data` as `T | undefined` on top of the
-        API's own `null`, and both mean the same thing here — nothing to show. Distinguishing them
-        would be distinguishing "the server said you have none" from "the query has not resolved",
-        and the isLoading branch above has already ruled the second one out.
-      */}
-      {!set ? (
+      <RecommendationChatPanel hasRecommendations={Boolean(set)} />
+    </div>
+  );
+}
+
+/** Three shown, five available. See the page doc for why the ceiling is five and not ten. */
+const DEFAULT_VISIBLE = 3;
+const EXPANDED_VISIBLE = 5;
+
+/**
+ * One ranked section, collapsed to three.
+ *
+ * Generic over the two recommendation shapes rather than written twice: the collapse behaviour,
+ * the counts and the copy are identical, and two copies of it would drift the first time one was
+ * adjusted. What differs between careers and programs — the card, and whether a sort is offered —
+ * arrives as props.
+ */
+function CollapsibleSection<T extends { id: string; match_score: number }>({
+  title,
+  description,
+  items,
+  render,
+  sort,
+  order,
+}: {
+  title: string;
+  description: string;
+  items: T[];
+  render: (item: T) => React.ReactNode;
+  sort?: React.ReactNode;
+  order?: CareerSort;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  /**
+   * The candidate set is **always the engine's top five by match score**, taken before any
+   * re-sorting. Sorting the whole persisted ten by salary and then slicing would silently swap in
+   * careers the engine ranked seventh and eighth — a different set of recommendations wearing the
+   * label of this one.
+   */
+  const shortlist = useMemo(() => items.slice(0, EXPANDED_VISIBLE), [items]);
+
+  const ordered = useMemo(() => sortRecommendations(shortlist, order ?? 'match'), [shortlist, order]);
+  const visible = expanded ? ordered : ordered.slice(0, DEFAULT_VISIBLE);
+  const hidden = ordered.length - visible.length;
+
+  return (
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+          <p className="text-sm text-muted-foreground">{description}</p>
+        </div>
+        {sort}
+      </div>
+
+      {ordered.length === 0 ? (
         <Card>
-          <CardHeader>
-            <CardTitle>Not yet — finish both assessments</CardTitle>
-            <CardDescription>
-              Recommendations need <strong>both</strong> your RIASEC interest profile and your SCCT
-              confidence scores. Complete whichever you have left and they will appear here
-              straight away.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button onClick={() => navigate(paths.studentAssessments)}>
-              Go to my assessments
-            </Button>
+          <CardContent className="pt-6">
+            <p className="text-sm text-muted-foreground">
+              Nothing to show here yet. This usually means the catalog has no matching entries —
+              your guidance counselor can tell you more.
+            </p>
           </CardContent>
         </Card>
       ) : (
         <>
-          <section className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">Careers</h2>
-              <p className="text-sm text-muted-foreground">
-                Matched against your interest profile and your confidence scores.
-              </p>
-            </div>
+          {visible.map(render)}
 
-            {set.careers.map((recommendation) => (
-              <CareerCard key={recommendation.id} recommendation={recommendation} />
-            ))}
-          </section>
-
-          <section className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">Programs</h2>
-              <p className="text-sm text-muted-foreground">
-                These also weigh your strand and your general weighted average — which is why a
-                program can rank differently from the careers it leads to.
-              </p>
-            </div>
-
-            {set.programs.map((recommendation) => (
-              <ProgramCard key={recommendation.id} recommendation={recommendation} />
-            ))}
-          </section>
+          {hidden > 0 || expanded ? (
+            <Button
+              variant="secondary"
+              className="w-fit"
+              onClick={() => setExpanded((current) => !current)}
+            >
+              {expanded ? (
+                <>
+                  <ChevronUp className="size-4" aria-hidden="true" />
+                  Show top {DEFAULT_VISIBLE} only
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="size-4" aria-hidden="true" />
+                  Show top {ordered.length}
+                </>
+              )}
+            </Button>
+          ) : null}
         </>
       )}
+    </section>
+  );
+}
+
+/**
+ * Re-order a shortlist without changing its membership.
+ *
+ * `match` returns the engine's own order untouched. The other two sort on catalog facts already
+ * visible on the card, and both fall back to the match ranking for entries missing that fact — a
+ * career with no salary on file is not "the lowest paid", it is unknown, and sorting it to the
+ * bottom as though it were zero would be the same lie §27 refuses to tell about a blank GWA.
+ */
+function sortRecommendations<T extends { id: string; match_score: number }>(
+  items: T[],
+  order: CareerSort,
+): T[] {
+  if (order === 'match') {
+    return items;
+  }
+
+  return [...items].sort((a, b) => {
+    const left = sortKey(a, order);
+    const right = sortKey(b, order);
+
+    if (left === null && right === null) return b.match_score - a.match_score;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    if (left !== right) return right - left;
+
+    // Ties fall back to the computed ranking, so the order stays reproducible (§26).
+    return b.match_score - a.match_score;
+  });
+}
+
+function sortKey(item: { id: string }, order: CareerSort): number | null {
+  const career = (item as Partial<CareerRecommendation>).career;
+
+  if (career === undefined) return null;
+
+  if (order === 'salary') {
+    // The top of the band, because "what could this pay" is the question a student is asking.
+    return career.salary_max ?? career.salary_min ?? null;
+  }
+
+  // The outlook lookup carries its own display order (Low → Moderate → High → Emerging), which is
+  // a curated sequence rather than an alphabet — so it is the sort key, not the name.
+  return career.employment_outlook?.display_order ?? null;
+}
+
+function CareerSortControl({
+  value,
+  onChange,
+}: {
+  value: CareerSort;
+  onChange: (value: CareerSort) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <label htmlFor="career-sort" className="whitespace-nowrap text-sm text-muted-foreground">
+        Sort by
+      </label>
+      <Select
+        id="career-sort"
+        className="h-9 w-auto"
+        value={value}
+        onChange={(event) => onChange(event.target.value as CareerSort)}
+      >
+        <option value="match">Match score</option>
+        <option value="salary">Highest salary</option>
+        <option value="outlook">Best job outlook</option>
+      </Select>
     </div>
   );
 }
@@ -131,7 +311,7 @@ function MatchScore({ score, rank }: { score: number; rank: number }) {
 }
 
 /**
- * "Explain more" (§30, Phase 5a) — the one place on this page a model speaks, and it is
+ * "Explain more" (§30, Phase 5a) — one of the two places on this page a model speaks, and it is
  * visually and verbally separate from the computed numbers above it.
  *
  * The fallback is not an error state. When the AI cannot answer — nothing relevant in the
@@ -185,6 +365,7 @@ function ExplainMore({ recommendationId }: { recommendationId: string }) {
 
 function CareerCard({ recommendation }: { recommendation: CareerRecommendation }) {
   const { career } = recommendation;
+  const [showPrograms, setShowPrograms] = useState(false);
 
   return (
     <Card>
@@ -220,8 +401,83 @@ function CareerCard({ recommendation }: { recommendation: CareerRecommendation }
         })()}
 
         <ExplainMore recommendationId={recommendation.id} />
+
+        <div>
+          <Button
+            variant="secondary"
+            onClick={() => setShowPrograms((current) => !current)}
+            aria-expanded={showPrograms}
+          >
+            <GraduationCap className="size-4" aria-hidden="true" />
+            {showPrograms ? 'Hide college programs' : 'View related college programs'}
+          </Button>
+        </div>
+
+        {showPrograms ? <RelatedPrograms careerId={career.id} /> : null}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * The programs that lead to a career — `program_careers` read in the direction §27 never needed.
+ *
+ * Deliberately **not** filtered to the student's own recommended programs. A student looking at
+ * "Software Engineer" is asking what they could study to get there; answering with only the two
+ * programs that happen to be in their own top ten would hide the rest of the catalog behind a
+ * ranking they did not ask about.
+ */
+function RelatedPrograms({ careerId }: { careerId: string }) {
+  const { data, isLoading, isError, error } = useCareerPrograms(careerId, true);
+
+  if (isLoading) {
+    return (
+      <p className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        Finding college programs…
+      </p>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Alert tone="danger">
+        We could not load the related programs. {error instanceof Error ? error.message : ''}
+      </Alert>
+    );
+  }
+
+  const programs = data?.programs ?? [];
+
+  if (programs.length === 0) {
+    return (
+      <Alert tone="info">
+        No college programs have been mapped to this career yet. Your guidance counselor can point
+        you to the ones your school knows about.
+      </Alert>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-l-2 border-border pl-4">
+      <p className="text-sm font-medium text-foreground/80">
+        {programs.length} college {programs.length === 1 ? 'program leads' : 'programs lead'} to
+        this career
+      </p>
+
+      {programs.map(({ program, college }) => (
+        <div key={program.id} className="flex flex-col gap-2 border border-border p-3">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              {program.name} <Badge>{program.code}</Badge>
+            </p>
+            <p className="text-sm text-muted-foreground">{college.name}</p>
+          </div>
+
+          <CollegesOfferingDisclosure programId={program.id} programName={program.name} />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -260,7 +516,95 @@ function ProgramCard({ recommendation }: { recommendation: ProgramRecommendation
         ) : null}
 
         <ExplainMore recommendationId={recommendation.id} />
+
+        <CollegesOfferingDisclosure programId={program.id} programName={program.name} />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * "View colleges offering this program" — the question migration 0018's canonical catalog exists
+ * to answer.
+ *
+ * A `programs` row is one college's offering; its canonical entry is what the program *is*; the
+ * sibling offerings of that entry are the answer. A program that has not been matched to a
+ * canonical entry says so plainly rather than rendering an empty list that reads like "nowhere
+ * offers this".
+ */
+function CollegesOfferingDisclosure({
+  programId,
+  programName,
+}: {
+  programId: string;
+  programName: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading, isError, error } = useProgramColleges(programId, open);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div>
+        <Button variant="secondary" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
+          <School className="size-4" aria-hidden="true" />
+          {open ? 'Hide colleges' : 'View colleges offering this program'}
+        </Button>
+      </div>
+
+      {open ? (
+        isLoading ? (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            Finding colleges…
+          </p>
+        ) : isError ? (
+          <Alert tone="danger">
+            We could not load the colleges. {error instanceof Error ? error.message : ''}
+          </Alert>
+        ) : data?.canonical === null ? (
+          <Alert tone="info">
+            {programName} hasn&apos;t been matched to the shared program catalog yet, so we
+            can&apos;t list the other colleges that offer it.
+          </Alert>
+        ) : (data?.offerings.length ?? 0) === 0 ? (
+          <Alert tone="info">No other college in the catalog currently offers this program.</Alert>
+        ) : (
+          <ul className="flex flex-col gap-2 border-l-2 border-border pl-4">
+            {data!.offerings.map(({ college, program }) => (
+              <li
+                key={program.id}
+                className="flex flex-wrap items-center justify-between gap-2 border border-border p-3"
+              >
+                <div>
+                  <p className="text-sm font-medium text-foreground">{college.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {[college.town?.name, college.province?.name].filter(Boolean).join(', ') ||
+                      'Location not listed'}
+                  </p>
+                </div>
+
+                {/*
+                  The existing college mapping, reused verbatim from the public Colleges page —
+                  same label, same target, same external-link hygiene.
+                */}
+                {college.map_link ? (
+                  <a
+                    href={college.map_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-9 items-center gap-2 rounded-none border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+                  >
+                    <MapPin className="size-4" aria-hidden="true" />
+                    View on Google Maps
+                  </a>
+                ) : (
+                  <span className="text-xs text-muted-foreground">No map available</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )
+      ) : null}
+    </div>
   );
 }
