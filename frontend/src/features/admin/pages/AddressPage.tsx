@@ -9,6 +9,7 @@ import { cn } from '@/components/ui/cn';
 import { AddressEditDialog } from '@/features/admin/components/AddressEditDialog';
 import { AddressTable } from '@/features/admin/components/AddressTable';
 import { BulkImportPanel } from '@/features/admin/components/BulkImportPanel';
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue';
 import {
   useBarangays,
   useDeleteBarangay,
@@ -252,7 +253,7 @@ function LevelSection({
   const [direction, setDirection] = useState<SortDirection>('asc');
   const [editingRow, setEditingRow] = useState<AddressRow | null>(null);
 
-  const search = useDebouncedValue(searchInput, 300);
+  const search = useDebouncedValue(searchInput, SEARCH_DEBOUNCE_MS);
 
   // A new search always returns to page one — page 4 of the unfiltered list rarely exists in the
   // filtered one, and a page beyond the last would come back empty.
@@ -312,7 +313,6 @@ function LevelSection({
         sort={sort}
         direction={direction}
         onSort={onSort}
-        page={page}
         onPageChange={setPage}
         onEdit={setEditingRow}
         onDelete={onDelete}
@@ -381,15 +381,3 @@ function SelectParentHint({ message }: { message: string }) {
   );
 }
 
-/** Debounce a fast-changing value (the search box) so it drives one request, not one per keystroke. */
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delayMs);
-
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-
-  return debounced;
-}

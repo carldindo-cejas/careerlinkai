@@ -12,6 +12,17 @@ import { cn } from '@/components/ui/cn';
  * Controlled and uncomplicated: it owns only its open/query UI state, never the value. Closes on an
  * outside click or Escape, filters case-insensitively on the option label, and (when `clearable`)
  * offers a way back to "nothing selected".
+ *
+ * ## Two filtering modes, one component
+ *
+ * By default it filters `options` **itself**, which is right when the caller already holds the whole
+ * list (the address levels, the canonical-programme picker).
+ *
+ * Pass `onQueryChange` and it filters **nothing**: the caller owns the query, sends it to the
+ * server, and hands back whatever came home. That is the mode audit F3 needs — the career picker
+ * used to load "the whole catalog" and filter it here, which was true at 16 careers, false at 101,
+ * and gave no sign of the difference. Client-side filtering cannot be made correct over a list the
+ * client does not have, so at that point the query has to move rather than the filter get cleverer.
  */
 
 export interface ComboboxOption {
@@ -33,6 +44,27 @@ export interface ComboboxProps {
   clearable?: boolean;
   id?: string;
   invalid?: boolean;
+  /**
+   * Present ⇒ **server-filtered**. The caller owns the search term and `options` is taken as the
+   * answer for it, unfiltered. Absent ⇒ the component filters `options` on the label, as before.
+   */
+  onQueryChange?: (query: string) => void;
+  /** The current term, when the caller owns it. Ignored unless `onQueryChange` is given. */
+  query?: string;
+  /**
+   * The label for `value` when the selected option is **not** in `options` — which is normal in
+   * server mode, where a later search replaces the result set the choice was made from. Without it
+   * the button would fall back to the placeholder and read as "nothing selected".
+   */
+  selectedLabel?: string | null;
+  /** A note under the list, e.g. "42 matches — refine your search to narrow this down." */
+  footer?: string | null;
+  /**
+   * Fired when the panel opens or closes. A server-filtered caller uses it to key its query's
+   * `enabled` off, so a screen rendering many of these fetches once per picker *opened* rather than
+   * once per picker *rendered*.
+   */
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function Combobox({
@@ -48,23 +80,43 @@ export function Combobox({
   clearable = false,
   id,
   invalid = false,
+  onQueryChange,
+  query: controlledQuery,
+  selectedLabel = null,
+  footer = null,
+  onOpenChange,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
+  const [ownQuery, setOwnQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
 
-  const selected = options.find((option) => option.id === value) ?? null;
+  const isServerFiltered = onQueryChange !== undefined;
+  const query = isServerFiltered ? (controlledQuery ?? '') : ownQuery;
+
+  function setQuery(next: string) {
+    if (onQueryChange) {
+      onQueryChange(next);
+    } else {
+      setOwnQuery(next);
+    }
+  }
+
+  const selectedOption = options.find((option) => option.id === value) ?? null;
+  const selected =
+    selectedOption ?? (value !== null && selectedLabel ? { id: value, name: selectedLabel } : null);
   const isDisabled = disabled || Boolean(disabledHint);
 
   const filtered = useMemo(() => {
+    if (isServerFiltered) return options;
+
     const term = query.trim().toLowerCase();
 
     return term.length === 0
       ? options
       : options.filter((option) => option.name.toLowerCase().includes(term));
-  }, [options, query]);
+  }, [isServerFiltered, options, query]);
 
   // Close on an outside click.
   useEffect(() => {
@@ -72,8 +124,7 @@ export function Combobox({
 
     function onPointerDown(event: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-        setQuery('');
+        close();
       }
     }
 
@@ -87,8 +138,14 @@ export function Combobox({
     if (open) inputRef.current?.focus();
   }, [open]);
 
+  /** The one place `open` changes, so `onOpenChange` cannot be missed on a path that closes it. */
+  function setPanelOpen(next: boolean) {
+    setOpen(next);
+    onOpenChange?.(next);
+  }
+
   function close() {
-    setOpen(false);
+    setPanelOpen(false);
     setQuery('');
   }
 
@@ -107,7 +164,7 @@ export function Combobox({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => (open ? close() : setPanelOpen(true))}
         onKeyDown={(event) => {
           if (event.key === 'Escape') close();
         }}
@@ -140,11 +197,25 @@ export function Combobox({
                 }
               }}
               placeholder={searchPlaceholder}
+              // The placeholder is the only visible name this box has, and a placeholder is not an
+              // accessible name — it disappears the moment anything is typed (P2-3's rule).
+              aria-label={searchPlaceholder}
               className="h-9 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             />
           </div>
 
           <ul id={listId} role="listbox" className="max-h-56 overflow-auto py-1">
+            {/*
+              In server mode the list is a request in flight, not a filter over data already here,
+              so "no matches" and "not back yet" are genuinely different states and must not look
+              alike — otherwise every pause reads as "there is no such career".
+            */}
+            {isServerFiltered && loading ? (
+              <li className="px-3 py-2 text-sm text-muted-foreground" role="status">
+                Searching…
+              </li>
+            ) : null}
+
             {clearable && selected ? (
               <li>
                 <button
@@ -158,7 +229,7 @@ export function Combobox({
               </li>
             ) : null}
 
-            {filtered.length === 0 ? (
+            {filtered.length === 0 && !(isServerFiltered && loading) ? (
               <li className="px-3 py-2 text-sm text-muted-foreground">{emptyText}</li>
             ) : (
               filtered.map((option) => (
@@ -182,6 +253,12 @@ export function Combobox({
               ))
             )}
           </ul>
+
+          {footer ? (
+            <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+              {footer}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>

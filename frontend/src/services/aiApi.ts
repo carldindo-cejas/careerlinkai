@@ -3,6 +3,7 @@ import type {
   AiPolicy,
   ExplainOutcome,
   KnowledgeDocument,
+  ProcessingStatus,
   UpdateAiPolicyPayload,
 } from '@/types/ai';
 import type { ApiSuccess } from '@/types/api';
@@ -15,11 +16,25 @@ import type { Paginated } from '@/types/class';
  * THIS browser (see features/admin/utils/extractText.ts) because the Workers Free plan has
  * no server-side CPU home for a PDF parser — the raw file still travels, for provenance.
  */
+/**
+ * The knowledge list query (backend `listKnowledgeDocumentsQuerySchema`, audit F4). `status`
+ * filters on the processing state — the filter that makes a stuck or failed document findable
+ * rather than something you notice by reading every page.
+ */
+export interface KnowledgeListQuery {
+  search?: string | undefined;
+  status?: ProcessingStatus | undefined;
+  page?: number | undefined;
+  per_page?: number | undefined;
+}
+
 export const aiApi = {
-  listKnowledgeDocuments(): Promise<Paginated<KnowledgeDocument>> {
+  listKnowledgeDocuments(
+    query: KnowledgeListQuery = {},
+  ): Promise<Paginated<KnowledgeDocument>> {
     return unwrap(
       httpClient.get<ApiSuccess<Paginated<KnowledgeDocument>>>('/admin/knowledge-documents', {
-        params: { per_page: 100 },
+        params: { per_page: 20, ...query },
       }),
     );
   },

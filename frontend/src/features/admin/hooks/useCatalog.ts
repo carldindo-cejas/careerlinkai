@@ -1,6 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { catalogApi } from '@/services/catalogApi';
+import {
+  catalogApi,
+  type CanonicalProgramListQuery,
+  type CatalogListQuery,
+} from '@/services/catalogApi';
 import type {
   CreateCanonicalProgramPayload,
   CreateCareerPayload,
@@ -16,31 +20,55 @@ import type {
  * Catalog hooks (FULLPLAN §36). Components call these; these call services/catalogApi.
  */
 
+/**
+ * The query is **part of the key** on every list (audit F3/F4), so two searches are two cache
+ * entries rather than one that overwrites the other. The bare `colleges` / `careers` prefixes stay
+ * exactly as they were, which is what keeps every existing `invalidateQueries` call correct: a
+ * prefix match invalidates every query built under it, whatever its filter.
+ */
 export const catalogKeys = {
   colleges: ['colleges'] as const,
+  collegeList: (query: CatalogListQuery) => ['colleges', 'list', query] as const,
   college: (id: string) => ['colleges', id] as const,
   careers: ['careers'] as const,
+  careerList: (query: CatalogListQuery) => ['careers', 'list', query] as const,
   employmentOutlooks: ['employment-outlooks'] as const,
   canonicalPrograms: ['canonical-programs'] as const,
+  canonicalProgramList: (query: CanonicalProgramListQuery) =>
+    ['canonical-programs', 'list', query] as const,
   canonicalProgramOptions: ['canonical-programs', 'options'] as const,
   canonicalProgramColleges: (id: string) => ['canonical-programs', id, 'colleges'] as const,
 };
 
 // --- The canonical program catalog (migration 0018) ------------------------------------------
 
-export function useCanonicalPrograms(page = 1) {
+export function useCanonicalPrograms(query: CanonicalProgramListQuery = {}) {
   return useQuery({
-    queryKey: [...catalogKeys.canonicalPrograms, page],
-    queryFn: () => catalogApi.listCanonicalPrograms(page),
+    queryKey: catalogKeys.canonicalProgramList(query),
+    queryFn: () => catalogApi.listCanonicalPrograms(query),
+    placeholderData: keepPreviousData,
   });
 }
 
-/** The program form's picker. Reference data by the time an admin is filling in a form. */
-export function useCanonicalProgramOptions() {
+/**
+ * The canonical-entry typeahead, used by the merge target picker.
+ *
+ * `enabled` keeps it from firing until a merge panel is actually open — the same on-open rather
+ * than on-mount rule the careers picker follows. No `staleTime`: the previous version cached for
+ * five minutes as "reference data", which is wrong for a list whose whole purpose is to be
+ * searched, and doubly wrong in front of a merge that changes the list it is reading.
+ */
+/** Mirrors `CANONICAL_OPTION_LIMIT` on the server — the picker says when it is truncating. */
+export const CANONICAL_OPTION_LIMIT = 20;
+
+export function useCanonicalProgramOptions(search: string, enabled: boolean) {
+  const term = search.trim() === '' ? undefined : search.trim();
+
   return useQuery({
-    queryKey: catalogKeys.canonicalProgramOptions,
-    queryFn: () => catalogApi.canonicalProgramOptions(),
-    staleTime: 5 * 60 * 1000,
+    queryKey: [...catalogKeys.canonicalProgramOptions, term ?? ''] as const,
+    queryFn: () => catalogApi.canonicalProgramOptions(term),
+    enabled,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -108,10 +136,17 @@ export function useEmploymentOutlooks() {
 
 // Colleges -----------------------------------------------------------------
 
-export function useColleges() {
+/**
+ * `keepPreviousData` on all three lists: typing into a search box changes the key on every
+ * debounce, and without it the list unmounts to a spinner between each one — the rows flash out
+ * and back, which reads as the page reloading rather than as a filter narrowing. The previous page
+ * stays on screen, dimmed by `isFetching`, until the new one lands.
+ */
+export function useColleges(query: CatalogListQuery = {}) {
   return useQuery({
-    queryKey: catalogKeys.colleges,
-    queryFn: () => catalogApi.listColleges(),
+    queryKey: catalogKeys.collegeList(query),
+    queryFn: () => catalogApi.listColleges(query),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -204,12 +239,47 @@ export function useDeleteProgram(collegeId: string) {
 
 // Careers ------------------------------------------------------------------
 
-export function useCareers() {
+export function useCareers(query: CatalogListQuery = {}) {
   return useQuery({
-    queryKey: catalogKeys.careers,
-    queryFn: () => catalogApi.listCareers(),
+    queryKey: catalogKeys.careerList(query),
+    queryFn: () => catalogApi.listCareers(query),
+    placeholderData: keepPreviousData,
   });
 }
+
+/**
+ * The mapping picker's source (audit F3) — a **server-backed typeahead**, not a filter over a
+ * preloaded catalog.
+ *
+ * `enabled` is what stops every program row on a college page firing its own request on mount: the
+ * query runs when a picker is opened, not when one is rendered. That is the same shape
+ * `useStudentRecommendations` uses on the counselor panel, and for the same reason.
+ *
+ * `status: 'active'` is server-side rather than a `.filter()` on the way out. An archived career
+ * cannot be linked (§8, §27 — the server refuses, and it would score nothing if it did not), so
+ * filtering it here would spend slots of a 20-row page on options that can only fail.
+ */
+export function useCareerSearch(search: string, enabled: boolean) {
+  const query: CatalogListQuery = {
+    search: search.trim() === '' ? undefined : search.trim(),
+    status: 'active',
+    per_page: CAREER_PICKER_PAGE_SIZE,
+  };
+
+  return useQuery({
+    queryKey: catalogKeys.careerList(query),
+    queryFn: () => catalogApi.listCareers(query),
+    enabled,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * How many careers the picker shows at once. Small on purpose: this is a list to be *narrowed by
+ * typing*, and a picker that returns 100 rows has invited the user to scroll instead — which is
+ * the habit that made F3 invisible for as long as it was.
+ */
+export const CAREER_PICKER_PAGE_SIZE = 20;
 
 export function useCreateCareer() {
   const queryClient = useQueryClient();

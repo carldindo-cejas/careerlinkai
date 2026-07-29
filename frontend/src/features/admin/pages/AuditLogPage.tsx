@@ -17,6 +17,7 @@ import { cn } from '@/components/ui/cn';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue';
 import {
   useAuditFilterOptions,
   useAuditLogs,
@@ -88,7 +89,7 @@ export function AuditLogPage() {
   const [direction, setDirection] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(1);
 
-  const search = useDebouncedValue(searchInput, 300);
+  const search = useDebouncedValue(searchInput, SEARCH_DEBOUNCE_MS);
   const options = useAuditFilterOptions();
   const exportLogs = useExportAuditLogs();
 
@@ -549,14 +550,3 @@ function toneFor(action: string): 'neutral' | 'success' | 'outline' {
 }
 
 /** Debounce the search box so it drives one request rather than one per keystroke. */
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delayMs);
-
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-
-  return debounced;
-}

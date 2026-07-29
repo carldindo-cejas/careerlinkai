@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { PROCESSING_STATUSES } from '@/db/enums';
 import { MAX_EXTRACTED_TEXT_CHARS } from '@/modules/ai/knowledge-ingestion-service';
 
 /**
@@ -35,10 +36,29 @@ export const updateAiPolicySchema = z
   })
   .strict();
 
+/**
+ * The knowledge list query (audit F4). `search` matches the **file name** — the only thing on the
+ * row a human recognises a document by — and `status` filters on `processing_status`.
+ *
+ * That filter is the one worth having: a document stuck in `PROCESSING`, or one that came back
+ * `FAILED`, contributes **nothing** to retrieval and looks identical to a healthy one in a list
+ * sorted by upload date. Before this, finding them meant reading every page.
+ */
 export const listKnowledgeDocumentsQuerySchema = z.object({
+  search: z
+    .string()
+    .trim()
+    .max(200)
+    .optional()
+    .transform((value) => (value === undefined || value === '' ? undefined : value)),
+  status: z.enum(PROCESSING_STATUSES).optional(),
   page: z.coerce.number().int().min(1).default(1),
   per_page: z.coerce.number().int().min(1).max(100).default(20),
 });
+
+export const LIST_KNOWLEDGE_QUERY_KEYS = ['search', 'status', 'page', 'per_page'] as const;
+
+export type ListKnowledgeDocumentsQuery = z.infer<typeof listKnowledgeDocumentsQuerySchema>;
 
 export type UpdateAiPolicyInput = z.infer<typeof updateAiPolicySchema>;
 

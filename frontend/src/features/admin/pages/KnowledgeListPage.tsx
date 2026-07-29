@@ -1,9 +1,13 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/components/ui/cn';
+import { Pagination } from '@/components/ui/pagination';
+import { SearchInput } from '@/components/ui/search-input';
+import { Select } from '@/components/ui/select';
 import {
   useArchiveKnowledgeDocument,
   useKnowledgeDocuments,
@@ -11,6 +15,8 @@ import {
   useUploadKnowledgeDocument,
 } from '@/features/admin/hooks/useAiKnowledge';
 import { extractText, ExtractionError } from '@/features/admin/utils/extractText';
+import { useListFilters } from '@/hooks/useListFilters';
+import type { KnowledgeListQuery } from '@/services/aiApi';
 import type { KnowledgeDocument, ProcessingStatus } from '@/types/ai';
 
 /**
@@ -24,7 +30,20 @@ import type { KnowledgeDocument, ProcessingStatus } from '@/types/ai';
  * longer to actually surface in explanations.
  */
 export function KnowledgeListPage() {
-  const { data, isLoading, isError, error } = useKnowledgeDocuments();
+  const filters = useListFilters<ProcessingStatus>();
+
+  const query = useMemo<KnowledgeListQuery>(
+    () => ({
+      search: filters.search,
+      status: filters.status === '' ? undefined : filters.status,
+      page: filters.page,
+    }),
+    [filters.search, filters.status, filters.page],
+  );
+
+  const { data, isLoading, isFetching, isError, error } = useKnowledgeDocuments(query);
+
+  const isFiltered = filters.search !== undefined || filters.status !== '';
 
   return (
     <div className="flex flex-col gap-6">
@@ -38,6 +57,34 @@ export function KnowledgeListPage() {
 
       <UploadCard />
 
+      <div className="flex flex-wrap items-center gap-3">
+        <SearchInput
+          value={filters.searchInput}
+          onChange={filters.setSearchInput}
+          label="Search documents"
+          placeholder="Search by file name…"
+        />
+
+        {/*
+          The filter that earns its place: a document stuck in Processing, or one that came back
+          Failed, contributes nothing to retrieval and looks exactly like a healthy one in a list
+          ordered by upload date. Finding them used to mean reading every page.
+        */}
+        <Select
+          value={filters.status}
+          onChange={(event) => filters.setStatus(event.target.value as ProcessingStatus | '')}
+          aria-label="Filter by processing status"
+          className="w-auto"
+        >
+          <option value="">All statuses</option>
+          {(Object.keys(STATUS_LABEL) as ProcessingStatus[]).map((status) => (
+            <option key={status} value={status}>
+              {STATUS_LABEL[status]}
+            </option>
+          ))}
+        </Select>
+      </div>
+
       {isLoading ? <p className="text-sm text-muted-foreground">Loading documents…</p> : null}
 
       {isError ? (
@@ -47,19 +94,43 @@ export function KnowledgeListPage() {
       {data && data.items.length === 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle>No documents yet</CardTitle>
-            <CardDescription>
-              Upload RIASEC/SCCT theory overviews and program or career guides. Without them, the
-              AI refuses to explain rather than inventing — students see the deterministic reason
-              only.
-            </CardDescription>
+            {isFiltered ? (
+              <>
+                <CardTitle>No matching documents</CardTitle>
+                <CardDescription>
+                  Nothing matches{' '}
+                  {filters.search ? <strong>“{filters.search}”</strong> : 'this filter'}
+                  {filters.status ? ` with status ${STATUS_LABEL[filters.status]}` : ''}.
+                </CardDescription>
+              </>
+            ) : (
+              <>
+                <CardTitle>No documents yet</CardTitle>
+                <CardDescription>
+                  Upload RIASEC/SCCT theory overviews and program or career guides. Without them,
+                  the AI refuses to explain rather than inventing — students see the deterministic
+                  reason only.
+                </CardDescription>
+              </>
+            )}
           </CardHeader>
         </Card>
       ) : null}
 
-      {data?.items.map((document) => (
-        <DocumentRow key={document.id} document={document} />
-      ))}
+      <div className={cn('flex flex-col gap-6', isFetching && 'opacity-60 transition-opacity')}>
+        {data?.items.map((document) => (
+          <DocumentRow key={document.id} document={document} />
+        ))}
+      </div>
+
+      {data ? (
+        <Pagination
+          pagination={data.pagination}
+          onPageChange={filters.setPage}
+          noun="documents"
+          isFetching={isFetching}
+        />
+      ) : null}
     </div>
   );
 }

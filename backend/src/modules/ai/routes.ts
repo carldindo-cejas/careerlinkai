@@ -13,6 +13,7 @@ import { MAX_FILE_BYTES } from '@/modules/ai/knowledge-ingestion-service';
 import {
   extractedTextSchema,
   listKnowledgeDocumentsQuerySchema,
+  LIST_KNOWLEDGE_QUERY_KEYS,
   updateAiPolicySchema,
 } from '@/modules/ai/schemas';
 import { serializeAiPolicy, serializeKnowledgeDocument } from '@/modules/ai/serializers';
@@ -30,11 +31,8 @@ adminAiRoutes.use('*', ensureRole('admin'));
 adminAiRoutes.use('*', ensurePasswordChanged());
 
 adminAiRoutes.get('/knowledge-documents', async (c) => {
-  const query = parseQuery(c, listKnowledgeDocumentsQuerySchema, ['page', 'per_page']);
-  const result = await ingestionFrom(createDatabase(c.env.DB), c.env).list(
-    query.page,
-    query.per_page,
-  );
+  const query = parseQuery(c, listKnowledgeDocumentsQuerySchema, [...LIST_KNOWLEDGE_QUERY_KEYS]);
+  const result = await ingestionFrom(createDatabase(c.env.DB), c.env).list(query);
 
   return c.json(
     successEnvelope(

@@ -1,9 +1,10 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Loader2, Pencil, Search, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Loader2, Pencil, Trash2 } from 'lucide-react';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
+import { Pagination } from '@/components/ui/pagination';
+import { SearchInput } from '@/components/ui/search-input';
 import { cn } from '@/components/ui/cn';
 import type { AddressRow, AddressSort, SortDirection } from '@/types/address';
 import type { Paginated } from '@/types/class';
@@ -31,7 +32,11 @@ interface AddressTableProps {
   direction: SortDirection;
   onSort: (column: AddressSort) => void;
 
-  page: number;
+  /**
+   * No `page` prop: the current page comes from the response's own `pagination.current_page`. The
+   * caller's `page` state is what it *asked* for, which is the same thing only when the request has
+   * landed — one authority, not two that agree most of the time.
+   */
   onPageChange: (page: number) => void;
 
   onEdit: (row: AddressRow) => void;
@@ -51,7 +56,6 @@ export function AddressTable({
   sort,
   direction,
   onSort,
-  page,
   onPageChange,
   onEdit,
   onDelete,
@@ -59,19 +63,12 @@ export function AddressTable({
 }: AddressTableProps) {
   return (
     <div className="flex flex-col gap-4">
-      <div className="relative max-w-xs">
-        <Search
-          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <Input
-          value={search}
-          onChange={(event) => onSearchChange(event.target.value)}
-          placeholder={`Search ${noun}s…`}
-          className="pl-9"
-          aria-label={`Search ${noun}s`}
-        />
-      </div>
+      <SearchInput
+        value={search}
+        onChange={onSearchChange}
+        label={`Search ${noun}s`}
+        placeholder={`Search ${noun}s…`}
+      />
 
       {isError ? <Alert>We could not load the {noun}s. {errorMessage}</Alert> : null}
 
@@ -169,32 +166,13 @@ export function AddressTable({
         </Card>
       ) : null}
 
-      {data && data.pagination.last_page > 1 ? (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Page {data.pagination.current_page} of {data.pagination.last_page} ·{' '}
-            {data.pagination.total} {noun}
-            {data.pagination.total === 1 ? '' : 's'}
-          </p>
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={page <= 1 || isFetching}
-              onClick={() => onPageChange(page - 1)}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={page >= data.pagination.last_page || isFetching}
-              onClick={() => onPageChange(page + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+      {data ? (
+        <Pagination
+          pagination={data.pagination}
+          onPageChange={onPageChange}
+          noun={`${noun}s`}
+          isFetching={isFetching}
+        />
       ) : null}
     </div>
   );

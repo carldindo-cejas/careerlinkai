@@ -295,6 +295,69 @@ describe('GET /admin/knowledge-documents', () => {
 
     expect(mine).toMatchObject({ file_name: 'riasec-theory.pdf', processing_status: 'UPLOADED' });
   });
+
+  /**
+   * Search and the status filter (audit F4). The status one is the useful half: a document stuck in
+   * `PROCESSING`, or one that came back `FAILED`, contributes nothing to retrieval and is
+   * indistinguishable from a healthy document in a list ordered by upload date.
+   */
+  it('filters by file name and by processing status', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+
+    const holland = await uploadOverHttp(token, { name: 'holland-codes.pdf' });
+    const scct = await uploadOverHttp(token, { name: 'scct-overview.pdf' });
+
+    // One of the two is marked FAILED directly: the only route to that state is the queue
+    // consumer, and this is a test of the list, not of the pipeline.
+    await db()
+      .update(knowledgeDocuments)
+      .set({ processingStatus: 'FAILED' })
+      .where(eq(knowledgeDocuments.id, scct.body.data.id));
+
+    async function list(query: string): Promise<any> {
+      const response = await SELF.fetch(`${BASE_URL}/admin/knowledge-documents?${query}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      return ((await response.json()) as any).data;
+    }
+
+    const byName = await list('search=holland');
+
+    expect(byName.items.map((item: any) => item.id)).toEqual([holland.body.data.id]);
+    expect(byName.pagination.total).toBe(1);
+
+    const failed = await list('status=FAILED');
+
+    expect(failed.items.map((item: any) => item.file_name)).toEqual(['scct-overview.pdf']);
+
+    // Both filters at once — earlier tests in this file left their own UPLOADED documents behind
+    // (isolation is per file), so an unscoped status query would be reading those. Composing the
+    // two is the assertion worth making anyway: they must AND, not replace one another.
+    const uploaded = await list('search=scct&status=UPLOADED');
+
+    expect(uploaded.items).toEqual([]);
+
+    const uploadedHolland = await list('search=holland&status=UPLOADED');
+
+    expect(uploadedHolland.items.map((item: any) => item.file_name)).toEqual(['holland-codes.pdf']);
+
+    // The chunk count still belongs to the document it is reported against — the filter narrows the
+    // rows, and the GROUP BY that produces the count has to narrow with them.
+    expect(failed.items[0].chunk_count).toBe(0);
+  });
+
+  it('rejects a processing status that is not one of the four', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+
+    const response = await SELF.fetch(`${BASE_URL}/admin/knowledge-documents?status=STUCK`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.status).toBe(422);
+  });
 });
 
 describe('DELETE /admin/knowledge-documents/{id}', () => {

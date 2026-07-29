@@ -1,10 +1,16 @@
 import { Link2, X } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Select } from '@/components/ui/select';
-import { useAttachCareer, useCareers, useDetachCareer } from '@/features/admin/hooks/useCatalog';
+import { Combobox } from '@/components/ui/combobox';
+import {
+  CAREER_PICKER_PAGE_SIZE,
+  useAttachCareer,
+  useCareerSearch,
+  useDetachCareer,
+} from '@/features/admin/hooks/useCatalog';
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { ApiRequestError } from '@/types/api';
 import { describeHollandCode, type Program } from '@/types/catalog';
 
@@ -23,35 +29,68 @@ export interface CareerMappingProps {
 }
 
 export function CareerMapping({ collegeId, program }: CareerMappingProps) {
-  const [selectedCareerId, setSelectedCareerId] = useState('');
+  const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
+  const [search, setSearch] = useState('');
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
 
-  const { data: careers } = useCareers();
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
+
+  /*
+   * **The picker is server-backed now (audit F3).** It used to call `useCareers()`, which asked for
+   * `per_page: 100` and treated the answer as the whole catalog, then filtered it in the browser.
+   * That was true at 16 careers and false at 101 — the 101st simply was not in the dropdown, with
+   * no empty state, no error and nothing on screen to distinguish "no such career" from "past the
+   * page you were given". P0-1 took the catalog to 68, so the margin was one expansion wide.
+   *
+   * `isPickerOpen` keeps this from being a request per program row on page load: a college page
+   * renders one `CareerMapping` per program, and a hook that fetched on mount would fire all of
+   * them for a dropdown nobody has touched.
+   */
+  const careerSearch = useCareerSearch(debouncedSearch, isPickerOpen);
+
   const attachCareer = useAttachCareer(collegeId);
   const detachCareer = useDetachCareer(collegeId);
 
   const linked = program.careers ?? [];
-  const linkedIds = new Set(linked.map((career) => career.id));
+  const linkedIds = useMemo(() => new Set(linked.map((career) => career.id)), [linked]);
 
-  // Two exclusions, and both would otherwise offer an option that can only fail or can only
-  // do nothing:
-  //
-  //   - already linked — re-attaching is a 422, because the mapping is a set;
-  //   - archived — the server refuses to link one, and it would not count toward the
-  //     program's score even if it did (§8, §27). A mapping row that is inert on the day it
-  //     is made is not something to put in a dropdown.
-  const available = (careers?.items ?? []).filter(
-    (career) => !linkedIds.has(career.id) && career.status === 'active',
+  /*
+   * One exclusion is still client-side: a career **already linked to this program**. Re-attaching
+   * is a 422 (the mapping is a set), and the server cannot filter on it — "already linked" is a
+   * fact about this program, and the careers endpoint knows nothing about programs.
+   *
+   * The other exclusion, `status === 'active'`, moved to the server: see `useCareerSearch`.
+   */
+  const available = useMemo(
+    () =>
+      (careerSearch.data?.items ?? [])
+        .filter((career) => !linkedIds.has(career.id))
+        .map((career) => ({
+          id: career.id,
+          name: career.typical_riasec_code
+            ? `${career.title} (${career.typical_riasec_code})`
+            : career.title,
+        })),
+    [careerSearch.data, linkedIds],
   );
+
+  const total = careerSearch.data?.pagination.total ?? 0;
+  const hiddenByPaging = Math.max(0, total - CAREER_PICKER_PAGE_SIZE);
 
   const error = attachCareer.error ?? detachCareer.error;
   const message = error instanceof ApiRequestError ? error.message : null;
 
   const onAttach = () => {
-    if (!selectedCareerId) return;
+    if (!selected) return;
 
     attachCareer.mutate(
-      { programId: program.id, careerId: selectedCareerId },
-      { onSuccess: () => setSelectedCareerId('') },
+      { programId: program.id, careerId: selected.id },
+      {
+        onSuccess: () => {
+          setSelected(null);
+          setSearch('');
+        },
+      },
     );
   };
 
@@ -114,45 +153,56 @@ export function CareerMapping({ collegeId, program }: CareerMappingProps) {
         </ul>
       )}
 
-      {available.length > 0 ? (
-        <div className="flex items-end gap-2">
-          <div className="flex flex-1 flex-col gap-1.5">
-            <label htmlFor={`link-career-${program.id}`} className="sr-only">
-              Link a career to {program.code}
-            </label>
-            <Select
-              id={`link-career-${program.id}`}
-              value={selectedCareerId}
-              onChange={(event) => setSelectedCareerId(event.target.value)}
-            >
-              <option value="">Link a career…</option>
-              {available.map((career) => (
-                <option key={career.id} value={career.id}>
-                  {career.title}
-                  {career.typical_riasec_code ? ` (${career.typical_riasec_code})` : ''}
-                </option>
-              ))}
-            </Select>
-          </div>
-
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={onAttach}
-            disabled={!selectedCareerId}
-            loading={attachCareer.isPending}
-          >
-            Link
-          </Button>
+      {/*
+        Always rendered, unlike the old `<Select>`, which was hidden whenever `available` was empty.
+        That was defensible when `available` meant "the whole catalog minus what is linked" — an
+        empty list really did mean there was nothing to link. It is wrong for a typeahead, where an
+        empty list usually means "nothing matches what you typed", and hiding the box would take
+        away the only way to type something else.
+      */}
+      <div className="flex items-end gap-2">
+        <div className="flex flex-1 flex-col gap-1.5">
+          <label htmlFor={`link-career-${program.id}`} className="sr-only">
+            Link a career to {program.code}
+          </label>
+          <Combobox
+            id={`link-career-${program.id}`}
+            value={selected?.id ?? null}
+            selectedLabel={selected?.name ?? null}
+            onChange={(id) =>
+              setSelected(id === null ? null : (available.find((item) => item.id === id) ?? null))
+            }
+            options={available}
+            query={search}
+            onQueryChange={setSearch}
+            onOpenChange={setIsPickerOpen}
+            loading={careerSearch.isFetching}
+            placeholder="Link a career…"
+            searchPlaceholder="Search careers…"
+            emptyText={
+              search.trim() === ''
+                ? 'No careers in the catalog yet — add some on the Careers page.'
+                : `No active career matches “${search.trim()}”.`
+            }
+            footer={
+              hiddenByPaging > 0
+                ? `Showing ${CAREER_PICKER_PAGE_SIZE} of ${total} — keep typing to narrow it down.`
+                : null
+            }
+            clearable
+          />
         </div>
-      ) : null}
 
-      {careers && careers.items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          There are no careers in the catalog yet. Add some on the Careers page, then link
-          them here.
-        </p>
-      ) : null}
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={onAttach}
+          disabled={!selected}
+          loading={attachCareer.isPending}
+        >
+          Link
+        </Button>
+      </div>
     </div>
   );
 }

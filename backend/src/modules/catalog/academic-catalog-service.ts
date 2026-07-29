@@ -1,4 +1,5 @@
-import { and, asc, count, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 
 import type { Database } from '@/db/client';
 import {
@@ -25,10 +26,13 @@ import { chunkIds } from '@/lib/d1-batching';
 import { now } from '@/lib/datetime';
 import { isUniqueViolation } from '@/lib/db-errors';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
+import { contains } from '@/lib/search';
 import type {
   CreateCareerInput,
   CreateCollegeInput,
   CreateProgramInput,
+  ListCanonicalProgramQuery,
+  ListCatalogQuery,
   UpdateCareerInput,
   UpdateCollegeInput,
   UpdateProgramInput,
@@ -49,6 +53,15 @@ import { AuditService } from '@/modules/platform/audit-service';
  */
 
 const MODULE = 'AcademicCatalog';
+
+/**
+ * How many canonical entries `/canonical-programs/options` returns at once.
+ *
+ * 20, matching the careers picker: this is a list to be *narrowed by typing*, and a picker that
+ * hands back a hundred rows has invited the user to scroll instead — the habit that let audit F3
+ * hide for as long as it did.
+ */
+export const CANONICAL_OPTION_LIMIT = 20;
 
 /** One resolved place in a college's address — the id the form needs, and the name a human reads. */
 export interface ResolvedPlace {
@@ -83,14 +96,44 @@ export class AcademicCatalogService {
     this.audit = new AuditService(db);
   }
 
+  // --- List filtering (audit F3/F4) -----------------------------------------------------
+
+  /**
+   * The `ORDER BY` for a paginated catalog list — the chosen column, **then always the id**.
+   *
+   * The tie-breaker is not tidiness, it is what makes `LIMIT`/`OFFSET` paging correct. Seed 0004
+   * inserts its 68 careers in **one statement**, and SQLite evaluates `'now'` once per statement,
+   * so every one of them carries a byte-identical `created_at`. Sorting on a column where the whole
+   * table ties leaves the row order unspecified — and *separately unspecified per query*, since page
+   * one and page two are two executions. A row can then appear on both pages while another appears
+   * on neither, which reads as data loss and is not reproducible on demand.
+   *
+   * `id` is unique and never null, so appending it makes the total order strict: the same rows,
+   * in the same order, every time.
+   */
+  private static orderFor(column: SQLiteColumn, direction: 'asc' | 'desc', id: SQLiteColumn): SQL[] {
+    return [direction === 'desc' ? desc(column) : asc(column), asc(id)];
+  }
+
   // --- Colleges ------------------------------------------------------------------------
 
-  /** Each item carries `programs_count`, not the programs themselves (§20). */
+  /**
+   * Each item carries `programs_count`, not the programs themselves (§20).
+   *
+   * `search` matches the college **name** — the identifying field, not the description. A search
+   * that also read prose would rank an institution whose blurb happens to say "Manila" alongside
+   * the one actually called that, and an admin looking for a college is looking for its name.
+   */
   async listColleges(
-    page: number,
-    perPage: number,
+    query: ListCatalogQuery,
   ): Promise<PaginatedData<{ college: College; programsCount: number }>> {
-    const scope = isNull(colleges.deletedAt);
+    const { page, per_page: perPage } = query;
+
+    const scope = and(
+      isNull(colleges.deletedAt),
+      query.status === undefined ? undefined : eq(colleges.status, query.status),
+      query.search === undefined ? undefined : contains(colleges.name, query.search),
+    );
 
     const [total] = await this.db.select({ value: count() }).from(colleges).where(scope);
 
@@ -98,7 +141,13 @@ export class AcademicCatalogService {
       .select()
       .from(colleges)
       .where(scope)
-      .orderBy(asc(colleges.name))
+      .orderBy(
+        ...AcademicCatalogService.orderFor(
+          query.sort === 'created_at' ? colleges.createdAt : colleges.name,
+          query.direction,
+          colleges.id,
+        ),
+      )
       .limit(perPage)
       .offset((page - 1) * perPage);
 
@@ -443,29 +492,74 @@ export class AcademicCatalogService {
       .replace(/[\s\-.]/g, '');
   }
 
-  async listCanonicalPrograms(page: number, perPage: number): Promise<PaginatedData<ProgramCatalogEntry>> {
-    const scope = isNull(programCatalog.deletedAt);
+  /**
+   * `search` matches the canonical **name or code** — both identify the entry here, and the code is
+   * the thing an admin arrives holding when they are chasing a mis-grouped `BSA`.
+   */
+  async listCanonicalPrograms(
+    query: ListCanonicalProgramQuery,
+  ): Promise<PaginatedData<ProgramCatalogEntry>> {
+    const { page, per_page: perPage } = query;
+
+    const scope = and(
+      isNull(programCatalog.deletedAt),
+      query.status === undefined ? undefined : eq(programCatalog.status, query.status),
+      query.search === undefined
+        ? undefined
+        : or(
+            contains(programCatalog.name, query.search),
+            contains(programCatalog.code, query.search),
+          ),
+    );
 
     const [total] = await this.db.select({ value: count() }).from(programCatalog).where(scope);
+
+    const sortColumn =
+      query.sort === 'created_at'
+        ? programCatalog.createdAt
+        : query.sort === 'code'
+          ? programCatalog.code
+          : programCatalog.name;
 
     const items = await this.db
       .select()
       .from(programCatalog)
       .where(scope)
-      .orderBy(asc(programCatalog.name))
+      .orderBy(...AcademicCatalogService.orderFor(sortColumn, query.direction, programCatalog.id))
       .limit(perPage)
       .offset((page - 1) * perPage);
 
     return paginate(items, total?.value ?? 0, page, perPage);
   }
 
-  /** Every canonical entry, for the admin form's picker. Two dozen rows at thesis scale. */
-  async allCanonicalPrograms(): Promise<ProgramCatalogEntry[]> {
+  /**
+   * The canonical picker's source — **searched and capped**, not "all of them".
+   *
+   * It used to be `allCanonicalPrograms()`, returning every active entry with no limit and a
+   * comment reading *"Two dozen rows at thesis scale."* That is the same assumption audit F3
+   * records on the careers picker, made from the other end: not a silent truncation but a response
+   * that grows without bound. Seed 0004 installs 48, and the 0018 backfill mints a new one for
+   * every unseen programme code an admin types — so the number is driven by data entry, and there
+   * was no ceiling on it anywhere between the database and the browser.
+   *
+   * Capped at `CANONICAL_OPTION_LIMIT` with `search` doing the narrowing, exactly as the careers
+   * typeahead works, so the two pickers in this admin behave the same way.
+   */
+  async canonicalProgramOptions(search: string | undefined): Promise<ProgramCatalogEntry[]> {
     return this.db
       .select()
       .from(programCatalog)
-      .where(and(eq(programCatalog.status, 'active'), isNull(programCatalog.deletedAt)))
-      .orderBy(asc(programCatalog.name));
+      .where(
+        and(
+          eq(programCatalog.status, 'active'),
+          isNull(programCatalog.deletedAt),
+          search === undefined
+            ? undefined
+            : or(contains(programCatalog.name, search), contains(programCatalog.code, search)),
+        ),
+      )
+      .orderBy(asc(programCatalog.name), asc(programCatalog.id))
+      .limit(CANONICAL_OPTION_LIMIT);
   }
 
   async findCanonicalProgram(id: string): Promise<ProgramCatalogEntry> {
@@ -759,8 +853,20 @@ export class AcademicCatalogService {
 
   // --- Careers -------------------------------------------------------------------------
 
-  async listCareers(page: number, perPage: number): Promise<PaginatedData<Career>> {
-    const scope = isNull(careers.deletedAt);
+  /**
+   * `search` matches the career **title**. This is also the mapping picker's source (audit F3): it
+   * asks for `?search=…&status=active&per_page=20` rather than for the whole catalog, so the picker
+   * stops depending on the catalog fitting inside one page — which it did at 16 careers, stopped
+   * doing somewhere past 100, and would have done silently.
+   */
+  async listCareers(query: ListCatalogQuery): Promise<PaginatedData<Career>> {
+    const { page, per_page: perPage } = query;
+
+    const scope = and(
+      isNull(careers.deletedAt),
+      query.status === undefined ? undefined : eq(careers.status, query.status),
+      query.search === undefined ? undefined : contains(careers.title, query.search),
+    );
 
     const [total] = await this.db.select({ value: count() }).from(careers).where(scope);
 
@@ -768,7 +874,13 @@ export class AcademicCatalogService {
       .select()
       .from(careers)
       .where(scope)
-      .orderBy(asc(careers.title))
+      .orderBy(
+        ...AcademicCatalogService.orderFor(
+          query.sort === 'created_at' ? careers.createdAt : careers.title,
+          query.direction,
+          careers.id,
+        ),
+      )
       .limit(perPage)
       .offset((page - 1) * perPage);
 

@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { aiApi } from '@/services/aiApi';
+import { aiApi, type KnowledgeListQuery } from '@/services/aiApi';
 import type { UpdateAiPolicyPayload } from '@/types/ai';
 
 /**
@@ -8,16 +8,28 @@ import type { UpdateAiPolicyPayload } from '@/types/ai';
  */
 
 export const aiKeys = {
+  /** The prefix every knowledge query lives under, so one invalidation still clears them all. */
   knowledgeDocuments: ['admin', 'knowledge-documents'] as const,
+  knowledgeDocumentList: (query: KnowledgeListQuery) =>
+    ['admin', 'knowledge-documents', 'list', query] as const,
   policies: ['admin', 'ai-policies'] as const,
 };
 
-export function useKnowledgeDocuments() {
+export function useKnowledgeDocuments(query: KnowledgeListQuery = {}) {
   return useQuery({
-    queryKey: aiKeys.knowledgeDocuments,
-    queryFn: () => aiApi.listKnowledgeDocuments(),
+    queryKey: aiKeys.knowledgeDocumentList(query),
+    queryFn: () => aiApi.listKnowledgeDocuments(query),
+    placeholderData: keepPreviousData,
     // Processing is asynchronous (a queue job, §33) — poll while anything is in flight so
     // the admin sees UPLOADED → PROCESSING → COMPLETED without mashing refresh.
+    //
+    // "In flight" means *on the current page*, which is the right reading now that the list can
+    // be filtered and paged: a document processing on page three is not something this screen is
+    // showing, and polling for it would be a request every five seconds for a row nobody can see.
+    // The trade is that filtering to `COMPLETED` stops the poll, so a document finishing while
+    // that filter is on appears on the next refetch rather than by itself. That is the correct
+    // side to err on — the alternative polls forever on a filter that by definition excludes
+    // everything still moving.
     refetchInterval: (query) =>
       query.state.data?.items.some(
         (document) =>

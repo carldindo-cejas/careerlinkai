@@ -381,18 +381,130 @@ Needs live Cloudflare credentials and is irreversible; deliberately not automate
 **Do P1-2 and P2-2 first.** Steps 8 and 9 can both pass on a system that still has a broken CSP or a
 duplicated catalog; step 10 is the only one that catches either.
 
-### `[ ]` **P3-2 — Catalog search** *(audit F3 + F4)*
+### `[x]` **P3-2 — Catalog search** — *done 2026-07-29. 838 → 863 BE, 150 → 165 FE. Two more latent list defects found.*
 
-* **Why:** `listCatalogQuerySchema` has only `page`/`per_page` (max 100) — no search, filter or sort.
-  Colleges, Careers, Canonical Programs and Knowledge pages have no search box. **F3 is now live
-  rather than latent:** the career picker requests `per_page: 100` to get "the whole catalog", and
-  P0-1 raised the catalog to **68 careers** — one more expansion crosses the cap and mappings begin
-  failing silently. Missing mappings degrade `programRiasecCompatibility` invisibly.
-* **Do:** add `search` (and `sort`) to `listCatalogQuerySchema` + service, mirroring the working
-  implementation at `counselor-management-service.ts:131`; add search inputs; convert the career
-  mapping picker to a server-backed typeahead.
-* **Verify:** seed 150+ careers → picker finds #150 by typing.
-* **Effort:** 4–6 h. **Raise to High priority the moment the catalog is edited in anger.**
+Scoped as written — `search`/`sort` on the schema and service, search inputs on the four pages, and
+the picker converted to a server-backed typeahead. Two things were found on the way that the item
+did not name.
+
+**The Colleges page was already over its own edge.** It had **no pager and no search**, and
+`catalogApi.listColleges()` sent no `per_page` — so it took the API's default of **20**. Seed 0004
+installs exactly **20 colleges**. The page was rendering 20 of 20 and looking complete, one added
+institution away from hiding one with nothing on screen to say so. That is F3's shape on a second
+surface, and it was already at the boundary rather than approaching it.
+
+**Sorting by `created_at` was not safe to add until paging was made total.** Seed 0004 inserts its
+68 careers in **one statement**, and SQLite evaluates `'now'` once per statement — so every seeded
+career carries a byte-identical `created_at`. `ORDER BY created_at LIMIT/OFFSET` over a column where
+the whole table ties leaves the row order unspecified, and unspecified *per execution*: page one and
+page two are two queries, so a row may appear on both while another appears on neither. Every list
+now ends its `ORDER BY` with the id (`AcademicCatalogService.orderFor`), making the order strict.
+Recorded honestly: the guard proves the **order** claim — pulled out, the tied rows came back in
+insertion order and the test went red. Miniflare happened to be self-consistent across the two
+paged queries, so the duplicate-row scenario is what the unspecified order *permits*, not something
+that was observed.
+
+**`%` and `_` in a search term are now escaped** (`lib/search.ts`, `ESCAPE '\'`). Without it a search
+is a pattern language the user did not know they were writing: `100%` matched "100 Metre Sprinter"
+as well as "100% Remote Analyst" — proved by removing the escaping and watching the test fail. Not a
+security hole (the term is still a bound parameter) but a wrong answer, and `_` is the one a user
+hits by accident while typing a code.
+
+**The picker fetches on open, not on mount.** A college page renders one `CareerMapping` per
+program, so a hook that fetched on mount would fire one request per program before the admin touched
+anything — `Combobox` gained `onOpenChange` for this, the same guarantee P2-1's panel makes. It also
+**says when it is truncating**: "Showing 20 of 150 — keep typing to narrow it down." Silence about
+the remaining 130 is precisely what made F3 invisible.
+
+**Shared rather than mirrored, as P2-1 established.** `useDebouncedValue` existed as **three
+identical private copies** and this item needed three more; it is one hook now (`SEARCH_DEBOUNCE_MS`
+with it) and the three originals import it. `SearchInput` and `Pagination` were extracted from
+`AddressTable`, which owned the only copies, and `AddressTable` now consumes them — losing its
+`page` prop in the process, because the pager reads `pagination.current_page` from the response and
+the caller's `page` is what it *asked* for, which is the same thing only once the request lands. The
+"changing a filter returns to page one" rule lives once, in `useListFilters`, because getting it
+right on three pages out of four is exactly the kind of thing that survives review.
+
+* **Also done:** status filters on all four lists, `sort=code` for canonical programmes, and
+  `search`/`status` on Knowledge (F4) — the status one earns its place: a document stuck in
+  `PROCESSING` or returned `FAILED` contributes nothing to retrieval and is indistinguishable from a
+  healthy one in a list ordered by upload date.
+* **Files:** `backend/src/lib/search.ts` (new), `modules/catalog/{schemas,routes,academic-catalog-service}.ts`,
+  `modules/ai/{schemas,routes,knowledge-ingestion-service}.ts`,
+  `backend/test/catalog/search.test.ts` (new), `test/ai/ingestion.test.ts`,
+  `frontend/src/hooks/{useDebouncedValue,useListFilters}.ts` (new),
+  `components/ui/{search-input,pagination}.tsx` (new), `components/ui/combobox.tsx`,
+  `services/{catalogApi,aiApi}.ts`, `features/admin/hooks/{useCatalog,useAiKnowledge}.ts`,
+  `features/admin/components/{CareerMapping,AddressTable}.tsx`,
+  `features/admin/pages/{CareerListPage,CollegeListPage,CanonicalProgramPage,KnowledgeListPage,AddressPage,AuditLogPage}.tsx`,
+  `features/assessment-builder/pages/AssessmentManagementPage.tsx`,
+  `CareerMapping.test.tsx`, `CareerListPage.test.tsx` (new)
+* **Verify:** ✅ **the item's own line, both halves.** 150 careers seeded, the 150th (`Zythologist`)
+  sorted last by title: `?per_page=100` returns 100 items, `total: 150`, and **does not contain it** —
+  the defect as it shipped — while `?search=zytho&status=active&per_page=20` returns exactly it.
+  Both assertions in one test, because either alone says nothing.
+  ✅ **Every new guard fired before it was trusted** (P1-3's rule): escaping removed → the `%`/`_`
+  test red; the id tie-break removed → both paging tests red; the search term withheld from the
+  server → the frontend's "finds a career that is not on the first page" test red. All restored and
+  green. Full run: backend **863 passing** (65 files, was 838/65), frontend **165** (19 files, was
+  150/18), type-check · lint · `gate:platform` · `gate:bundle` (262 KiB) · `gate:assets` · build all
+  clean.
+* **One D1 lesson, met by the test rather than by production this time.** The 150-row fixture insert
+  binds 11 columns × 150 = **1,650 parameters** and died on D1's 100-parameter ceiling — the P2-2
+  wall, hit by the very test written to prove the catalog can exceed 100 rows. Fixed with the
+  existing `chunkForInsert`, which reads the width off the schema.
+* **Effort:** 4–6 h (as estimated).
+
+### `[x]` **P3-2a — The two defects P3-2 exposed, fixed rather than filed** — *done 2026-07-29. 863 → 867 BE, 165 → 171 FE.*
+
+Both were written up as P4 follow-ups first. That was the wrong call and they were pulled forward:
+one of them is F1/F2 — the exact defect class this plan opens by naming — and the other sits under
+the only control on that screen that changes what students are shown.
+
+**`GET /admin/canonical-programs/options` had no caller at all.** Not the program form its own
+comment claimed it served (`ProgramForm` never mentions canonical programmes), not any other page —
+`useCanonicalProgramOptions` and `catalogApi.canonicalProgramOptions()` were both orphans, reachable
+only by `curl` and one backend test. That is **F1 and F2 together**: an endpoint with no caller and
+a hook with no page. Phase 0 fixed one instance of this, P1-1 recorded a second, and this is a
+third that had been sitting in the catalog module the whole time.
+
+It was also **unbounded** — `allCanonicalPrograms()`, returning every active entry with no limit,
+under a comment reading *"Two dozen rows at thesis scale."* Seed 0004 installs 48, and migration
+0018's backfill mints a new entry for **every unseen programme code an admin types**, so the row
+count is driven by data entry and had no ceiling anywhere between the database and the browser.
+That is F3's assumption made from the other end: not a silent truncation, a response with no bound.
+
+**The merge target picker was reading the page, not the catalog.** `MergePanel` was handed
+`entries.filter(…)` — the ≤50 rows currently on screen. Past one page, an entry could not be merged
+into a target that happened to sit on another one, and nothing said so: the option was simply
+absent. **P3-2 made this worse before it made it better** — search let an admin find the target,
+scroll to its row and press Merge, only to still not find it among the candidates.
+
+**One fix, because they are one problem.** The orphaned endpoint is exactly what the merge picker
+needed: `?search=`, capped at 20 (matching the careers typeahead), with the offerings count carried
+alongside — not decoration in front of a merge, since "7 offerings" against a candidate is the
+difference between absorbing a stub and absorbing a live entry, and it is the number that says
+which direction the merge should run. The endpoint now has one real caller and a bound; the picker
+now reaches the whole catalog.
+
+**One a11y defect found while testing it.** The row actions were three buttons named "View
+colleges", "Edit" and "Merge" with nothing distinguishing the rows — nine entries present nine
+identically-named buttons to a screen reader, with no way to tell which entry is about to be
+retired. Each now carries an `aria-label` naming its code; the visible text is unchanged, since the
+row is obvious on screen. Same rule as P2-3, applied where P2-3 did not reach (it scoped itself to
+the demo path and left the admin screens alone, deliberately and on the record).
+
+* **Files:** `modules/catalog/{academic-catalog-service,routes}.ts`, `backend/test/catalog/search.test.ts`,
+  `services/catalogApi.ts`, `features/admin/hooks/useCatalog.ts`,
+  `features/admin/pages/CanonicalProgramPage.tsx`, `CanonicalProgramPage.test.tsx` (new)
+* **Verify:** ✅ 4 backend tests — 35 entries in, 20 out; an entry past the cap **unreachable by
+  paging and reachable by searching** (the same paired assertion P3-2's F3 test makes, since a cap
+  without a search is just a quieter truncation); the offerings count survives the filter; archived
+  entries are not offered. ✅ 6 frontend tests — nothing fetched until a merge panel opens, a target
+  **not on the current page** found by typing, the source never offered as its own target, the
+  confirmation step still required. Full run: backend **867** (65 files), frontend **171** (20
+  files, was 165/19); type-check · lint · `gate:platform` · `gate:bundle` (262 KiB) ·
+  `gate:assets` (929 KiB chunk) · build all clean.
 
 ### `[ ]` **P3-3 — Code splitting** *(audit P2)*
 
@@ -411,14 +523,98 @@ duplicated catalog; step 10 is the only one that catches either.
   **or** Cloudflare WAF rate-limiting rules at the edge (costs no Worker CPU — likely the better call).
 * **Effort:** 3–4 h.
 
-### `[ ]` **P3-5 — Backup and disaster recovery**
+### `[x]` **P3-5 — Backup and disaster recovery** — *done 2026-07-29. 815 → 834. Four D1 defects found.*
 
-* **Why:** **no D1 backup procedure is documented anywhere.** This is the one gap on the list that
-  can lose data permanently.
-* **Do:** document (and schedule) `wrangler d1 export CareerLinkAI_Main --remote --output …`; state
-  retention and where dumps live; write the restore procedure and **test a restore into staging**.
-* **Verify:** a restored staging DB serves a student's recommendations.
-* **Effort:** 2–3 h. **Highest-value item in Phase 3 after the cutover itself.**
+Full procedure in **[`BACKUP-AND-RECOVERY.md`](BACKUP-AND-RECOVERY.md)**. The item asked for
+`wrangler d1 export` in a cron entry; that command is **not a backup**, and finding out why took the
+whole of this item.
+
+**`wrangler d1 export` exits 0 on an empty database.** Point it at a name that still resolves but is
+no longer the database the Worker binds — a copy-pasted `--env`, a `database_id` swapped in
+wrangler.toml — and it writes a well-formed dump of nothing, exits 0, and does so again every night.
+You find out during the restore. So `d1-backup.mjs` reads the **live** database's table list and
+`COUNT(*)` per table and asserts the dump agrees, table by table and row by row; a dump that fails is
+renamed `.REJECTED` with **no manifest**, so the restore script cannot reach it and the last good
+backup stays the last good backup. Counts are checked as a *range* bracketing the export, because a
+production database takes writes while it is being backed up and a check that fails correct backups
+is a check that gets deleted rather than fixed.
+
+**Four D1 facts, none visible from 834 green tests, all found by running it.** Same class as P2-2's
+100-parameter ceiling:
+
+1. **A stock export dump cannot be restored by `wrangler d1 execute --file` at all** — not locally,
+   not remotely. **Two** independent ordering defects, and the second was found only because the
+   remote leg was run:
+   * *Tables created after they are referenced.* `student_profiles` is created at line 133 with an
+     inline `REFERENCES shs_strands (id)` and populated from line 152; `CREATE TABLE shs_strands` is
+     at line **3841**. The leading `PRAGMA defer_foreign_keys=TRUE` would make that legal for a
+     reader running the whole file in one transaction — **neither importer does**. →
+     `no such table: main.shs_strands`.
+   * *Rows inserted before the rows they reference.* Even with the schema loaded first, every
+     `programs` row carries a `program_catalog_id` and `program_catalog` is written thirty tables
+     later. → `FOREIGN KEY constraint failed`, **on the remote importer only**. The local one is
+     more forgiving, so this one survives any amount of local rehearsal and appears for the first
+     time on the path an actual recovery takes.
+
+   **Fixed** by exporting in two halves (`--no-data`, `--no-schema`) and writing schema first with
+   the rows regrouped parent-before-child — insert order is `dropOrder` reversed, so the wipe and
+   the load read one graph in two directions and cannot disagree. Both halves are still verbatim
+   from Cloudflare's exporter. A backup you cannot restore is not a disaster recovery plan; a backup
+   you can only restore locally is worse, because it passes the rehearsal.
+2. **D1 caps compound `SELECT`s at five terms.** The 45-table `UNION ALL` row-count sweep failed with
+   `too many terms in compound SELECT [code: 7500]`; six is already too many. Stock SQLite's default
+   is 500, so it worked on every local database and failed on the first real one. Scalar subqueries
+   have no such ceiling.
+3. **`sqlite_master` on deployed D1 lists an internal `_cf_KV`** that the export omits and that every
+   query against fails with `not authorized: SQLITE_AUTH`. Miniflare creates no such table — so the
+   obvious verification would have reported a missing table on **every** real run and passed locally.
+4. **`wrangler d1 export --local --persist-to` crashes** (libuv assertion, exit `0xC0000409`) while
+   `d1 execute --local --persist-to` accepts it. Documented; `db:backup:local` reads the default
+   state directory.
+
+**The restore is guarded, and every guard was fired before it was trusted** (P1-3's rule): a tampered
+dump → SHA-256 mismatch, exit 1. Production as a target → refused, and identified from wrangler.toml
+rather than by matching the word "production", since this project's production database is called
+`CareerLinkAI_Main` — *which is also the local database's name*. A non-empty target without `--wipe`
+→ refused, because the dump's `CREATE TABLE`s would fail partway and leave it neither state. `--wipe`
+itself exposed a fifth defect: dropping alphabetically fails, since `DROP TABLE` runs an implicit
+`DELETE FROM` and deleting from a *child* makes SQLite consult its **parent** — so dropping
+`assessment_dimensions` first kills `question_dimensions`'s drop with `no such table:
+main.assessment_dimensions`, an error naming a table you deliberately removed, raised by a
+`DROP TABLE IF EXISTS` on a different one. Drops are dependency-ordered now.
+
+**`restore-drill.mjs` makes the rehearsal re-runnable** rather than a paragraph asserting it happened
+once — the `csp-check.mjs` lesson. It restores into a *throwaway* local database (not the dev one: a
+drill that costs a developer their working data is a drill they run once), picks a student who had
+recommendations **from the restored data rather than a constant**, boots the real Worker against it,
+joins over HTTP through `/student-access/join`, and asserts the API returns the backup's careers in
+the same order at the same scores. That last part is the claim: recommendations hang off
+`assessment_results`, `careers`, `programs`, `program_catalog` and `colleges`, and a restore that lost
+one link gives a perfect `recommendations` count and an empty screen.
+
+**The remote leg was run, and it is the reason defect 1's second half exists.** The same dump was
+pushed at a real D1 (`CareerLinkAI_Drill`, created for it and deleted after) — the path §5b takes and
+the only one a genuine recovery uses. It **failed**, on an ordering defect the local restore had
+passed cleanly minutes earlier. After the fix: 45 tables, 3,314 rows, verified on a live remote
+database. A backup rehearsed only against Miniflare would have been filed as restorable.
+
+**Not exercised:** `d1 time-travel restore`, which mutates a live database in place. Recorded in the
+doc as unrun rather than implied to be covered.
+
+* **Files:** `BACKUP-AND-RECOVERY.md`, `backend/scripts/d1-backup.mjs`, `d1-restore.mjs`,
+  `restore-drill.mjs`, `scripts/lib/d1.mjs`, `scripts/lib/d1-dump.mjs` (all new),
+  `backend/test/platform/backup-verification.test.ts` (new), `backend/package.json`, `.gitignore`,
+  `DEPLOYMENT.md`, `PRODUCTION_REQUIREMENTS.md`
+* **Verify:** ✅ **`npm run db:restore:drill` → PASS, 15 checks, 83 s end to end** against real
+  staging data: `jose.pena.edited` served Journalist 97.0 / Marketing Manager 97.0 / Teacher 97.0,
+  identical to the backup and in the same order, with AB Communication @ UP Diliman topping the
+  programmes. ✅ **Remote restore into a live D1 → 45 tables, 3,314 rows verified**, scratch database
+  deleted after. Backup 21 s; restore of a 998 KB dump 49 s. **23 new platform tests** drive the
+  predicates red — the schema-perfect dump of an empty database, a dump one row short, a migration
+  from the future, the drop order, the insert order — since proving those live would mean corrupting
+  a real database. Full run: backend **838 passing** (64 files, was 815/63), frontend **150**,
+  type-check · lint · `gate:platform` · `gate:bundle` (260 KiB) · `gate:assets` · build all clean.
+* **Effort:** 2–3 h (as estimated).
 
 ### `[ ]` **P3-6 — Class reassignment / guard counselor deletion** *(audit F5)*
 
@@ -470,10 +666,11 @@ duplicated catalog; step 10 is the only one that catches either.
         ────────────────────────────────────────────────── defense-ready
         P1-4  tests for Phase 0 UI                 ✅ done — 23 tests, 127 → 150; no product defects
         P1-3  regression guards                    ✅ done — asset budgets + seed chain; both proven red first
-NOW ──► P3-5  backup & restore                     (2–3 h)   ← only item that can lose data
-        P3-1  production cutover                   (3–5 h)   ← needs your credentials
+        P3-5  backup & restore                     ✅ done — a stock D1 dump is restorable only by D1; fixed
+        P3-2  catalog search                       ✅ done — the Colleges page was already showing 20 of 20
+NOW ──► P3-1  production cutover                   (3–5 h)   ← needs your credentials
         ────────────────────────────────────────────────── launched
-        P3-2  catalog search        P3-4  rate limiting
+        P3-4  rate limiting
         P3-3  code splitting        P3-6  class reassignment      P3-7  DLQ alerting
         ────────────────────────────────────────────────── hardened
         Phase 4
@@ -502,4 +699,7 @@ system — and the fourth, the stale walkthrough, was the tool that was supposed
 | 2026-07-29 | P2-3 | 811 BE / **127** FE | Accessibility on the demo path. **The player's options were five toggle buttons, not a radio group** — 300 tab stops across RIASEC instead of 60, "pressed" instead of "selected, 3 of 5", and a question that changed in silence. Neither sign-in screen had an `h1` on a phone; no validation message was attached to its field; there was no skip link. Audited in real Chrome from inside `walkthrough.mjs` — **31 `[a11y]` checks, all green.** |
 | 2026-07-29 | P1-4 | 811 BE / **150** FE | Tests for the four Phase 0 controls — 23 of them, against an estimated ~12. No product defect found: all four behaved as written. **One defect found in the test suite itself** — `RecommendationPage.test.tsx` reset its mock's return value but not its call counts, so a "fetched exactly once" assertion measured the whole file (`expected 1, got 14`) rather than its own test. That is the assertion shape P2-1's lazy-fetch guarantee rests on. Fixed in the shared setup. |
 | 2026-07-29 | P1-3 | **815** BE / 150 FE | Regression guards. `--assets` weighs what the *browser* downloads — the number `gate:bundle` structurally cannot see, and the reason a 3.26 MB logo sat on the critical path of every screen unremarked. Every threshold was **fired before it was trusted**: the real master re-imported (2 gates red), a fat chunk planted, `index.html` removed, P1-0 re-injected. **A live hazard found**: `db:seed:catalog:staging` pointed seed 0002 at a deployed database — the exact defect P2-2 had to clean off staging by hand. Deleted and guarded. The chunk budget is a ratchet, not the specified 600 KiB, because P3-3 owns the 921 KiB chunk. |
+| 2026-07-29 | P3-5 | **838** BE / 150 FE | Backup and disaster recovery — the one item on the list whose failure mode is permanent. The specified command turned out not to be a backup: **`wrangler d1 export` exits 0 on an empty database**, so a mistargeted `--env` writes a perfect dump of nothing every night until the restore. Backups are now verified against the live database's own `COUNT(*)`, table by table. **Four D1 platform facts found by running it**, all invisible to 838 green tests — headline: **a stock export dump cannot be restored by `wrangler d1 execute --file` at all**, on two independent ordering defects, and **the second one fails only on the remote importer** — it passed the local restore cleanly and was caught only because the remote leg was actually run. A fifth defect surfaced in the wipe path: dropping tables alphabetically fails, because deleting from a child makes SQLite consult its parent. **`restore-drill.mjs` proves the claim end to end** — staging's real data restored, the real Worker booted against it, a student joined over HTTP and served the backup's ten careers in the same order. 15 checks, 83 s, plus a verified restore into a live remote D1. |
+| 2026-07-29 | P3-2a | **867** BE / **171** FE | The two defects P3-2 exposed, fixed rather than filed as P4 items. **`/admin/canonical-programs/options` had no caller at all** — not the program form its own comment named, not anything else; the endpoint and its hook were both orphans reachable only by `curl`. That is **F1 and F2 together**, the defect class this plan opens by naming, sitting unnoticed in the catalog module. It was also unbounded, under a comment reading "Two dozen rows at thesis scale", while migration 0018 mints a new entry for every unseen programme code an admin types. Separately, **the merge target picker was reading the current page rather than the catalog** — so past one page an entry could not be merged into a target on another, and P3-2's own search made that worse before better: find the target, press Merge, and it is still not among the candidates. One fix for both, since the orphaned endpoint is precisely what the picker needed. An a11y defect fell out of testing it: nine rows presented nine identically-named "Merge" buttons to a screen reader, with nothing to say which entry was about to be retired. |
+| 2026-07-29 | P3-2 | **863** BE / **165** FE | Catalog search, filter, sort and paging (F3 + F4). The item was written about the careers picker; **the Colleges page turned out to be the one already over the edge** — no pager, no search, and a request that sent no `per_page`, so it took the API's default of 20 against a catalog of exactly 20 seeded colleges. It was showing 20 of 20 and looking complete. Adding `sort=created_at` also required making paging *total* first: seed 0004 inserts its 68 careers in one statement and SQLite evaluates `'now'` once per statement, so **every seeded career shares one `created_at` to the millisecond** — an `ORDER BY` over an all-ties column is unspecified per execution, which permits a row on two pages and another on none. Every list now ends its order on the id. Search terms are escaped, so `100%` stops meaning "starts with 100". The picker fetches on open rather than on mount and **says when it is truncating** — the silence was what made F3 invisible. Three private copies of `useDebouncedValue` became one; `SearchInput` and `Pagination` were extracted from `AddressTable` and it now consumes them. Every guard fired red before it was trusted. |
 | 2026-07-28 | P2-2 | **811** BE / 112 FE | Staging rehearsal. **`generateFor` 500'd on D1's 100-parameter limit — every student got zero recommendations, caused by P0-1's own catalog expansion.** Fixed via `chunkIds`; 4 regression tests. `walkthrough.mjs` un-rotted (4 stale selectors + a removed auto-advance). Two duplicate careers archived. C1 proven live: **0/10 overlap** between opposite profiles. |

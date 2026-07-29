@@ -17,7 +17,11 @@ import {
   type Listener,
 } from '@/events/dispatcher';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
+import { contains } from '@/lib/search';
 import { EMBEDDING_BATCH_LIMIT, type AiGatewayService } from '@/modules/ai/ai-gateway-service';
+// `import type` deliberately: schemas.ts imports MAX_EXTRACTED_TEXT_CHARS from this file, so a value
+// import here would close the cycle at runtime. A type import is erased and cannot.
+import type { ListKnowledgeDocumentsQuery } from '@/modules/ai/schemas';
 import type { VectorStore } from '@/modules/ai/vector-store';
 import { AuditService } from '@/modules/platform/audit-service';
 
@@ -395,11 +399,32 @@ export class KnowledgeIngestionService {
     return { ...document, processingStatus: 'UPLOADED' };
   }
 
+  /**
+   * Newest first, filtered by `search` (file name) and `status` (processing state) — audit F4.
+   *
+   * The `id` tie-breaker on the ordering is load-bearing rather than decorative: `created_at` is
+   * only unique here by luck of upload timing, and two documents sharing one timestamp would make
+   * the row order unspecified *per query*, so a row could appear on both page one and page two
+   * while another appeared on neither. The same reason `AcademicCatalogService.orderFor` exists.
+   */
   async list(
-    page: number,
-    perPage: number,
+    query: ListKnowledgeDocumentsQuery,
   ): Promise<PaginatedData<KnowledgeDocument & { chunkCount: number }>> {
-    const [total] = await this.db.select({ value: count() }).from(knowledgeDocuments);
+    const { page, per_page: perPage } = query;
+
+    const scope = and(
+      query.status === undefined
+        ? undefined
+        : eq(knowledgeDocuments.processingStatus, query.status),
+      query.search === undefined
+        ? undefined
+        : contains(knowledgeDocuments.fileName, query.search),
+    );
+
+    const [total] = await this.db
+      .select({ value: count() })
+      .from(knowledgeDocuments)
+      .where(scope);
 
     const rows = await this.db
       .select({
@@ -408,8 +433,9 @@ export class KnowledgeIngestionService {
       })
       .from(knowledgeDocuments)
       .leftJoin(knowledgeChunks, eq(knowledgeChunks.documentId, knowledgeDocuments.id))
+      .where(scope)
       .groupBy(knowledgeDocuments.id)
-      .orderBy(desc(knowledgeDocuments.createdAt))
+      .orderBy(desc(knowledgeDocuments.createdAt), asc(knowledgeDocuments.id))
       .limit(perPage)
       .offset((page - 1) * perPage);
 

@@ -14,7 +14,9 @@ import {
   createCareerSchema,
   createCollegeSchema,
   createProgramSchema,
+  listCanonicalProgramQuerySchema,
   listCatalogQuerySchema,
+  LIST_CATALOG_QUERY_KEYS,
   mergeCanonicalProgramSchema,
   updateCanonicalProgramSchema,
   updateCareerSchema,
@@ -58,9 +60,17 @@ function catalog(c: { env: AppEnv['Bindings'] }): AcademicCatalogService {
   return new AcademicCatalogService(createDatabase(c.env.DB));
 }
 
-/** `per_page` over the §20 clamp of 100 is a 422, not a 500 — see `lib/validation.ts`. */
+/**
+ * `per_page` over the §20 clamp of 100 is a 422, not a 500 — see `lib/validation.ts`. So is a
+ * `?sort=` naming a column that is not on the allow-list, which is the point of having one.
+ */
 function listQuery(c: Context<AppEnv>) {
-  return parseQuery(c, listCatalogQuerySchema, ['page', 'per_page']);
+  return parseQuery(c, listCatalogQuerySchema, [...LIST_CATALOG_QUERY_KEYS]);
+}
+
+/** The same query with `code` added to the sort allow-list — see `listCanonicalProgramQuerySchema`. */
+function canonicalListQuery(c: Context<AppEnv>) {
+  return parseQuery(c, listCanonicalProgramQuerySchema, [...LIST_CATALOG_QUERY_KEYS]);
 }
 
 /**
@@ -85,7 +95,7 @@ async function serializeCareerWithOutlook(
 adminRoutes.get('/colleges', async (c) => {
   const query = listQuery(c);
   const service = catalog(c);
-  const page = await service.listColleges(query.page, query.per_page);
+  const page = await service.listColleges(query);
 
   // One query per address level for the whole page, not one per college (§20's N+1 rule).
   const locations = await service.resolveLocations(page.items.map((row) => row.college));
@@ -230,7 +240,7 @@ adminRoutes.get('/employment-outlooks', async (c) => {
 adminRoutes.get('/careers', async (c) => {
   const query = listQuery(c);
   const service = catalog(c);
-  const page = await service.listCareers(query.page, query.per_page);
+  const page = await service.listCareers(query);
 
   // The four-row outlook lookup, fetched once, names every career's outlook without a per-row query.
   const outlooks = await service.outlooksById();
@@ -320,9 +330,9 @@ adminRoutes.delete('/programs/:id/careers/:careerId', async (c) => {
 // say so. Without this page the FK would be a column nobody could correct.
 
 adminRoutes.get('/canonical-programs', async (c) => {
-  const query = listQuery(c);
+  const query = canonicalListQuery(c);
   const service = catalog(c);
-  const page = await service.listCanonicalPrograms(query.page, query.per_page);
+  const page = await service.listCanonicalPrograms(query);
 
   // The offering counts, in one query for the whole page rather than one per row — the same
   // N+1 rule the college list follows (§45's subrequest budget counts every D1 call).
@@ -341,13 +351,32 @@ adminRoutes.get('/canonical-programs', async (c) => {
   );
 });
 
-/** The unpaginated picker for the program form's combobox. */
+/**
+ * The canonical-entry typeahead — `?search=`, capped at `CANONICAL_OPTION_LIMIT`.
+ *
+ * It was "the unpaginated picker for the program form's combobox", which was untrue twice over:
+ * the program form never called it (this endpoint had **no frontend caller at all** — the F1/F2
+ * defect class the plan opens with), and unpaginated over a table the 0018 backfill grows on every
+ * unseen programme code is a response with no ceiling. It now has one caller, the merge target
+ * picker, and a bound.
+ *
+ * The offerings count comes with it, in one query for the whole page rather than one per row (§20's
+ * N+1 rule). It is not decoration here: the picker sits in front of a **merge**, and "12 offerings"
+ * against a candidate is the difference between absorbing a stub and absorbing a live entry.
+ */
 adminRoutes.get('/canonical-programs/options', async (c) => {
-  const entries = await catalog(c).allCanonicalPrograms();
+  const service = catalog(c);
+  const search = c.req.query('search')?.trim();
+  const entries = await service.canonicalProgramOptions(
+    search === undefined || search === '' ? undefined : search,
+  );
+  const counts = await service.offeringCountsFor(entries.map((entry) => entry.id));
 
   return c.json(
     successEnvelope(
-      entries.map((entry) => serializeCanonicalProgram(entry)),
+      entries.map((entry) =>
+        serializeCanonicalProgram(entry, { offeringsCount: counts.get(entry.id) ?? 0 }),
+      ),
       'Canonical programs retrieved successfully.',
     ),
   );

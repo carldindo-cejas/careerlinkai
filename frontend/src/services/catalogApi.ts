@@ -19,6 +19,28 @@ import type {
 import type { Paginated } from '@/types/class';
 
 /**
+ * The list query the three catalog lists share (backend `listCatalogQuerySchema`, audit F3/F4).
+ *
+ * Every field is optional and an omitted field means the server's default — page 1, 20 per page,
+ * by name ascending, no filter. `search: undefined` is deliberately different from `search: ''`
+ * only in that axios drops the former from the URL; the server treats both as "no filter", so a
+ * cleared box cannot accidentally become a filter on the empty string.
+ */
+export interface CatalogListQuery {
+  search?: string | undefined;
+  status?: 'active' | 'archived' | undefined;
+  page?: number | undefined;
+  per_page?: number | undefined;
+  sort?: 'name' | 'created_at' | undefined;
+  direction?: 'asc' | 'desc' | undefined;
+}
+
+/** The same, plus the `code` sort that only canonical programmes have a column for. */
+export interface CanonicalProgramListQuery extends Omit<CatalogListQuery, 'sort'> {
+  sort?: 'name' | 'code' | 'created_at' | undefined;
+}
+
+/**
  * The academic catalog (FULLPLAN §20, Phase 2). Admin only.
  *
  * The nesting mirrors the API's: programs are *created and listed* under their college and
@@ -29,8 +51,10 @@ import type { Paginated } from '@/types/class';
 export const catalogApi = {
   // Colleges ---------------------------------------------------------------
 
-  listColleges(): Promise<Paginated<College>> {
-    return unwrap(httpClient.get<ApiSuccess<Paginated<College>>>('/admin/colleges'));
+  listColleges(query: CatalogListQuery = {}): Promise<Paginated<College>> {
+    return unwrap(
+      httpClient.get<ApiSuccess<Paginated<College>>>('/admin/colleges', { params: query }),
+    );
   },
 
   /** Includes the nested programs, each with its linked careers (§20). */
@@ -68,12 +92,15 @@ export const catalogApi = {
 
   // Careers ----------------------------------------------------------------
 
-  listCareers(): Promise<Paginated<Career>> {
+  /**
+   * **No longer requests "the whole catalog".** It used to send `per_page: 100` with a comment
+   * saying the mapping picker needed every career in one list — which was true at 16 careers, false
+   * at 101, and silent about the difference (audit F3). Both callers now send a real query: the
+   * page sends its page and search, the picker sends its search term.
+   */
+  listCareers(query: CatalogListQuery = {}): Promise<Paginated<Career>> {
     return unwrap(
-      httpClient.get<ApiSuccess<Paginated<Career>>>('/admin/careers', {
-        // The mapping picker needs the whole catalog in one list, not page one of it.
-        params: { per_page: 100 },
-      }),
+      httpClient.get<ApiSuccess<Paginated<Career>>>('/admin/careers', { params: query }),
     );
   },
 
@@ -131,18 +158,25 @@ export const catalogApi = {
   // string match. The 0018 backfill grouped existing programs on their normalized code, which is a
   // guess — these endpoints are how an admin corrects it.
 
-  listCanonicalPrograms(page = 1, perPage = 50): Promise<Paginated<CanonicalProgram>> {
+  listCanonicalPrograms(
+    query: CanonicalProgramListQuery = {},
+  ): Promise<Paginated<CanonicalProgram>> {
     return unwrap(
       httpClient.get<ApiSuccess<Paginated<CanonicalProgram>>>('/admin/canonical-programs', {
-        params: { page, per_page: perPage },
+        params: { per_page: 50, ...query },
       }),
     );
   },
 
-  /** The unpaginated picker for the program form's combobox. */
-  canonicalProgramOptions(): Promise<CanonicalProgram[]> {
+  /**
+   * The canonical-entry typeahead. Server-searched and server-capped at 20 — it used to request
+   * every active entry with no limit, and (worse) nothing in the app called it at all.
+   */
+  canonicalProgramOptions(search?: string): Promise<CanonicalProgram[]> {
     return unwrap(
-      httpClient.get<ApiSuccess<CanonicalProgram[]>>('/admin/canonical-programs/options'),
+      httpClient.get<ApiSuccess<CanonicalProgram[]>>('/admin/canonical-programs/options', {
+        params: { search },
+      }),
     );
   },
 

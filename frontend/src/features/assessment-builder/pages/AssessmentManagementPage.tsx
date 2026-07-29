@@ -7,6 +7,7 @@ import { AssessmentAssignDialog } from '@/features/assessment-builder/components
 import { AssessmentDeleteDialog } from '@/features/assessment-builder/components/AssessmentDeleteDialog';
 import { AssessmentFormDialog } from '@/features/assessment-builder/components/AssessmentFormDialog';
 import { AssessmentTable } from '@/features/assessment-builder/components/AssessmentTable';
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue';
 import {
   useArchiveAssessment,
   useAssessments,
@@ -74,7 +75,7 @@ export function AssessmentManagementPage() {
   const [assigningRow, setAssigningRow] = useState<AssessmentRow | null>(null);
   const [deletingRow, setDeletingRow] = useState<AssessmentRow | null>(null);
 
-  const search = useDebouncedValue(searchInput, 300);
+  const search = useDebouncedValue(searchInput, SEARCH_DEBOUNCE_MS);
 
   // Any change to what is being *filtered* returns to page one.
   useEffect(() => {
@@ -333,14 +334,3 @@ export function AssessmentManagementPage() {
 }
 
 /** Debounce the search box so it drives one request rather than one per keystroke. */
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delayMs);
-
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-
-  return debounced;
-}

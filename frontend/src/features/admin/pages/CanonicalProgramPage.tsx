@@ -1,16 +1,25 @@
 import { ChevronDown, GitMerge, Loader2, MapPin, Pencil, Plus, X } from 'lucide-react';
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useMemo, useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/components/ui/cn';
+import { Combobox } from '@/components/ui/combobox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Pagination } from '@/components/ui/pagination';
+import { SearchInput } from '@/components/ui/search-input';
 import { Select } from '@/components/ui/select';
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { useListFilters } from '@/hooks/useListFilters';
+import type { CanonicalProgramListQuery } from '@/services/catalogApi';
 import { toast } from '@/stores/toastStore';
 import {
+  CANONICAL_OPTION_LIMIT,
   useCanonicalProgramColleges,
+  useCanonicalProgramOptions,
   useCanonicalPrograms,
   useCreateCanonicalProgram,
   useMergeCanonicalPrograms,
@@ -45,14 +54,28 @@ import type { CanonicalProgram } from '@/types/catalog';
  * change nothing else logs.
  */
 export function CanonicalProgramPage() {
-  const [page, setPage] = useState(1);
   const [isAdding, setIsAdding] = useState(false);
   const [editing, setEditing] = useState<CanonicalProgram | null>(null);
   const [merging, setMerging] = useState<CanonicalProgram | null>(null);
 
-  const { data, isPending, isError, error } = useCanonicalPrograms(page);
+  const filters = useListFilters<'active' | 'archived'>();
+  const [sort, setSort] = useState<'name' | 'code' | 'created_at'>('name');
+
+  const query = useMemo<CanonicalProgramListQuery>(
+    () => ({
+      search: filters.search,
+      status: filters.status === '' ? undefined : filters.status,
+      page: filters.page,
+      sort,
+      direction: sort === 'created_at' ? 'desc' : 'asc',
+    }),
+    [filters.search, filters.status, filters.page, sort],
+  );
+
+  const { data, isPending, isFetching, isError, error } = useCanonicalPrograms(query);
 
   const entries = data?.items ?? [];
+  const isFiltered = filters.search !== undefined || filters.status !== '';
 
   return (
     <div className="flex flex-col gap-6">
@@ -83,12 +106,39 @@ export function CanonicalProgramPage() {
       {isAdding ? <CanonicalForm onDone={() => setIsAdding(false)} /> : null}
       {editing ? <CanonicalForm entry={editing} onDone={() => setEditing(null)} /> : null}
       {merging ? (
-        <MergePanel
-          source={merging}
-          candidates={entries.filter((entry) => entry.id !== merging.id)}
-          onDone={() => setMerging(null)}
-        />
+        <MergePanel source={merging} onDone={() => setMerging(null)} />
       ) : null}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <SearchInput
+          value={filters.searchInput}
+          onChange={filters.setSearchInput}
+          label="Search canonical programs"
+          placeholder="Search by name or code…"
+        />
+
+        <Select
+          value={filters.status}
+          onChange={(event) => filters.setStatus(event.target.value as 'active' | 'archived' | '')}
+          aria-label="Filter by status"
+          className="w-auto"
+        >
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="archived">Archived</option>
+        </Select>
+
+        <Select
+          value={sort}
+          onChange={(event) => setSort(event.target.value as 'name' | 'code' | 'created_at')}
+          aria-label="Sort canonical programs"
+          className="w-auto"
+        >
+          <option value="name">By name</option>
+          <option value="code">By code</option>
+          <option value="created_at">Newest first</option>
+        </Select>
+      </div>
 
       {isPending ? (
         <div className="flex justify-center py-12" role="status">
@@ -102,16 +152,29 @@ export function CanonicalProgramPage() {
       {data && entries.length === 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle>Nothing here yet</CardTitle>
-            <CardDescription>
-              Canonical entries are created automatically the first time a program uses a new code,
-              so this fills itself as the catalog grows.
-            </CardDescription>
+            {isFiltered ? (
+              <>
+                <CardTitle>No matching entries</CardTitle>
+                <CardDescription>
+                  Nothing matches{' '}
+                  {filters.search ? <strong>“{filters.search}”</strong> : 'this filter'}. Search
+                  covers both the name and the code.
+                </CardDescription>
+              </>
+            ) : (
+              <>
+                <CardTitle>Nothing here yet</CardTitle>
+                <CardDescription>
+                  Canonical entries are created automatically the first time a program uses a new
+                  code, so this fills itself as the catalog grows.
+                </CardDescription>
+              </>
+            )}
           </CardHeader>
         </Card>
       ) : null}
 
-      <div className="flex flex-col gap-3">
+      <div className={cn('flex flex-col gap-3', isFetching && 'opacity-60 transition-opacity')}>
         {entries.map((entry) => (
           <CanonicalRow
             key={entry.id}
@@ -122,26 +185,13 @@ export function CanonicalProgramPage() {
         ))}
       </div>
 
-      {data && data.pagination.last_page > 1 ? (
-        <div className="flex items-center justify-between gap-3">
-          <Button
-            variant="secondary"
-            disabled={page <= 1}
-            onClick={() => setPage((current) => current - 1)}
-          >
-            Previous
-          </Button>
-          <span className="text-sm text-muted-foreground">
-            Page {data.pagination.current_page} of {data.pagination.last_page}
-          </span>
-          <Button
-            variant="secondary"
-            disabled={page >= data.pagination.last_page}
-            onClick={() => setPage((current) => current + 1)}
-          >
-            Next
-          </Button>
-        </div>
+      {data ? (
+        <Pagination
+          pagination={data.pagination}
+          onPageChange={filters.setPage}
+          noun="canonical programs"
+          isFetching={isFetching}
+        />
       ) : null}
     </div>
   );
@@ -183,16 +233,33 @@ function CanonicalRow({
             </p>
           </div>
 
+          {/*
+            Each button names its entry. The visible text stays "Edit" / "Merge" — the row it sits
+            in is obvious on screen — but a page of nine rows otherwise presents nine identically
+            named buttons to a screen reader, with nothing to say which entry is about to be
+            retired. That matters most on Merge, which is the one control here that cannot be
+            undone from this screen (P2-3's rule, applied to the row actions).
+          */}
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => setShowColleges((c) => !c)}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowColleges((c) => !c)}
+              aria-label={`${showColleges ? 'Hide' : 'View'} colleges offering ${entry.code}`}
+            >
               <ChevronDown className="size-4" aria-hidden="true" />
               {showColleges ? 'Hide colleges' : 'View colleges'}
             </Button>
-            <Button variant="secondary" size="sm" onClick={onEdit}>
+            <Button variant="secondary" size="sm" onClick={onEdit} aria-label={`Edit ${entry.code}`}>
               <Pencil className="size-4" aria-hidden="true" />
               Edit
             </Button>
-            <Button variant="secondary" size="sm" onClick={onMerge}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={onMerge}
+              aria-label={`Merge ${entry.code} into another entry`}
+            >
               <GitMerge className="size-4" aria-hidden="true" />
               Merge
             </Button>
@@ -359,20 +426,32 @@ function CanonicalForm({ entry, onDone }: { entry?: CanonicalProgram; onDone: ()
  * from the UI — so the panel states the consequence in the terms it will actually have ("N college
  * offerings will move") rather than asking "are you sure?".
  */
-function MergePanel({
-  source,
-  candidates,
-  onDone,
-}: {
-  source: CanonicalProgram;
-  candidates: CanonicalProgram[];
-  onDone: () => void;
-}) {
+/**
+ * The merge target picker is a **server-backed typeahead**, not a dropdown of what is on screen.
+ *
+ * It used to be handed `entries.filter(…)` — the ≤50 rows of the current page. So the moment the
+ * catalog outgrew one page, an entry could not be merged into a target that happened to be on
+ * another one, and nothing said so: the target simply was not in the list. That is audit F3's shape
+ * on the one control here that changes what students are shown, and adding search to the *page*
+ * made it worse rather than better — the admin could now find the target, scroll to its row, press
+ * Merge, and still not find it among the candidates.
+ */
+function MergePanel({ source, onDone }: { source: CanonicalProgram; onDone: () => void }) {
   const merge = useMergeCanonicalPrograms();
-  const [targetId, setTargetId] = useState('');
+  const [target, setTarget] = useState<CanonicalProgram | null>(null);
+  const [search, setSearch] = useState('');
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
 
-  const target = candidates.find((entry) => entry.id === targetId) ?? null;
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
+  const options = useCanonicalProgramOptions(debouncedSearch, isPickerOpen);
+
+  /*
+   * The source is excluded client-side: "not itself" is a fact about this panel, not about the
+   * catalog, and the server would have to be told which entry to leave out to know it. One id.
+   */
+  const candidates = (options.data ?? []).filter((entry) => entry.id !== source.id);
+
   const moving = source.offerings_count ?? 0;
 
   return (
@@ -399,23 +478,40 @@ function MergePanel({
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="merge-target">Keep this entry</Label>
-          <Select
+          <Combobox
             id="merge-target"
-            value={targetId}
-            onChange={(event) => {
-              setTargetId(event.target.value);
+            value={target?.id ?? null}
+            selectedLabel={target ? `${target.code} · ${target.name}` : null}
+            onChange={(id) => {
+              setTarget(candidates.find((entry) => entry.id === id) ?? null);
               // A changed target invalidates the confirmation — the sentence they agreed to
               // named a different program.
               setConfirmed(false);
             }}
-          >
-            <option value="">Choose the entry that survives…</option>
-            {candidates.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.code} · {entry.name} ({entry.offerings_count ?? 0} offerings)
-              </option>
-            ))}
-          </Select>
+            options={candidates.map((entry) => ({
+              id: entry.id,
+              // The offerings count is kept in the label: this picker sits in front of a merge, and
+              // "12 offerings" against a candidate is the difference between absorbing a stub and
+              // absorbing a live entry.
+              name: `${entry.code} · ${entry.name} (${entry.offerings_count ?? 0} offerings)`,
+            }))}
+            query={search}
+            onQueryChange={setSearch}
+            onOpenChange={setIsPickerOpen}
+            loading={options.isFetching}
+            placeholder="Choose the entry that survives…"
+            searchPlaceholder="Search by name or code…"
+            emptyText={
+              search.trim() === ''
+                ? 'No other canonical entries to merge into.'
+                : `No active entry matches “${search.trim()}”.`
+            }
+            footer={
+              candidates.length >= CANONICAL_OPTION_LIMIT
+                ? `Showing the first ${CANONICAL_OPTION_LIMIT} — keep typing to narrow it down.`
+                : null
+            }
+          />
         </div>
 
         {target ? (

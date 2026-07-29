@@ -1,12 +1,18 @@
 import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/components/ui/cn';
+import { Pagination } from '@/components/ui/pagination';
+import { SearchInput } from '@/components/ui/search-input';
+import { Select } from '@/components/ui/select';
 import { CareerForm } from '@/features/admin/components/CareerForm';
 import { useCareers, useDeleteCareer, useUpdateCareer } from '@/features/admin/hooks/useCatalog';
+import { useListFilters } from '@/hooks/useListFilters';
+import type { CatalogListQuery } from '@/services/catalogApi';
 import { describeHollandCode, formatSalaryRange, type Career } from '@/types/catalog';
 
 /**
@@ -20,7 +26,24 @@ export function CareerListPage() {
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const { data, isPending, isError, error } = useCareers();
+  const filters = useListFilters<'active' | 'archived'>();
+  const [sort, setSort] = useState<'name' | 'created_at'>('name');
+
+  const query = useMemo<CatalogListQuery>(
+    () => ({
+      search: filters.search,
+      status: filters.status === '' ? undefined : filters.status,
+      page: filters.page,
+      per_page: PER_PAGE,
+      sort,
+      direction: sort === 'created_at' ? 'desc' : 'asc',
+    }),
+    [filters.search, filters.status, filters.page, sort],
+  );
+
+  const { data, isPending, isFetching, isError, error } = useCareers(query);
+
+  const isFiltered = filters.search !== undefined || filters.status !== '';
 
   return (
     <div className="flex flex-col gap-6">
@@ -45,6 +68,36 @@ export function CareerListPage() {
         <CareerForm onSaved={() => setIsAdding(false)} onCancel={() => setIsAdding(false)} />
       ) : null}
 
+      <div className="flex flex-wrap items-center gap-3">
+        <SearchInput
+          value={filters.searchInput}
+          onChange={filters.setSearchInput}
+          label="Search careers"
+          placeholder="Search careers…"
+        />
+
+        <Select
+          value={filters.status}
+          onChange={(event) => filters.setStatus(event.target.value as 'active' | 'archived' | '')}
+          aria-label="Filter by status"
+          className="w-auto"
+        >
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="archived">Archived</option>
+        </Select>
+
+        <Select
+          value={sort}
+          onChange={(event) => setSort(event.target.value as 'name' | 'created_at')}
+          aria-label="Sort careers"
+          className="w-auto"
+        >
+          <option value="name">By title</option>
+          <option value="created_at">Newest first</option>
+        </Select>
+      </div>
+
       {isPending ? (
         <div className="flex justify-center py-12" role="status">
           <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
@@ -54,19 +107,38 @@ export function CareerListPage() {
 
       {isError ? <Alert>{error.message}</Alert> : null}
 
+      {/*
+        Two different empty states, because they call for two different actions. An empty catalog
+        wants "add a career"; an empty *filter* wants "that term matched nothing" — showing the
+        first when a search matched nothing would tell an admin their catalog was empty.
+      */}
       {data && data.items.length === 0 && !isAdding ? (
         <Card>
           <CardHeader>
-            <CardTitle>No careers yet</CardTitle>
-            <CardDescription>
-              Add the careers students might pursue, then link them to programs from each
-              college's page.
-            </CardDescription>
+            {isFiltered ? (
+              <>
+                <CardTitle>No matching careers</CardTitle>
+                <CardDescription>
+                  Nothing matches{' '}
+                  {filters.search ? <strong>“{filters.search}”</strong> : 'this filter'}
+                  {filters.status ? ` among ${filters.status} careers` : ''}. Try a different term,
+                  or clear the filters.
+                </CardDescription>
+              </>
+            ) : (
+              <>
+                <CardTitle>No careers yet</CardTitle>
+                <CardDescription>
+                  Add the careers students might pursue, then link them to programs from each
+                  college's page.
+                </CardDescription>
+              </>
+            )}
           </CardHeader>
         </Card>
       ) : null}
 
-      <ul className="flex flex-col gap-3">
+      <ul className={cn('flex flex-col gap-3', isFetching && 'opacity-60 transition-opacity')}>
         {(data?.items ?? []).map((career) =>
           editingId === career.id ? (
             <li key={career.id}>
@@ -83,9 +155,21 @@ export function CareerListPage() {
           ),
         )}
       </ul>
+
+      {data ? (
+        <Pagination
+          pagination={data.pagination}
+          onPageChange={filters.setPage}
+          noun="careers"
+          isFetching={isFetching}
+        />
+      ) : null}
     </div>
   );
 }
+
+/** One screen of careers. The catalog is 68 rows today; the page no longer assumes it fits. */
+const PER_PAGE = 20;
 
 function CareerRow({ career, onEdit }: { career: Career; onEdit: () => void }) {
   const deleteCareer = useDeleteCareer();

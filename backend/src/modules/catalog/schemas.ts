@@ -245,13 +245,66 @@ export const attachCareerSchema = z.object({
 });
 
 /**
- * `per_page` is clamped to 100 (§20). The careers picker legitimately wants the whole catalog
- * in one request; nothing wants fifty thousand rows.
+ * A free-text list filter. `''` normalises to `undefined` rather than passing through as an empty
+ * string, because `?search=` is what a cleared search box sends and "match everything" is the
+ * intent — a Service asked to filter on `''` would `LIKE '%%'`, which happens to be the same
+ * answer for the wrong reason and stops being so the moment a column is nullable.
+ */
+const searchTerm = z
+  .string()
+  .trim()
+  .max(200)
+  .optional()
+  .transform((value) => (value === undefined || value === '' ? undefined : value));
+
+/**
+ * Sortable columns — an allow-list, so `?sort=` can never name an arbitrary column (the same rule
+ * `ADDRESS_SORTS` follows).
+ *
+ * `name` is the *display* name of whatever is being listed: `colleges.name`, `careers.title`,
+ * `program_catalog.name`. One vocabulary across the three lists, resolved to a column by each
+ * Service method, so the frontend's toolbar does not need a per-resource dialect.
+ */
+export const CATALOG_SORTS = ['name', 'created_at'] as const;
+export type CatalogSort = (typeof CATALOG_SORTS)[number];
+
+/** Canonical programs add `code`, which is a first-class identifier there rather than a detail. */
+export const CANONICAL_PROGRAM_SORTS = ['name', 'code', 'created_at'] as const;
+export type CanonicalProgramSort = (typeof CANONICAL_PROGRAM_SORTS)[number];
+
+/**
+ * The list query shared by colleges, careers and canonical programs (§20, audit F3/F4).
+ *
+ * `per_page` is clamped to 100 (§20). **Nothing is expected to ask for the whole catalog any
+ * more:** the careers picker used to request `per_page: 100` and call that "all of them", which
+ * was true at 16 careers, false at 101, and silently so — it is a server-backed typeahead now,
+ * and this cap is a cap rather than a de-facto contract.
  */
 export const listCatalogQuerySchema = z.object({
+  search: searchTerm,
+  status: z.enum(CATALOG_STATUSES).optional(),
   page: z.coerce.number().int().min(1).default(1),
   per_page: z.coerce.number().int().min(1).max(100).default(20),
+  sort: z.enum(CATALOG_SORTS).default('name'),
+  direction: z.enum(['asc', 'desc']).default('asc'),
 });
+
+export const listCanonicalProgramQuerySchema = listCatalogQuerySchema.extend({
+  sort: z.enum(CANONICAL_PROGRAM_SORTS).default('name'),
+});
+
+/** The query-string keys `parseQuery` must lift for the list endpoints above. */
+export const LIST_CATALOG_QUERY_KEYS = [
+  'search',
+  'status',
+  'page',
+  'per_page',
+  'sort',
+  'direction',
+] as const;
+
+export type ListCatalogQuery = z.infer<typeof listCatalogQuerySchema>;
+export type ListCanonicalProgramQuery = z.infer<typeof listCanonicalProgramQuerySchema>;
 
 export type CreateCollegeInput = z.infer<typeof createCollegeSchema>;
 export type UpdateCollegeInput = z.infer<typeof updateCollegeSchema>;
