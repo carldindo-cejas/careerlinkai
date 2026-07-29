@@ -1,9 +1,9 @@
-import { Loader2 } from 'lucide-react';
 import { useEffect } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 
 import { useCurrentUser } from '@/features/auth/hooks/useAuth';
 import { homePathForRole, loginPathForRole, paths } from '@/routes/paths';
+import { RouteFallback } from '@/routes/RouteFallback';
 import { useAuthStore } from '@/stores/authStore';
 import type { UserRole } from '@/types/user';
 
@@ -55,13 +55,10 @@ export function ProtectedRoute({ allow }: ProtectedRouteProps) {
     return <Navigate to={signInPath} state={{ from: location }} replace />;
   }
 
+  // Shared with the router's Suspense boundary rather than copied — the two waits are
+  // consecutive on a cold load and a student should not see them as two different screens.
   if (isPending) {
-    return (
-      <div className="flex min-h-screen items-center justify-center" role="status">
-        <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
-        <span className="sr-only">Loading…</span>
-      </div>
-    );
+    return <RouteFallback />;
   }
 
   // The token was rejected (revoked, expired, or the account is no longer active). The

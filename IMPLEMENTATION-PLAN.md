@@ -506,14 +506,120 @@ the demo path and left the admin screens alone, deliberately and on the record).
   files, was 165/19); type-check · lint · `gate:platform` · `gate:bundle` (262 KiB) ·
   `gate:assets` (929 KiB chunk) · build all clean.
 
-### `[ ]` **P3-3 — Code splitting** *(audit P2)*
+### `[~]` **P3-3 — Code splitting** — *done 2026-07-29. 972 → 507 KiB on the student path. **The < 350 kB target is not reachable by splitting**, and the measurement is why.*
 
-* **Why:** one 936 kB chunk (274 kB gzipped) holds every admin, counselor and student page. A
-  student downloads the assessment builder and the pdf.js integration they will never open.
-* **Do:** `React.lazy` per route group (public / auth / admin / counselor / student) with `Suspense`
-  using the existing spinner. Expect 60–70% off the student path.
-* **Verify:** build output shows per-group chunks; student path chunk < 350 kB.
-* **Effort:** 3–4 h. Real regression risk — do it with P1-4's tests in place.
+Partial, and marked `[~]` for one reason: the item's own verify line asks for **< 350 kB** and the
+answer is **507 KiB**. Everything else it asks for is done and the split is real, but the number is
+the number.
+
+**The 350 kB was set against an assumption the build does not support.** The 936 kB chunk was read
+as "every admin, counselor and student page", and it was not — **41% of it was framework**. Measured
+after the split, the entry closure is **399 KiB** (124 KiB gzipped): React, React DOM, React Router,
+TanStack Query, axios, Zustand and the one stylesheet, reached by `main.tsx`, `providers.tsx` and
+`ProtectedRoute`, all of which must run *before* the app knows which shell to fetch. No route split
+can move any of it, because every route needs all of it. 350 KiB is **below the floor** — it is not
+a harder version of this item, it is a different item (a dependency change), and the two candidates
+are measured and filed as P4-15 and P4-16 rather than guessed at.
+
+What the split actually bought, from the gate's own table:
+
+| | raw | gzip |
+|---|---|---|
+| **before** — one chunk, every screen | **972 KiB** | **279 KiB** |
+| after — student screen cold load | **507 KiB** | **159 KiB** |
+| after — entry alone (the floor) | 399 KiB | 124 KiB |
+
+**−47.8% raw, −43.0% gzipped**, against the estimated 60–70%. Route chunks: admin 112 KiB, builder
+76 KiB, student 49 KiB, counselor 38 KiB, public 23 KiB, auth 13 KiB, access 4 KiB. A student no
+longer downloads the other **262 KiB** of route code.
+
+**One correction to the finding's own wording.** "The pdf.js integration they will never open" was
+already false: pdf.js (415 KiB) and mammoth (486 KiB) have always been behind the `import()` in
+`extractText.ts` and were never in that chunk. What a student really downloaded was every admin,
+counselor and builder *page* — which is the part the split removes.
+
+**Seven groups, not the five the item names**, for two reasons that only appear against the routes
+as they are. The assessment builder is routed by **both** staff shells under different paths (§31),
+so it belongs to neither and is its own group — folding it into `admin` and `counselor` would ship
+it twice. And `/join` is not a staff door: it takes no password (§38) and is where `ProtectedRoute`
+*sends* an unauthenticated student, so it is the first screen on the student path and does not
+belong in a chunk with two login forms a student can never submit.
+
+**`ProtectedRoute` and `RoleHome` stay eager, deliberately.** The decision that an anonymous visitor
+may not have the admin shell has to be made before the admin shell is fetched; downloading 112 KiB
+of admin pages in order to be redirected away from them would be a working redirect and a defeated
+split. There is a test for exactly that.
+
+**One chunk per group, not one per page.** `lazy(() => import(page))` eleven times for the admin
+shell is the obvious spelling and gives eleven chunks and eleven round trips as an admin walks their
+own sidebar. `routeGroup()` takes the group's barrel loader once and hands back a `pick`, so every
+route of a group shares one in-flight promise.
+
+**The gate is the point, more than the split is.** A code split does not fail loudly: one
+`import { AdminLayout } from '@/routes/groups/admin'` in a file the entry already reaches folds the
+whole group back into the first bytes every visitor downloads, and the build, the type-check and all
+182 frontend tests stay green. `platform-gates.mjs --assets` now reads **Vite's own manifest** —
+where static `imports` and `dynamicImports` are kept apart by the bundler that made the decision —
+and weighs each route's transitive closure. Answering it by scraping minified output would make the
+budget depend on how the minifier spelled an import that week.
+
+**Fired red before it was trusted (P1-3's rule), on the real build.** A static import of the admin
+barrel added to `ProtectedRoute.tsx` → `admin-*.js` **ceases to exist**, the entry chunk goes
+**209 → 468 kB**, and **4 gates fail, exit 1** — including "student screen cold load 710 KiB", the
+audit P2 defect reproduced on demand. Reverted → all green, exit 0. The pure analyzer is driven red
+separately in **10 backend tests** against synthetic manifests: a group folded in, a group still a
+dynamic entry *and* eagerly reached (the shape where the chunk survives and the split does not, which
+is why those are two predicates and not one), a declared group missing, no single entry, a dangling
+import.
+
+**The chunk ratchet P1-3 parked at 1000 KiB is now 550 KiB.** `index-*.js` is 204 KiB; the two
+heaviest files in `dist/` are the lazy document parsers, mammoth (486 KiB) and pdf.js (415 KiB). 550
+sits just above mammoth, so the largest *route* chunk has four times its own size in headroom while a
+vendor dependency growing past the parsers still trips it.
+
+**Two defects found, neither in the split:**
+
+* **`walkthrough.mjs` had gone stale against P3-2** — it drove `select[id^="link-career-"]`, and
+  P3-2 replaced that `<select>` with the server-backed `Combobox` typeahead. It reported "career-link
+  select never rendered" and had been doing so since P3-2 landed. Same class as the four stale
+  selectors P2-2 found, and the same lesson: this script is the thing that is supposed to notice a
+  screen changing. Rewritten to drive the typeahead the way an admin does — open the picker, type,
+  choose the option — which also exercises P3-2's fetch-on-open guarantee. The old code wrapped the
+  passing branch in `if (await select.count())` with a failing `else`; that is how a walkthrough
+  quietly stops walking, so the check is unconditional now.
+* **`React.lazy` caches its own rejection, so "Try again" cannot recover a failed chunk load.**
+  `routeGroup` drops its shared promise when the import rejects — so the *next* route of that group
+  refetches — but the lazy component itself is permanently Rejected and re-throws without calling the
+  initialiser again. `ErrorBoundary`'s "Try again" therefore does nothing for the one failure this
+  item introduces (a tab left open across a deploy, holding a hashed filename that no longer exists).
+  **"Go home" does recover**, and not by accident: it is `window.location.assign('/')`, a full
+  document navigation, so the browser fetches a fresh `index.html`. That was written for a router
+  that had itself thrown and happens to be exactly right here. Both halves are asserted, because the
+  behaviour is invisible from either file alone — `routeGroup` looks like it retries and
+  `ErrorBoundary` looks like its button works. → **P4-17**.
+
+* **Files:** `frontend/src/routes/groups/{public,auth,access,admin,counselor,builder,student}.ts`
+  (new), `routes/{routeGroup.ts,RouteFallback.tsx}` (new), `routes/router.tsx`,
+  `routes/ProtectedRoute.tsx`, `routes/{router,routeGroup}.test.tsx` (new), `frontend/vite.config.ts`,
+  `backend/scripts/lib/route-weight.mjs` (new), `backend/scripts/platform-gates.mjs`,
+  `backend/scripts/build-frontend.mjs`, `backend/test/platform/route-weight.test.ts` (new),
+  `scripts/walkthrough.mjs`, `.github/workflows/ci.yml`
+* **Verify:** ✅ **the whole demo path re-walked in real Chrome — `walkthrough.mjs` 95/98**, the only
+  failures being the same three Phase 5a RAG legs `wrangler.local.toml` cannot serve
+  (`RETRIEVAL_UNAVAILABLE`, no `[ai]`/`[[vectorize]]`), which failed identically before this change.
+  Zero uncaught errors, zero 5xx, all 31 `[a11y]` checks green. That is the assertion that matters:
+  every screen in the app now arrives over a second request, and a student answered 60 items and was
+  served ranked recommendations through it.
+  ✅ **`csp-check.mjs` PASS, 15 screens** — dynamically fetched chunks are a new `script-src` surface
+  and none of them is refused. Zod's accepted `eval` probe now fires on **12 of 15 screens instead of
+  15**, which is the split visible from the other side: three screens no longer load Zod at all.
+  ✅ Backend **877 passing** (66 files, was 867/65), frontend **182** (22 files, was 171/20);
+  type-check · lint · `gate:platform` · `gate:bundle` (262 KiB) · `gate:assets` · build all clean.
+  ⚠️ **Recorded rather than smoothed over:** the first full frontend run after the browser legs timed
+  out 4 tests, **3 of them in files this change does not touch**. Two later runs — one with
+  `node_modules/.vite` deleted — were 182/182. It is transform contention, not a regression, and
+  `testTimeout` is raised to 15 s so a two-core CI runner does not hit it.
+* **Effort:** 3–4 h (as estimated).
 
 ### `[ ]` **P3-4 — General API rate limiting** *(audit S2)*
 
@@ -653,6 +759,10 @@ doc as unrun rather than implied to be covered.
 | `[ ]` P4-12 | **Case-insensitive unique indexes** on `careers.title` / `colleges.name`, so P1-0's duplicate class cannot recur in data | P1-0 / P2-2 follow-up | 3–4 h |
 | `[ ]` P4-13 | Audit the remaining ~59 `inArray` call sites for unbounded lists (the ones fixed were the catalog-scale three; most others are bounded by construction) | P2-2 follow-up | 3–4 h |
 | `[ ]` P4-14 | Reformat the 78 backend files that drifted while `.prettierrc.json` was unparseable, then put `format:check` in CI so it cannot drift again | P1-3 follow-up | 1 h |
+| `[ ]` P4-15 | **Drop Framer Motion from `FadeIn`** (CSS keyframes). It is `proxy-*.js` = **118 KiB** for a fade, and it sits on `/join` — the student's *first* screen — via `StudentAccessLayout`. Three consumers total. Takes `/join` 612 → 494 KiB and the student journey 717 → 599 KiB | P3-3 follow-up | 2–3 h |
+| `[ ]` P4-16 | **Zod off the join screen** — `schemas-*.js` = **86.6 KiB** to validate a two-field form (`class_code`, `username`). Zod stays everywhere it earns its place; `/join` is the one screen where the ratio is absurd | P3-3 follow-up | 2 h |
+| `[ ]` P4-17 | **Make "Try again" recover a failed chunk load.** `React.lazy` caches its rejection, so the button cannot re-import; `ErrorBoundary` would have to re-key the route group. "Go home" works today, so this is a wrong-looking button rather than a dead end | P3-3 follow-up | 2–3 h |
+| `[ ]` P4-18 | Re-run `walkthrough.mjs` as part of finishing *any* UI item, not only when something looks wrong — it went stale against P3-2 and said so only when P3-3 happened to run it. P4-3 (CI against a preview deploy) is the real fix | P3-3 finding | — |
 
 ---
 
@@ -668,10 +778,11 @@ doc as unrun rather than implied to be covered.
         P1-3  regression guards                    ✅ done — asset budgets + seed chain; both proven red first
         P3-5  backup & restore                     ✅ done — a stock D1 dump is restorable only by D1; fixed
         P3-2  catalog search                       ✅ done — the Colleges page was already showing 20 of 20
+        P3-3  code splitting                       ✅ done — 972 → 507 KiB; the 350 kB target is below the framework floor
 NOW ──► P3-1  production cutover                   (3–5 h)   ← needs your credentials
         ────────────────────────────────────────────────── launched
         P3-4  rate limiting
-        P3-3  code splitting        P3-6  class reassignment      P3-7  DLQ alerting
+        P3-6  class reassignment    P3-7  DLQ alerting
         ────────────────────────────────────────────────── hardened
         Phase 4
 ```
@@ -702,4 +813,5 @@ system — and the fourth, the stale walkthrough, was the tool that was supposed
 | 2026-07-29 | P3-5 | **838** BE / 150 FE | Backup and disaster recovery — the one item on the list whose failure mode is permanent. The specified command turned out not to be a backup: **`wrangler d1 export` exits 0 on an empty database**, so a mistargeted `--env` writes a perfect dump of nothing every night until the restore. Backups are now verified against the live database's own `COUNT(*)`, table by table. **Four D1 platform facts found by running it**, all invisible to 838 green tests — headline: **a stock export dump cannot be restored by `wrangler d1 execute --file` at all**, on two independent ordering defects, and **the second one fails only on the remote importer** — it passed the local restore cleanly and was caught only because the remote leg was actually run. A fifth defect surfaced in the wipe path: dropping tables alphabetically fails, because deleting from a child makes SQLite consult its parent. **`restore-drill.mjs` proves the claim end to end** — staging's real data restored, the real Worker booted against it, a student joined over HTTP and served the backup's ten careers in the same order. 15 checks, 83 s, plus a verified restore into a live remote D1. |
 | 2026-07-29 | P3-2a | **867** BE / **171** FE | The two defects P3-2 exposed, fixed rather than filed as P4 items. **`/admin/canonical-programs/options` had no caller at all** — not the program form its own comment named, not anything else; the endpoint and its hook were both orphans reachable only by `curl`. That is **F1 and F2 together**, the defect class this plan opens by naming, sitting unnoticed in the catalog module. It was also unbounded, under a comment reading "Two dozen rows at thesis scale", while migration 0018 mints a new entry for every unseen programme code an admin types. Separately, **the merge target picker was reading the current page rather than the catalog** — so past one page an entry could not be merged into a target on another, and P3-2's own search made that worse before better: find the target, press Merge, and it is still not among the candidates. One fix for both, since the orphaned endpoint is precisely what the picker needed. An a11y defect fell out of testing it: nine rows presented nine identically-named "Merge" buttons to a screen reader, with nothing to say which entry was about to be retired. |
 | 2026-07-29 | P3-2 | **863** BE / **165** FE | Catalog search, filter, sort and paging (F3 + F4). The item was written about the careers picker; **the Colleges page turned out to be the one already over the edge** — no pager, no search, and a request that sent no `per_page`, so it took the API's default of 20 against a catalog of exactly 20 seeded colleges. It was showing 20 of 20 and looking complete. Adding `sort=created_at` also required making paging *total* first: seed 0004 inserts its 68 careers in one statement and SQLite evaluates `'now'` once per statement, so **every seeded career shares one `created_at` to the millisecond** — an `ORDER BY` over an all-ties column is unspecified per execution, which permits a row on two pages and another on none. Every list now ends its order on the id. Search terms are escaped, so `100%` stops meaning "starts with 100". The picker fetches on open rather than on mount and **says when it is truncating** — the silence was what made F3 invisible. Three private copies of `useDebouncedValue` became one; `SearchInput` and `Pagination` were extracted from `AddressTable` and it now consumes them. Every guard fired red before it was trusted. |
+| 2026-07-29 | P3-3 | **877** BE / **182** FE | Code splitting (audit P2). The item asked for < 350 kB on the student path and the honest answer is **507 KiB**, because **41% of the 936 kB chunk was framework, not pages** — React, React DOM, React Router, TanStack Query and axios are reached by `main.tsx` and `ProtectedRoute` before the app can know which shell to fetch, and that closure is **399 KiB** on its own. 350 kB is below the floor; the two dependency-level ways under it are measured and filed as P4-15/P4-16 rather than guessed at. What the split did buy: **972 → 507 KiB raw, 279 → 159 KiB gzipped**, and a student no longer downloads 262 KiB of admin, counselor and builder pages. Seven groups rather than five — the builder is routed by *both* staff shells and `/join` is not a staff door. **The gate matters more than the split**: one static import of a group barrel folds it back into the entry with a green build, a green type-check and 182 green tests, so `--assets` now reads Vite's manifest and weighs each route's closure. Proven by breaking it — `admin-*.js` ceased to exist, the entry went 209 → 468 kB, **4 gates red, exit 1**. **Two defects found:** `walkthrough.mjs` had been stale since P3-2 (still driving the `<select>` the catalog-search item replaced with a typeahead) and said so only because P3-3 ran it; and **`React.lazy` caches its own rejection**, so `ErrorBoundary`'s "Try again" cannot recover a failed chunk — "Go home" can, because it is a full document navigation. Re-walked in real Chrome: **95/98**, the 3 failures being the same known RAG legs; **csp-check PASS on 15 screens**, with Zod's accepted `eval` probe now firing on 12 of them instead of 15. |
 | 2026-07-28 | P2-2 | **811** BE / 112 FE | Staging rehearsal. **`generateFor` 500'd on D1's 100-parameter limit — every student got zero recommendations, caused by P0-1's own catalog expansion.** Fixed via `chunkIds`; 4 regression tests. `walkthrough.mjs` un-rotted (4 stale selectors + a removed auto-advance). Two duplicate careers archived. C1 proven live: **0/10 overlap** between opposite profiles. |

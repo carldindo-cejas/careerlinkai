@@ -127,5 +127,12 @@ jobs:
       # backend job installs backend dependencies only and its `gate:bundle` deliberately skips
       # the Vite build. Weighing the empty `dist/` that job creates would report a comfortable
       # pass on nothing at all.
-      - name: Asset weight gate (media budget, chunk ratchet)
+      #
+      # Plan P3-3 adds the route-weight half to the same command. A per-file budget cannot see
+      # audit P2 at all: 929 KiB of route code split into seven chunks every visitor downloads
+      # anyway would pass every budget above while costing exactly what it cost before. The route
+      # gate reads Vite's manifest and weighs each group's *closure* — and, more importantly,
+      # asserts the split is still a split. One stray static import of a group barrel folds it back
+      # into the entry chunk with a green build, a green type-check and 177 green frontend tests.
+      - name: Asset weight gate (media budget, chunk ratchet, route weight)
         run: npm run gate:assets

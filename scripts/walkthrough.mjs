@@ -182,6 +182,28 @@ async function waitForCall(page, fragment, method, timeoutMs = 20_000) {
 const answerCount = () => apiCalls.filter((c) => c.path.includes('/answers')).length;
 
 /**
+ * Wait for the route to actually be on screen (plan P3-3).
+ *
+ * Every page is behind `React.lazy` now, so the document reaching `load` no longer means the
+ * screen has rendered — it means the entry chunk has, and the entry chunk's first act is to fetch
+ * the route group. For the same reason `ProtectedRoute` paints while `/auth/me` is in flight. Both
+ * render the one full-screen `RouteFallback`, so waiting for it to detach covers both waits.
+ *
+ * Playwright's locators auto-retry, so almost every assertion in this file absorbed the extra hop
+ * without noticing. `auditA11y` is the exception: it takes a **single DOM snapshot** via
+ * `page.evaluate`, and a snapshot taken during the fetch is a snapshot of a spinner. It reported
+ * `counselor login: exactly one h1 — none` — a screen that has an `h1` and had simply not arrived
+ * yet. Scoped to the fallback's own markup (`role="status"` on a `min-h-screen` box) rather than
+ * to `[role="status"]` generally, which several screens use for their own loading rows.
+ */
+async function settleRoute(page) {
+  await page
+    .locator('div[role="status"].min-h-screen')
+    .waitFor({ state: 'detached', timeout: NAV_TIMEOUT })
+    .catch(() => undefined);
+}
+
+/**
  * The structural accessibility audit, run on each screen of the demo path (P2-3).
  *
  * It lives inside the walkthrough rather than in a script of its own for one reason: the player is
@@ -206,6 +228,8 @@ const answerCount = () => apiCalls.filter((c) => c.path.includes('/answers')).le
  * finding a name, so anything it reports as nameless genuinely is.
  */
 async function auditA11y(page, label) {
+  await settleRoute(page);
+
   const findings = await page.evaluate(() => {
     const name = (el) => {
       const labelledBy = el.getAttribute('aria-labelledby');
@@ -609,27 +633,44 @@ check(
 );
 
 // The mapping is scored data, not decoration: it is what §27 averages a program's RIASEC over.
+//
+// **The picker is a server-backed typeahead now, not a `<select>` (plan P3-2, audit F3).** This
+// leg still drove `select[id^="link-career-"]`, found nothing, and reported "career-link select
+// never rendered" — the same staleness P2-2 found in four other places, and the same lesson: this
+// script is the thing that is supposed to notice a screen changing, so it going stale is not a
+// cosmetic problem. It is also why the check must not be conditional. `if (await select.count())`
+// with a failing `else` was fine, but an `if` around a *passing* branch is how a walkthrough
+// quietly stops walking.
+//
+// Driving it the way an admin does is now the point rather than a detail: nothing is fetched until
+// the panel is **opened**, because a college page renders one of these per program and a picker
+// that fetched on mount would fire one request per program on every page load.
 await admin.goto(collegeUrl);
-await admin.waitForTimeout(3000);
-const mapSelect = admin.locator('select[id^="link-career-"]').first();
+await settleRoute(admin);
 
-if (await mapSelect.count()) {
-  await mapSelect.selectOption({ label: `Software Engineer ${STAMP} (IEC)` });
-  await admin.getByRole('button', { name: 'Link' }).first().click();
-  await admin.waitForTimeout(3000);
-  const mapCall = lastCall('/careers', 'POST');
-  check(
-    '[admin] maps the career to the program',
-    mapCall?.status === 201 || mapCall?.status === 200,
-    `status ${mapCall?.status}`,
-  );
-  check(
-    '[admin] the mapped career appears on the program',
-    (await admin.locator('body').innerText()).includes(`Software Engineer ${STAMP}`),
-  );
-} else {
-  check('[admin] maps the career to the program', false, 'career-link select never rendered');
-}
+const careerPicker = admin.locator('button[id^="link-career-"]').first();
+await careerPicker.waitFor({ state: 'visible', timeout: NAV_TIMEOUT });
+await careerPicker.click();
+await admin.getByLabel('Search careers…').fill(`Software Engineer ${STAMP}`);
+
+const careerOption = admin.getByRole('option', { name: `Software Engineer ${STAMP} (IEC)` });
+await careerOption.waitFor({ state: 'visible', timeout: NAV_TIMEOUT });
+check('[admin] the career typeahead finds the career by name (F3)', true);
+
+await careerOption.click();
+await admin.getByRole('button', { name: 'Link' }).first().click();
+await admin.waitForTimeout(3000);
+
+const mapCall = lastCall('/careers', 'POST');
+check(
+  '[admin] maps the career to the program',
+  mapCall?.status === 201 || mapCall?.status === 200,
+  `status ${mapCall?.status}`,
+);
+check(
+  '[admin] the mapped career appears on the program',
+  (await admin.locator('body').innerText()).includes(`Software Engineer ${STAMP}`),
+);
 await shot(admin, 'admin-catalog-mapped');
 
 // ══════════════════════════════════════════════════════════════════════════════════════

@@ -22,6 +22,9 @@
  *   4. **Shipped asset weight** (`--assets`, audit P1 / plan P1-3): needs a real
  *      `frontend/dist`, so it runs in the frontend CI job rather than this one. See the gate
  *      itself for why `--bundle` cannot cover it.
+ *   5. **Route weight** (`--assets`, audit P2 / plan P3-3): what one *route* costs, which is not
+ *      what any per-file budget measures. Reads the Vite manifest, so the answer comes from the
+ *      bundler's own record of which edges are static and which are `import()`.
  *
  * Usage:  node scripts/platform-gates.mjs           # config + source gates (fast, offline)
  *         node scripts/platform-gates.mjs --bundle  # additionally build and weigh the bundle
@@ -31,6 +34,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
+
+import { analyzeRoutes, ROUTE_GROUPS } from './lib/route-weight.mjs';
 
 const backendDir = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
@@ -458,14 +463,23 @@ if (process.argv.includes('--assets')) {
     // video, audio. Extension-allowlisting the *code* side (rather than listing image formats)
     // means a format nobody thought of — .avif, .heic, a stray .mp4 — is measured by default.
     const CODE_EXTENSIONS = ['.js', '.mjs', '.cjs', '.css', '.html', '.json', '.wasm'];
-    const IGNORED = ['.map', '.assetsignore', '_headers', '_redirects', '.DS_Store'];
+    // `.vite/manifest.json` is the build's own record, read by the route-weight gate below and
+    // kept out of the upload by `.assetsignore` — measuring it would weigh a file no browser gets.
+    const IGNORED = [
+      '.map',
+      '.assetsignore',
+      '_headers',
+      '_redirects',
+      '.DS_Store',
+      '.vite/manifest.json',
+    ];
 
     /** The pdfjs worker: a vendor artifact, fetched only by the one screen that parses a PDF. */
     const CHUNK_EXEMPT = /(^|[\\/])pdf\.worker\./;
 
     const MEDIA_FILE_LIMIT = 600 * 1024;
     const MEDIA_TOTAL_LIMIT = 1536 * 1024;
-    const CHUNK_LIMIT = 1000 * 1024;
+    const CHUNK_LIMIT = 550 * 1024;
 
     const shipped = [];
 
@@ -505,15 +519,18 @@ if (process.argv.includes('--assets')) {
     );
 
     /**
-     * **1000 KiB, not the 600 KiB the media files get, and that is a recorded compromise.**
+     * **550 KiB — lowered from 1000 KiB by P3-3, which is what the ratchet was waiting for.**
      *
-     * `index-*.js` is ~921 KiB today: one chunk holding every admin, counselor and student page,
-     * which is audit finding P2 and is scheduled as P3-3 (code splitting, target < 350 KiB on the
-     * student path). Setting this budget to 600 KiB now would mean landing a gate that fails on
-     * `main` from its first commit — a red build nobody can fix without doing an unrelated item
-     * first, which is how gates get commented out. So it is a **ratchet**: ~8% of headroom over
-     * today's largest chunk, enough that the build passes and not enough that anything meaningful
-     * can be added without a deliberate decision. **P3-3 lowers it.**
+     * It was 1000 KiB because `index-*.js` was 921 KiB: one chunk holding every admin, counselor
+     * and student page (audit P2). That chunk is now 204 KiB, and the two heaviest things in
+     * `dist/` are the lazy document parsers a student never fetches — mammoth (486 KiB) and
+     * pdf.js (415 KiB), both behind the `import()` in `extractText.ts`. 550 KiB sits just above
+     * mammoth, so the largest *route* chunk (admin, 112 KiB) now has four times its own size in
+     * headroom while a vendor dependency that grows past the parsers still trips the gate.
+     *
+     * A per-file budget is still the wrong instrument for what P3-3 actually fixed — nothing here
+     * would have fired on 921 KiB of route code split across seven 130 KiB chunks that every
+     * visitor downloads anyway. That is what the route-weight gate below measures.
      */
     const heavyChunks = chunks.filter((file) => file.bytes > CHUNK_LIMIT);
     const heaviestChunk = Math.max(0, ...chunks.map((file) => file.bytes));
@@ -521,9 +538,131 @@ if (process.argv.includes('--assets')) {
     gate(
       `no script/style chunk over ${kib(CHUNK_LIMIT)} (heaviest: ${kib(heaviestChunk)}; pdf.worker exempt)`,
       heavyChunks.length === 0,
-      `${heavyChunks.map((file) => `${file.name} = ${kib(file.bytes)}`).join(', ')} — this is a ratchet set just above the pre-P3-3 baseline, so it firing means the bundle grew. Split the route group (P3-3) rather than raising the number.`,
+      `${heavyChunks.map((file) => `${file.name} = ${kib(file.bytes)}`).join(', ')} — this is a ratchet set just above the lazy document parsers, so it firing means a vendor dependency grew past mammoth. Split it behind an import() rather than raising the number.`,
+    );
+
+    // --- Gate 5: route weight (plan P3-3, audit P2) -----------------------------------------
+    weighRoutes(distDir, kib);
+  }
+}
+
+/**
+ * **What one route costs, which no per-file budget can see.**
+ *
+ * Audit P2 was a single 921 KiB chunk holding every admin, counselor and student page: a student
+ * downloaded the assessment builder and the pdf.js integration in order to answer sixty questions.
+ * Splitting it (P3-3) is only worth anything if the split *stays* split, and a code split does not
+ * fail loudly — one stray static `import` from a file the entry already reaches folds a whole
+ * group back into the first byte every visitor downloads, and the build, the type-check and all
+ * 171 frontend tests stay green. This is the gate that notices.
+ *
+ * Two structural assertions and two budgets:
+ *
+ *   • every group in `ROUTE_GROUPS` is still a **dynamic** entry, and none of them is inside the
+ *     entry chunk's static closure (the two shapes the split dies in);
+ *   • the heaviest route's cold load, and the student screen's, stay under their ratchets.
+ *
+ * The budgets are raw bytes, matching the audit's own framing ("one 936 kB chunk"). Gzipped
+ * transfer size is reported beside every row because that is what actually crosses the wire, but
+ * it is not what is asserted — a dependency that compresses well is still parsed and executed at
+ * full size on a mid-range Android phone, which is the device this is for.
+ */
+function weighRoutes(distDir, kib) {
+  console.log('\nRoute weight gate (dist/.vite/manifest.json):');
+
+  const manifestPath = join(distDir, '.vite', 'manifest.json');
+
+  if (!existsSync(manifestPath)) {
+    gate(
+      'the build emitted .vite/manifest.json',
+      false,
+      `Not found at ${manifestPath}. \`build.manifest\` must stay true in frontend/vite.config.ts — without it there is no record of which import edges are static, and route weight cannot be measured at all.`,
+    );
+
+    return;
+  }
+
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const gzipped = new Map();
+
+  const sizeOf = (file) => {
+    const path = join(distDir, file);
+
+    if (!gzipped.has(file)) {
+      gzipped.set(file, gzipSync(readFileSync(path)).length);
+    }
+
+    return statSync(path).size;
+  };
+
+  // Measured twice from one manifest walk: `sizeOf` reports the raw byte count the budgets are
+  // written in and caches the gzipped length of the same file, so `analyzeRoutes` run a second
+  // time over a gzip-reporting `sizeOf` returns the transfer sizes with no second traversal.
+  const report = analyzeRoutes(manifest, sizeOf);
+  const transfer = analyzeRoutes(manifest, (file) => gzipped.get(file) ?? 0);
+
+  gate(
+    `all ${ROUTE_GROUPS.length} route groups are split and none has folded back into the entry`,
+    report.problems.length === 0,
+    report.problems.join('; '),
+  );
+
+  if (report.entry === null) {
+    return;
+  }
+
+  /**
+   * **The floor, and the reason P3-3 could not reach the 350 KiB its own line asked for.**
+   *
+   * This is React, React DOM, React Router, TanStack Query, axios and Zustand — reached by
+   * `main.tsx`, `providers.tsx` and `ProtectedRoute`, all of which must run *before* the app knows
+   * which shell to fetch. No route split moves it, because every route needs all of it. Measured
+   * separately so that the number is stated rather than hidden inside each route's total, and so
+   * that a dependency added to the app shell is visible as what it is: a cost paid by every screen.
+   */
+  const ENTRY_BUDGET = 430 * 1024;
+  const ROUTE_COLD_BUDGET = 700 * 1024;
+  const STUDENT_SCREEN_BUDGET = 530 * 1024;
+
+  const rows = [
+    ['entry (framework floor)', report.entry, transfer.entry],
+    ...report.groups.map((group, index) => [
+      `${group.name}  ${group.screen}`,
+      group.cold,
+      transfer.groups[index].cold,
+    ]),
+    ['student path (join + shell)', report.student, transfer.student],
+  ];
+
+  console.log(`      ${'route'.padEnd(34)} ${'raw'.padStart(9)} ${'gzip'.padStart(9)}   chunks`);
+
+  for (const [label, raw, gzip] of rows) {
+    console.log(
+      `      ${label.padEnd(34)} ${kib(raw.total).padStart(9)} ${kib(gzip.total).padStart(9)}   ${raw.chunks}`,
     );
   }
+
+  gate(
+    `entry closure ${kib(report.entry.total)} ≤ ${kib(ENTRY_BUDGET)} — the cost every screen pays`,
+    report.entry.total <= ENTRY_BUDGET,
+    'Something new is being imported by main.tsx, providers.tsx or ProtectedRoute. Everything they reach is downloaded before the router can decide which shell to fetch, so it is charged to the landing page, the login screen and a student on a phone alike.',
+  );
+
+  const heaviest = report.groups.reduce((worst, group) =>
+    group.cold.total > worst.cold.total ? group : worst,
+  );
+
+  gate(
+    `heaviest route cold load ${kib(heaviest.cold.total)} ≤ ${kib(ROUTE_COLD_BUDGET)} (${heaviest.name})`,
+    heaviest.cold.total <= ROUTE_COLD_BUDGET,
+    `${heaviest.name} costs ${kib(heaviest.cold.total)} on a cold load. Move what only one screen needs behind its own import(), the way extractText.ts holds pdf.js and mammoth.`,
+  );
+
+  gate(
+    `student screen cold load ${kib(report.studentScreen.total)} ≤ ${kib(STUDENT_SCREEN_BUDGET)} (audit P2)`,
+    report.studentScreen.total <= STUDENT_SCREEN_BUDGET,
+    `A student now pays ${kib(report.studentScreen.total)} to open a student screen. This is the number audit P2 is about — check what the student group has started importing.`,
+  );
 }
 
 function walkAll(dir) {

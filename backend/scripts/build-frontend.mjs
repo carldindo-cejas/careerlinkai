@@ -87,7 +87,15 @@ if (!existsSync(indexHtml)) {
  * `_redirects` and `_headers` are Cloudflare's own control files: `_headers` is *consumed* by
  * the asset router (it is what sets the immutable cache policy on hashed chunks) and must not be
  * ignored, but source maps are dead weight — they are uploaded, counted, and served to nobody.
+ *
+ * `.vite/` holds the build manifest that `platform-gates.mjs --assets` reads to weigh each route
+ * group (P3-3). Nothing at runtime asks for it: the app is a plain SPA whose entry is named in
+ * `index.html`, so the manifest is for the build's own tooling and stays out of the asset store.
  */
-writeFileSync(join(distDir, '.assetsignore'), ['*.map', '.assetsignore', ''].join('\n'), 'utf8');
+writeFileSync(
+  join(distDir, '.assetsignore'),
+  ['*.map', '.assetsignore', '.vite/', ''].join('\n'),
+  'utf8',
+);
 
 console.log('[build-frontend] Done.');
