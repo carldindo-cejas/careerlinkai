@@ -124,4 +124,25 @@ describe('ResultPage', () => {
 
     expect(screen.queryByText('Your Holland Code')).not.toBeInTheDocument();
   });
+
+  /**
+   * P2-3. Two things on this page are only legible if you can see it.
+   *
+   * A Holland code is an initialism, and most screen readers pronounce "IAR" or "SEC" as a word —
+   * so the single line a student is most likely to repeat to their counselor is the one they
+   * would get wrong. And each dimension's score is a bare number: the "out of 100" that gives it
+   * a scale is stated once at the top of the card, four items away by the time the third
+   * dimension is read.
+   */
+  it('spells out the Holland Code and carries the scale with each score', async () => {
+    renderResult();
+
+    await screen.findByText('Your Holland Code');
+
+    // Drawn as three letters, read as three letters.
+    expect(screen.getByText('I A S')).toBeInTheDocument();
+
+    // The scale travels with the number rather than being stated once, far away.
+    expect(screen.getAllByText('out of 100').length).toBeGreaterThan(0);
+  });
 });

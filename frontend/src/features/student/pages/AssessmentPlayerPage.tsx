@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
@@ -51,6 +51,33 @@ import type { AssessmentQuestion } from '@/types/assessment';
  *      its own: React state is applied asynchronously, so a double-click delivered inside one
  *      frame passes a state-based guard twice before the first render disables anything. The ref
  *      flips in the same tick as the click.
+ *
+ * ## The options are a radio group, not five toggle buttons
+ *
+ * They were five `<button aria-pressed>` elements, which is what a *toolbar* of independent
+ * toggles is. Choosing one of five mutually exclusive answers is a radio group, and the difference
+ * is not pedantry — it is the whole keyboard experience of a sixty-item instrument:
+ *
+ *   - A toggle group is five tab stops per question. Sixty questions is **three hundred** presses
+ *     of Tab to reach the end of RIASEC. A radio group is one tab stop with a roving `tabIndex`,
+ *     so it is sixty — and the arrow keys move between the options, as they do in every other
+ *     radio group the student has ever used.
+ *   - `aria-pressed` is announced as "pressed" / "not pressed", which says an option is *on*
+ *     rather than that it is *the answer*, and never says one of five. `aria-checked` inside a
+ *     `radiogroup` is announced as "selected, 3 of 5", which is the fact the student needs.
+ *   - The group is labelled by the question, so arriving at it reads the question rather than
+ *     dropping the student into five unexplained labels.
+ *
+ * Arrow keys select as they move, exactly as native radios do. That queues a save per press, which
+ * the chain above serializes into a last-write-wins sequence — the same guarantee a student gets
+ * for tapping two options quickly with a mouse.
+ *
+ * ## Where focus goes when the question changes
+ *
+ * Nowhere, previously — Next stayed focused, the DOM around it silently swapped, and a screen
+ * reader announced nothing at all. A student navigating by keyboard had no way to know the
+ * question had changed short of reading the whole page again. Focus now moves to the question
+ * heading, which announces it, and puts the group one Tab away.
  */
 export function AssessmentPlayerPage() {
   const { attemptId = '' } = useParams();
@@ -88,7 +115,31 @@ export function AssessmentPlayerPage() {
   /** The synchronous half of the double-click guard. See the class doc, point 3. */
   const advancing = useRef(false);
 
+  /** The question heading, focused when the question changes so the change is announced. */
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  /**
+   * The radio group itself. Arrow-key navigation reads its options out of the DOM rather than
+   * from an array of per-option refs, because that array would have to be invalidated on every
+   * question change — and a question with fewer options than the one before it would leave stale
+   * nodes behind the end of the list, which the arrow keys would then happily focus.
+   */
+  const groupRef = useRef<HTMLDivElement>(null);
+  /**
+   * Has the student navigated yet?
+   *
+   * Focus is moved on every question change *except the first*. Landing on a page and having it
+   * seize focus is its own accessibility problem — and the first index is not a navigation at all,
+   * it is the resume position computed during hydration below.
+   */
+  const navigated = useRef(false);
+
   const questions = useMemo<AssessmentQuestion[]>(() => attempt?.questions ?? [], [attempt]);
+
+  useEffect(() => {
+    if (!navigated.current) return;
+
+    headingRef.current?.focus();
+  }, [index]);
 
   // Resume where they left off. Runs once, when the attempt first arrives: the server knows what
   // the student has already answered, and dropping them back on question 1 of 60 would be a
@@ -158,6 +209,7 @@ export function AssessmentPlayerPage() {
         return false;
       }
 
+      navigated.current = true;
       setIndex(target);
 
       return true;
@@ -166,14 +218,25 @@ export function AssessmentPlayerPage() {
     }
   }, []);
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading your assessment…</p>;
+  if (isLoading) {
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Loading your assessment…
+      </p>
+    );
+  }
+
   if (error || !attempt) return <Alert tone="danger">This assessment could not be loaded.</Alert>;
 
   if (attempt.status !== 'IN_PROGRESS') {
     return (
       <Alert tone="info">
         You have already submitted this assessment.{' '}
-        <button className="underline" onClick={() => navigate(resultPath(attempt.id))}>
+        <button
+          type="button"
+          className="underline"
+          onClick={() => navigate(resultPath(attempt.id))}
+        >
           See your result
         </button>
       </Alert>
@@ -203,6 +266,64 @@ export function AssessmentPlayerPage() {
    */
   const answeredCurrent = Boolean(answers[question.id]);
   const canLeaveQuestion = !question.required || answeredCurrent;
+
+  /**
+   * The one tab stop in the group.
+   *
+   * A radio group must have exactly one — the checked option, or the first when nothing is
+   * checked yet. Leaving every option at `tabIndex={0}` is the five-tab-stops-per-question
+   * behaviour this replaced; leaving them all at `-1` would make the group unreachable by Tab.
+   */
+  const selectedOptionIndex = question.options.findIndex(
+    (option) => answers[question.id] === option.id,
+  );
+  const focusableOptionIndex = selectedOptionIndex === -1 ? 0 : selectedOptionIndex;
+
+  // Pulled out of `question` before the handler below closes over them: TypeScript does not carry
+  // the `if (!question)` narrowing above into a nested function body.
+  const { id: questionId, options } = question;
+
+  /** Arrow / Home / End across the group, selecting as it moves — what native radios do. */
+  function onOptionKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const nodes = Array.from(
+      groupRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    );
+    const current = nodes.indexOf(document.activeElement as HTMLButtonElement);
+
+    // The keypress came from somewhere other than an option — leave it alone.
+    if (current === -1 || nodes.length === 0) return;
+
+    let target: number;
+
+    switch (event.key) {
+      case 'ArrowDown':
+      case 'ArrowRight':
+        target = (current + 1) % nodes.length;
+        break;
+      case 'ArrowUp':
+      case 'ArrowLeft':
+        target = (current - 1 + nodes.length) % nodes.length;
+        break;
+      case 'Home':
+        target = 0;
+        break;
+      case 'End':
+        target = nodes.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    // Only once a key we handle has actually matched — an unhandled key must keep its default,
+    // or Tab out of the group and Enter on an option would both be swallowed.
+    event.preventDefault();
+
+    nodes[target]?.focus();
+
+    const option = options[target];
+
+    if (option) choose(questionId, option.id);
+  }
 
   async function onNext() {
     if (!canLeaveQuestion || isSaving) return;
@@ -234,6 +355,7 @@ export function AssessmentPlayerPage() {
       setGateMessage(
         `Question ${firstUnansweredIndex + 1} still needs an answer before you can finish.`,
       );
+      navigated.current = true;
       setIndex(firstUnansweredIndex);
 
       return;
@@ -270,13 +392,32 @@ export function AssessmentPlayerPage() {
           between "nearly done" and "this is endless". */}
       <div>
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm">
-          <span className="font-medium text-foreground/80">
+          {/*
+            The only live region on this screen, and it carries the one fact that is otherwise
+            invisible when the question changes: *where in the instrument the student now is*.
+            The question text itself is announced by the focus move; the position is not part of
+            it. Deliberately not extended to cover the answered count beside it — that changes on
+            every single tap, and a live region that speaks sixty times per instrument is one a
+            student learns to ignore.
+          */}
+          <span role="status" className="font-medium text-foreground/80">
             {question.section_label ? `${question.section_label} · ` : null}
             Question {index + 1} of {questions.length}
           </span>
-          <span className="text-muted-foreground">{answeredCount} answered</span>
+          <span className="text-muted-foreground">
+            {answeredCount} of {questions.length} answered
+          </span>
         </div>
-        <div className="h-2 w-full overflow-hidden border border-border bg-secondary">
+        {/*
+          `aria-hidden` rather than `role="progressbar"`: the bar is a redraw of the sentence
+          immediately above it, and a progressbar here would have a screen reader read the same
+          fraction twice in a row. The text is the accessible version, which is why it now names
+          the total instead of stopping at "45 answered".
+        */}
+        <div
+          aria-hidden="true"
+          className="h-2 w-full overflow-hidden border border-border bg-secondary"
+        >
           <div
             className="h-full bg-primary transition-all"
             style={{ width: `${(answeredCount / questions.length) * 100}%` }}
@@ -286,46 +427,66 @@ export function AssessmentPlayerPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg leading-snug">
+          <CardTitle
+            id="current-question"
+            ref={headingRef}
+            tabIndex={-1}
+            className="text-lg leading-snug focus-visible:outline-none"
+          >
             {question.question_text}
             {question.required ? null : (
               <span className="ml-2 text-sm font-normal text-muted-foreground">(optional)</span>
             )}
           </CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-2">
+        <CardContent>
           {/*
             One option list for all three question types (§13.4: LIKERT, MULTIPLE_CHOICE,
             BOOLEAN). That is not a simplification — all three are single-select over
             `question_options` on the wire, so the player has one control and the validation
             below applies identically to every one of them. A type that ever needs free text
             would need a branch here *and* a second field in `saveAnswer`; neither exists.
-          */}
-          {question.options.map((option) => {
-            const selected = answers[question.id] === option.id;
 
-            return (
-              <button
-                key={option.id}
-                type="button"
-                aria-pressed={selected}
-                // Selecting is never blocked by an in-flight save: the new choice is queued
-                // behind it and wins, which is what a student changing their mind expects.
-                onClick={() => choose(question.id, option.id)}
-                className={[
-                  'rounded-none border px-4 py-3 text-left text-sm transition',
-                  // Selected is the one filled object on the screen — the same steel block the
-                  // primary button uses. Unselected is a hairline outline on the ground.
-                  selected
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-transparent text-foreground/80 hover:border-primary',
-                ].join(' ')}
-              >
-                {option.label}
-                {/* No score. Never a score. */}
-              </button>
-            );
-          })}
+            A real radio group: labelled by the question, one tab stop, arrows to move. See the
+            class doc for why five toggle buttons was the wrong control for a single-select answer.
+          */}
+          <div
+            ref={groupRef}
+            role="radiogroup"
+            aria-labelledby="current-question"
+            aria-required={question.required}
+            onKeyDown={onOptionKeyDown}
+            className="flex flex-col gap-2"
+          >
+            {question.options.map((option, optionIndex) => {
+              const selected = answers[question.id] === option.id;
+
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  tabIndex={optionIndex === focusableOptionIndex ? 0 : -1}
+                  // Selecting is never blocked by an in-flight save: the new choice is queued
+                  // behind it and wins, which is what a student changing their mind expects.
+                  onClick={() => choose(question.id, option.id)}
+                  className={[
+                    'rounded-none border px-4 py-3 text-left text-sm transition',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                    // Selected is the one filled object on the screen — the same steel block the
+                    // primary button uses. Unselected is a hairline outline on the ground.
+                    selected
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-border bg-transparent text-foreground/80 hover:border-primary',
+                  ].join(' ')}
+                >
+                  {option.label}
+                  {/* No score. Never a score. */}
+                </button>
+              );
+            })}
+          </div>
         </CardContent>
       </Card>
 

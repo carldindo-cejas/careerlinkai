@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createQueryClient } from '@/app/queryClient';
 import { RecommendationPage } from '@/features/student/pages/RecommendationPage';
 import { catalogLinksApi, chatApi, recommendationApi } from '@/services/recommendationApi';
+import { useToastStore } from '@/stores/toastStore';
+import { ApiRequestError } from '@/types/api';
 import type { Career, College, Program } from '@/types/catalog';
 import type {
   CareerRecommendation,
@@ -83,8 +85,12 @@ function program(id: string, name: string): Program {
  *
  * The salaries are deliberately *inverse* to the match ranking: the lowest-ranked career pays most.
  * That is what makes the sort assertion meaningful.
+ *
+ * `prefix` names a *different* set with the same shape, so a rebuild can be told from the set it
+ * replaced. Text queries are exact by default, which is what makes `Rebuilt Career 1` and
+ * `Career 1` two distinguishable things rather than one substring of the other.
  */
-function set(): RecommendationSet {
+function set(prefix = ''): RecommendationSet {
   const careers: CareerRecommendation[] = [1, 2, 3, 4, 5, 6].map((n) => ({
     id: `rec-career-${n}`,
     match_type: 'CAREER',
@@ -92,7 +98,7 @@ function set(): RecommendationSet {
     ranking: n,
     reason: `Reason ${n}`,
     created_at: '2026-07-27T00:00:00Z',
-    career: career(`career-${n}`, `Career ${n}`, 10000 * n, n),
+    career: career(`career-${n}`, `${prefix}Career ${n}`, 10000 * n, n),
   }));
 
   const programs: ProgramRecommendation[] = [1, 2, 3, 4, 5, 6].map((n) => ({
@@ -102,7 +108,7 @@ function set(): RecommendationSet {
     ranking: n,
     reason: `Program reason ${n}`,
     created_at: '2026-07-27T00:00:00Z',
-    program: program(`program-${n}`, `Program ${n}`),
+    program: program(`program-${n}`, `${prefix}Program ${n}`),
     college: COLLEGE,
   }));
 
@@ -126,8 +132,11 @@ function renderPage() {
 
 describe('RecommendationPage', () => {
   beforeEach(() => {
-    vi.mocked(recommendationApi.getMine).mockResolvedValue(set());
-    vi.mocked(chatApi.getTranscript).mockResolvedValue({
+    // `mockReset` rather than `mockResolvedValue` alone: without it the call *counts* accumulate
+    // across the file, so any "fetched exactly once" assertion silently measures every test that
+    // ran before it instead of the one it is in.
+    vi.mocked(recommendationApi.getMine).mockReset().mockResolvedValue(set());
+    vi.mocked(chatApi.getTranscript).mockReset().mockResolvedValue({
       conversation_id: null,
       messages: [],
     });
@@ -230,7 +239,11 @@ describe('RecommendationPage', () => {
     await screen.findByText('Career 1');
     expect(catalogLinksApi.programsForCareer).not.toHaveBeenCalled();
 
-    const [button] = screen.getAllByRole('button', { name: /view related college programs/i });
+    // Named for its career since P2-3 — the visible label is still "View related college
+    // programs", but five cards may not offer five buttons with one name between them.
+    const [button] = screen.getAllByRole('button', {
+      name: /view college programs related to Career 1/i,
+    });
     await user.click(button!);
 
     expect(await screen.findByText(/BS Statistics/)).toBeInTheDocument();
@@ -257,12 +270,14 @@ describe('RecommendationPage', () => {
 
     await screen.findByText('Program 1');
 
-    const [button] = screen.getAllByRole('button', { name: /view colleges offering this program/i });
+    const [button] = screen.getAllByRole('button', { name: /view colleges offering Program 1/i });
     await user.click(button!);
 
     // The college name also appears as each program card's subtitle, so the disclosure is
     // identified by the thing only it renders: the map link.
-    const link = await screen.findByRole('link', { name: /view on google maps/i });
+    // The accessible name names the college and warns that the link leaves the page; the visible
+    // label is still the bare "View on Google Maps".
+    const link = await screen.findByRole('link', { name: /on google maps \(opens in a new tab\)/i });
 
     expect(link).toHaveAttribute('href', 'https://maps.google.com/?q=alpha');
     expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
@@ -284,7 +299,7 @@ describe('RecommendationPage', () => {
 
     await screen.findByText('Program 1');
 
-    const [button] = screen.getAllByRole('button', { name: /view colleges offering this program/i });
+    const [button] = screen.getAllByRole('button', { name: /view colleges offering Program 1/i });
     await user.click(button!);
 
     expect(await screen.findByText(/hasn't been matched to the shared program catalog/i)).toBeInTheDocument();
@@ -370,5 +385,136 @@ describe('RecommendationPage', () => {
     renderPage();
 
     expect(await screen.findByText(/finish both assessments/i)).toBeInTheDocument();
+  });
+
+  /**
+   * P2-3.
+   *
+   * The heading outline was flat: an `h1`, two section `h2`s, and then every recommendation card
+   * *also* an `h2` — so a screen reader's heading list read as eight sibling sections rather than
+   * two sections holding three cards each, and there was no way to skim the page by structure.
+   */
+  it('nests the cards under their section headings', async () => {
+    renderPage();
+
+    await screen.findByText('Career 1');
+
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('My recommendations');
+    expect(screen.getByRole('heading', { level: 2, name: 'Careers' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: /Career 1/ })).toBeInTheDocument();
+  });
+
+  /**
+   * Read linearly, a card announced "Career 1, 88.5%, #2" — a percentage of nothing, ranked out
+   * of nothing. Both facts come from the layout for a sighted reader, and the layout is exactly
+   * what a screen reader discards.
+   */
+  it('says what the match percentage and the rank are measures of', async () => {
+    renderPage();
+
+    await screen.findByText('Career 1');
+
+    expect(screen.getAllByText('Match score').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Ranked').length).toBeGreaterThan(0);
+  });
+
+  /**
+   * Rebuild (audit C4, P1-4).
+   *
+   * This button is the student's only route out of a state the system can put them in silently.
+   * Recommendations are generated by a listener whose failures are deliberately swallowed — a
+   * recommendation failure must never fail a submitted assessment — so a student who finished both
+   * instruments can land on the empty state and be told to go and do the thing they have already
+   * done, with no error anywhere a human would look. P2-2 found exactly that on staging, affecting
+   * **every** student, for a reason no local run or backend test could see.
+   *
+   * The three outcomes are three different messages on purpose, and the middle one is the
+   * distinction worth testing: `null` means "you genuinely have not finished both yet", which is
+   * the system working. Reporting it as a failure sends a student to their counselor over nothing.
+   */
+  describe('Rebuild', () => {
+    beforeEach(() => {
+      useToastStore.setState({ toasts: [] });
+      vi.mocked(recommendationApi.regenerateMine).mockReset();
+    });
+
+    const toasts = () => useToastStore.getState().toasts;
+
+    it('swaps in the rebuilt set without going back to the server for it', async () => {
+      vi.mocked(recommendationApi.regenerateMine).mockResolvedValue(set('Rebuilt '));
+
+      const user = userEvent.setup();
+      renderPage();
+
+      await screen.findByText('Career 1');
+      await user.click(screen.getByRole('button', { name: /^rebuild$/i }));
+
+      expect(await screen.findByText('Rebuilt Career 1')).toBeInTheDocument();
+      expect(screen.queryByText('Career 1')).not.toBeInTheDocument();
+
+      // The response *is* the new set, written straight into the cache. A hook that invalidated
+      // instead would blank the cards for a round trip and pay again for bytes already in hand.
+      expect(recommendationApi.getMine).toHaveBeenCalledTimes(1);
+
+      await waitFor(() => expect(toasts()).toHaveLength(1));
+      expect(toasts()[0]).toMatchObject({ tone: 'success' });
+    });
+
+    /** The C4 recovery, end to end: the state P2-2 found on staging, and the way out of it. */
+    it('fills the empty state when the student had finished both all along', async () => {
+      vi.mocked(recommendationApi.getMine).mockResolvedValue(null);
+      vi.mocked(recommendationApi.regenerateMine).mockResolvedValue(set());
+
+      const user = userEvent.setup();
+      renderPage();
+
+      // The empty state raises the possibility that generation broke, rather than only repeating
+      // an instruction the student may already have followed.
+      expect(await screen.findByText(/Already finished both/)).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /rebuild my recommendations/i }));
+
+      expect(await screen.findByText('Career 1')).toBeInTheDocument();
+      expect(screen.queryByText(/Already finished both/)).not.toBeInTheDocument();
+    });
+
+    it('treats a null rebuild as information, not failure', async () => {
+      vi.mocked(recommendationApi.getMine).mockResolvedValue(null);
+      vi.mocked(recommendationApi.regenerateMine).mockResolvedValue(null);
+
+      const user = userEvent.setup();
+      renderPage();
+
+      await screen.findByText(/Already finished both/);
+      await user.click(screen.getByRole('button', { name: /rebuild my recommendations/i }));
+
+      await waitFor(() => expect(toasts()).toHaveLength(1));
+      // Not `error`. An unfinished instrument is not a fault, and the message says which one.
+      expect(toasts()[0]).toMatchObject({ tone: 'info' });
+      expect(toasts()[0]?.message).toContain('Finish both RIASEC and SCCT first');
+    });
+
+    it('surfaces the server’s message when a rebuild is throttled, and keeps the standing set', async () => {
+      vi.mocked(recommendationApi.regenerateMine).mockRejectedValue(
+        new ApiRequestError(
+          'Your recommendations were rebuilt very recently. Try again in 42 seconds.',
+          429,
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderPage();
+
+      await screen.findByText('Career 1');
+      await user.click(screen.getByRole('button', { name: /^rebuild$/i }));
+
+      await waitFor(() => expect(toasts()).toHaveLength(1));
+      expect(toasts()[0]).toMatchObject({ tone: 'error' });
+      expect(toasts()[0]?.message).toContain('Try again in 42 seconds');
+
+      // The failure did not take the cards down with it — a student who pressed Rebuild out of
+      // curiosity must not lose the recommendations they already had.
+      expect(screen.getByText('Career 1')).toBeInTheDocument();
+    });
   });
 });

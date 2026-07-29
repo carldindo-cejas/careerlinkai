@@ -79,7 +79,7 @@ jobs:
         run: npm test
 
   frontend:
-    name: Frontend — type-check · build · 35 tests
+    name: Frontend — type-check · tests · build · asset weight
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -114,3 +114,18 @@ jobs:
       # absence: the site works perfectly, just slower on every repeat visit, forever.
       - name: Assert the asset cache policy shipped
         run: test -f dist/_headers && grep -q immutable dist/_headers
+
+      # Plan P1-3 — the guard audit finding P1 shipped without.
+      #
+      # A 3.26 MB master PNG was the login screen's logo for the life of the project and CI never
+      # said a word, because the only size CI measured was `gate:bundle` — and that weighs the
+      # **Worker script**. Cloudflare stores static assets separately, against no bundle limit, so
+      # the one number reported was the one number the defect could not move. Nothing today would
+      # stop someone re-importing a master asset and silently restoring a 4 MB login screen.
+      #
+      # It lives in this job rather than the backend one because it needs a real `dist/`: the
+      # backend job installs backend dependencies only and its `gate:bundle` deliberately skips
+      # the Vite build. Weighing the empty `dist/` that job creates would report a comfortable
+      # pass on nothing at all.
+      - name: Asset weight gate (media budget, chunk ratchet)
+        run: npm run gate:assets

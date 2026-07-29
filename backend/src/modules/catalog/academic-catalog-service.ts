@@ -21,6 +21,7 @@ import {
 } from '@/db/schema';
 import type { CatalogStatus } from '@/db/enums';
 import { uuid } from '@/lib/crypto';
+import { chunkIds } from '@/lib/d1-batching';
 import { now } from '@/lib/datetime';
 import { isUniqueViolation } from '@/lib/db-errors';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
@@ -667,23 +668,29 @@ export class AcademicCatalogService {
       return new Map();
     }
 
-    const rows = await this.db
-      .select({ canonicalId: programs.programCatalogId, value: count() })
-      .from(programs)
-      .where(
-        and(
-          inArray(programs.programCatalogId, canonicalIds),
-          eq(programs.status, 'active'),
-          isNull(programs.deletedAt),
-        ),
-      )
-      .groupBy(programs.programCatalogId);
-
     const counts = new Map<string, number>();
 
-    for (const row of rows) {
-      if (row.canonicalId !== null) {
-        counts.set(row.canonicalId, row.value);
+    // Chunked for the same reason `scorableCareersForMany` is: this takes a *page* of canonical
+    // ids, `per_page` allows 100, and 100 ids plus the status binding is already past D1's
+    // 100-parameter ceiling. Each canonical id falls in exactly one chunk, so the per-chunk maps
+    // merge without summing.
+    for (const chunk of chunkIds(canonicalIds)) {
+      const rows = await this.db
+        .select({ canonicalId: programs.programCatalogId, value: count() })
+        .from(programs)
+        .where(
+          and(
+            inArray(programs.programCatalogId, chunk),
+            eq(programs.status, 'active'),
+            isNull(programs.deletedAt),
+          ),
+        )
+        .groupBy(programs.programCatalogId);
+
+      for (const row of rows) {
+        if (row.canonicalId !== null) {
+          counts.set(row.canonicalId, row.value);
+        }
       }
     }
 
@@ -1400,22 +1407,37 @@ export class AcademicCatalogService {
       return mapping;
     }
 
-    const rows = await this.db
-      .select({ programId: programCareers.programId, career: careers })
-      .from(programCareers)
-      .innerJoin(careers, eq(programCareers.careerId, careers.id))
-      .where(
-        and(
-          inArray(programCareers.programId, programIds),
-          eq(careers.status, 'active'),
-          isNull(careers.deletedAt),
-        ),
-      );
+    /**
+     * **Chunked, because this list is the whole rankable catalog.**
+     *
+     * `inArray` binds one parameter per id and D1 allows 100 per statement. The caller
+     * (`rankPrograms`) passes every rankable program — 16 of them before audit item P0-1, 309
+     * after — so this crossed the ceiling on the very change that was meant to make
+     * recommendations meaningful, threw `too many SQL variables`, and had the exception swallowed
+     * by the `AssessmentCompleted` listener. Result: both instruments scored, zero cards, no error
+     * visible anywhere. Miniflare enforces no parameter limit, so nothing local ever failed.
+     *
+     * The chunks are sequential rather than `Promise.all`: D1 queries are subrequests and this runs
+     * inside the student's `submit()`, which has already spent budget scoring the attempt (§45).
+     */
+    for (const chunk of chunkIds(programIds)) {
+      const rows = await this.db
+        .select({ programId: programCareers.programId, career: careers })
+        .from(programCareers)
+        .innerJoin(careers, eq(programCareers.careerId, careers.id))
+        .where(
+          and(
+            inArray(programCareers.programId, chunk),
+            eq(careers.status, 'active'),
+            isNull(careers.deletedAt),
+          ),
+        );
 
-    for (const row of rows) {
-      const list = mapping.get(row.programId) ?? [];
-      list.push(row.career);
-      mapping.set(row.programId, list);
+      for (const row of rows) {
+        const list = mapping.get(row.programId) ?? [];
+        list.push(row.career);
+        mapping.set(row.programId, list);
+      }
     }
 
     return mapping;
@@ -1429,17 +1451,22 @@ export class AcademicCatalogService {
       return mapping;
     }
 
-    const rows = await this.db
-      .select({ programId: programCareers.programId, career: careers })
-      .from(programCareers)
-      .innerJoin(careers, eq(programCareers.careerId, careers.id))
-      .where(and(inArray(programCareers.programId, programIds), isNull(careers.deletedAt)))
-      .orderBy(asc(careers.title));
+    // One college's programs today, which keeps this under the ceiling — but "one college" is not
+    // a small constant (a large university's catalog runs to hundreds), and this is the same
+    // statement shape that took recommendations down. Chunked so it cannot become the next one.
+    for (const chunk of chunkIds(programIds)) {
+      const rows = await this.db
+        .select({ programId: programCareers.programId, career: careers })
+        .from(programCareers)
+        .innerJoin(careers, eq(programCareers.careerId, careers.id))
+        .where(and(inArray(programCareers.programId, chunk), isNull(careers.deletedAt)))
+        .orderBy(asc(careers.title));
 
-    for (const row of rows) {
-      const list = mapping.get(row.programId) ?? [];
-      list.push(row.career);
-      mapping.set(row.programId, list);
+      for (const row of rows) {
+        const list = mapping.get(row.programId) ?? [];
+        list.push(row.career);
+        mapping.set(row.programId, list);
+      }
     }
 
     return mapping;

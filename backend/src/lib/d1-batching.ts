@@ -49,3 +49,39 @@ export function chunkByWidth<T>(rows: T[], columnsPerRow: number): T[][] {
 
   return chunks;
 }
+
+/**
+ * The **read** side of the same ceiling: `WHERE id IN (…)` binds one parameter per id.
+ *
+ * Everything above this line is about INSERT width, and that framing is exactly how the read path
+ * was missed. `inArray(column, ids)` is not a wide statement — it is a *long* one — but it draws on
+ * the identical 100-parameter budget, and an `inArray` over a list that grows with the catalog
+ * crosses it silently the day the catalog does.
+ *
+ * That is not hypothetical. Audit item P0-1 grew the catalog from 16 programs to 309 to make the
+ * ranking discriminate between students; `scorableCareersForMany` then bound 309 parameters in one
+ * `IN`, threw `too many SQL variables`, and the `AssessmentCompleted` listener swallowed it exactly
+ * as designed. Every student who completed both instruments on the deployed Worker received **zero
+ * recommendations** — the product's central feature, disabled by its own catalog, with no error
+ * anywhere a human would look. Miniflare enforces no parameter limit, so all 807 tests passed.
+ *
+ * Use this for any `inArray` whose list is not bounded by a small constant, then merge the results.
+ * A list bounded by construction (the 60 questions of one attempt, one class's roster, a status
+ * enum) does not need it.
+ *
+ * **`reserved` is not padding.** An `IN` clause is never the only thing its statement binds — the
+ * two call sites that prompted this also bind `status = 'active'`, and a chunk sized to exactly the
+ * ceiling would put them at 101 parameters and fail for the sake of one predicate. The default
+ * leaves room for a handful of them, matching the headroom `ROWS_PER_INSERT` already keeps, so that
+ * adding a filter to one of these queries does not silently reintroduce the bug.
+ */
+export function chunkIds<T>(ids: T[], reserved = 10): T[][] {
+  const size = Math.max(1, D1_MAX_BOUND_PARAMS - reserved);
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < ids.length; index += size) {
+    chunks.push(ids.slice(index, index + size));
+  }
+
+  return chunks;
+}

@@ -9,6 +9,7 @@ import type {
   AssessmentType,
   AssignPayload,
   AssignResult,
+  SeedInstrumentsResult,
 } from '@/types/assessmentAdmin';
 import type { Paginated } from '@/types/class';
 
@@ -135,6 +136,27 @@ export const assessmentAdminApi = {
   assign(id: string, payload: AssignPayload): Promise<AssignResult> {
     return unwrap(
       httpClient.post<ApiSuccess<AssignResult>>(`/assessment-templates/${id}/assignments`, payload),
+    );
+  },
+
+  /**
+   * Install the two globally-curated instruments, RIASEC and SCCT (§22, §23) — **admin only**.
+   *
+   * This endpoint existed on the server from Phase 3 and had no caller in the UI at all until audit
+   * F1: installing the two instruments the entire product is built on required an authenticated
+   * `curl` with a hand-copied bearer token. On a freshly migrated database — which is every new
+   * deployment, production included — there are no assessments until this runs, so the omission
+   * made the first-run experience a dead end.
+   *
+   * Idempotent on the server (it returns `created: false` and changes nothing when the instruments
+   * are already present), which is what makes it safe to expose as a button rather than a one-shot
+   * migration step.
+   */
+  seedInstruments(): Promise<SeedInstrumentsResult> {
+    return unwrap(
+      httpClient.post<ApiSuccess<SeedInstrumentsResult>>(
+        '/admin/assessment-templates/seed-instruments',
+      ),
     );
   },
 };

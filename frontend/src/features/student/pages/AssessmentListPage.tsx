@@ -25,7 +25,13 @@ export function AssessmentListPage() {
   const start = useStartAttempt();
   const navigate = useNavigate();
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading your assessments…</p>;
+  if (isLoading) {
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Loading your assessments…
+      </p>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -57,7 +63,11 @@ export function AssessmentListPage() {
             ? 'subject grades'
             : null}
           .{' '}
-          <button className="font-medium underline" onClick={() => navigate(paths.studentProfile)}>
+          <button
+            type="button"
+            className="font-medium underline"
+            onClick={() => navigate(paths.studentProfile)}
+          >
             Complete your profile
           </button>
         </Alert>
@@ -155,14 +165,33 @@ function AssignmentCard({
             : null}
         </p>
 
+        {/*
+          Each action names its assessment. A student with two assignments has two buttons reading
+          "Start", and the title that distinguishes them is in the card heading — which a screen
+          reader's element list does not carry. The visible label stays short; only the accessible
+          name is extended.
+        */}
         {done && attempt ? (
-          <Button variant="secondary" onClick={() => onSeeResult(attempt.id)}>
+          <Button
+            variant="secondary"
+            aria-label={`See my result for ${assignment.assessment.title}`}
+            onClick={() => onSeeResult(attempt.id)}
+          >
             See my result
           </Button>
         ) : inProgress && attempt ? (
-          <Button onClick={() => onResume(attempt.id)}>Continue</Button>
+          <Button
+            aria-label={`Continue ${assignment.assessment.title}`}
+            onClick={() => onResume(attempt.id)}
+          >
+            Continue
+          </Button>
         ) : (
-          <Button onClick={onStart} disabled={starting}>
+          <Button
+            aria-label={`Start ${assignment.assessment.title}`}
+            onClick={onStart}
+            disabled={starting}
+          >
             {starting ? 'Starting…' : 'Start'}
           </Button>
         )}

@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { AssignmentPanel } from '@/features/counselor/components/AssignmentPanel';
+import { ClassRecommendationsPanel } from '@/features/counselor/components/ClassRecommendationsPanel';
 import { ClassResultsPanel } from '@/features/counselor/components/ClassResultsPanel';
 import { JoinCodeCard } from '@/features/counselor/components/JoinCodeCard';
 import { RosterBuilder } from '@/features/counselor/components/RosterBuilder';
@@ -81,6 +82,12 @@ export function ClassDetailPage() {
 
       {/* Phase 6 (D8): the results overview with the §21 retake button. */}
       <ClassResultsPanel classId={classRoom.id} />
+
+      {/* Audit F2 / P1-1: what those results were turned into. Last on the page because it is the
+          end of the counselor's own sequence — assign, watch results arrive, read what the engine
+          made of them — and because it reads the roster and the results the two panels above have
+          already loaded. */}
+      <ClassRecommendationsPanel classId={classRoom.id} />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { ChevronRight, Copy, UserPlus } from 'lucide-react';
+import { ChevronRight, Copy, KeyRound, UserPlus } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -12,9 +12,11 @@ import {
   useCounselors,
   useCreateCounselor,
   useDeleteCounselor,
+  useResetCounselorPassword,
   useUpdateCounselor,
 } from '@/features/admin/hooks/usePlatformAdmin';
 import { counselorDetailPath } from '@/routes/paths';
+import { toast } from '@/stores/toastStore';
 import { ApiRequestError } from '@/types/api';
 import type { ManagedCounselor } from '@/types/platform';
 
@@ -142,7 +144,13 @@ export function CounselorManagementPage() {
         </Card>
       ) : null}
 
-      {data?.items.map((counselor) => <CounselorRow key={counselor.id} counselor={counselor} />)}
+      {data?.items.map((counselor) => (
+        <CounselorRow
+          key={counselor.id}
+          counselor={counselor}
+          onIssued={(email, password) => setIssued({ email, password })}
+        />
+      ))}
 
       {data && data.pagination.last_page > 1 ? (
         <div className="flex items-center justify-between">
@@ -299,12 +307,42 @@ function FormField({
   );
 }
 
-function CounselorRow({ counselor }: { counselor: ManagedCounselor }) {
+function CounselorRow({
+  counselor,
+  onIssued,
+}: {
+  counselor: ManagedCounselor;
+  /** Hand a freshly issued temporary password up to the page's one "shown once" banner. */
+  onIssued: (email: string, temporaryPassword: string) => void;
+}) {
   const update = useUpdateCounselor();
   const remove = useDeleteCounselor();
+  const resetPassword = useResetCounselorPassword();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   const suspended = counselor.status === 'suspended';
+
+  /**
+   * Reset this counselor's password (audit C2).
+   *
+   * Confirmed rather than immediate, because it is destructive in a way that is easy to
+   * underestimate: it invalidates the password the counselor may be using perfectly well right now
+   * and signs them out of every session. The confirmation is what stops a misplaced click on a
+   * dense list from locking a working account out mid-lesson.
+   */
+  async function onResetPassword() {
+    try {
+      const updated = await resetPassword.mutateAsync(counselor.id);
+
+      setConfirmingReset(false);
+      onIssued(updated.email ?? counselor.email ?? '', updated.temporary_password);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'The password could not be reset.',
+      );
+    }
+  }
 
   return (
     <Card>
@@ -364,6 +402,38 @@ function CounselorRow({ counselor }: { counselor: ManagedCounselor }) {
           >
             {suspended ? 'Reactivate' : 'Suspend'}
           </Button>
+
+          {/*
+            Reset password (audit C2) — the only route back in for a counselor who has forgotten
+            theirs. `/auth/forgot-password` cannot serve them: it withholds its token outside local,
+            stores only the hash, and there is no email channel to send it through, so before this
+            existed the account was simply lost.
+          */}
+          {confirmingReset ? (
+            <>
+              <Button
+                variant="danger"
+                size="sm"
+                loading={resetPassword.isPending}
+                onClick={onResetPassword}
+              >
+                Confirm reset
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmingReset(false)}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="secondary"
+              size="sm"
+              title="Issue a new temporary password and sign them out everywhere"
+              onClick={() => setConfirmingReset(true)}
+            >
+              <KeyRound className="size-4" aria-hidden="true" />
+              Reset password
+            </Button>
+          )}
 
           {confirmingDelete ? (
             <>

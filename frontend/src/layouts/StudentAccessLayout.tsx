@@ -1,6 +1,6 @@
 import { Link, Outlet } from 'react-router-dom';
 
-import artUrl from '@/assets/careerlinkai_art.png';
+import { BrandArt } from '@/components/brand/BrandArt';
 import { Logo } from '@/components/brand/Logo';
 import { FadeIn } from '@/components/motion/FadeIn';
 import { paths } from '@/routes/paths';
@@ -42,15 +42,16 @@ export function StudentAccessLayout() {
           className="pointer-events-none absolute -top-40 -right-40 size-112 rounded-full bg-[radial-gradient(circle,rgba(89,128,166,0.32),transparent_65%)]"
         />
         <FadeIn delay={0.05} className="mx-auto w-full max-w-xl">
-          <h1 className="text-3xl font-bold tracking-tight text-sidebar-active-foreground">
+          {/* Not an `h1` — see the matching note in StaffAuthLayout. The page's `h1` is the
+              "Join your class" card, which is the only part of this screen a student can act on. */}
+          <p className="text-3xl font-bold tracking-tight text-sidebar-active-foreground">
             Find where your strengths point.
-          </h1>
+          </p>
           <p className="mt-3 max-w-md text-sidebar-foreground">
             Answer two short assessments and get ranked careers, programs and colleges —
             matched to you, and explained.
           </p>
-          <img
-            src={artUrl}
+          <BrandArt
             alt="Senior high school students taking the RIASEC assessment on laptops and tablets"
             className="mt-8 w-full rounded-none border border-sidebar-border bg-background object-contain p-2"
           />

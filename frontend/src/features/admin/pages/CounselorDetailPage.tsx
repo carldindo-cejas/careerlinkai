@@ -1,13 +1,8 @@
-import {
-  ArrowLeft,
-  Briefcase,
-  ChevronDown,
-  GraduationCap,
-  Loader2,
-} from 'lucide-react';
+import { ArrowLeft, ChevronDown, Loader2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
+import { StudentRecommendationLists } from '@/components/recommendations/StudentRecommendationLists';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,7 +11,6 @@ import { cn } from '@/components/ui/cn';
 import { Input } from '@/components/ui/input';
 import { useCounselorStudents } from '@/features/admin/hooks/usePlatformAdmin';
 import { paths } from '@/routes/paths';
-import type { ProgramRecommendation } from '@/types/recommendation';
 import type { CounselorStudentRow } from '@/types/platform';
 
 /**
@@ -329,85 +323,18 @@ function StudentRows({
             )}
           >
             <div className="overflow-hidden">
-              <div className="grid gap-6 bg-muted/20 px-4 py-4 md:grid-cols-2">
-                <RecommendationList
-                  icon={<Briefcase className="size-4 text-muted-foreground" aria-hidden="true" />}
-                  title="Top 5 career recommendations"
-                  empty="No career recommendations yet."
-                  items={student.top_careers.map((recommendation) => ({
-                    id: recommendation.id,
-                    primary: recommendation.career.title,
-                    secondary: recommendation.career.typical_riasec_code,
-                    score: recommendation.match_score,
-                  }))}
-                />
-                <RecommendationList
-                  icon={<GraduationCap className="size-4 text-muted-foreground" aria-hidden="true" />}
-                  title="Top 5 college recommendations"
-                  empty="No college recommendations yet."
-                  items={student.top_programs.map((recommendation: ProgramRecommendation) => ({
-                    id: recommendation.id,
-                    primary: recommendation.college.name,
-                    secondary: recommendation.program.name,
-                    score: recommendation.match_score,
-                  }))}
-                />
-              </div>
+              {/* The same lists the counselor's own `ClassRecommendationsPanel` renders — one
+                  component, so the two staff views of a student cannot drift apart. */}
+              <StudentRecommendationLists
+                careers={student.top_careers}
+                programs={student.top_programs}
+                className="bg-muted/20 px-4 py-4"
+              />
             </div>
           </div>
         </td>
       </tr>
     </>
-  );
-}
-
-interface RecommendationItem {
-  id: string;
-  primary: string;
-  secondary: string | null;
-  score: number;
-}
-
-function RecommendationList({
-  icon,
-  title,
-  empty,
-  items,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  empty: string;
-  items: RecommendationItem[];
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-        {icon}
-        {title}
-      </h3>
-      {items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{empty}</p>
-      ) : (
-        <ol className="flex flex-col gap-1.5">
-          {items.map((item, index) => (
-            <li key={item.id} className="flex items-baseline gap-2 text-sm">
-              <span className="w-5 shrink-0 text-right font-mono text-xs text-muted-foreground">
-                {index + 1}.
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="text-foreground">{item.primary}</span>
-                {item.secondary ? (
-                  <span className="text-muted-foreground"> · {item.secondary}</span>
-                ) : null}
-              </span>
-              <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                {item.score.toFixed(1)}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </div>
   );
 }
 

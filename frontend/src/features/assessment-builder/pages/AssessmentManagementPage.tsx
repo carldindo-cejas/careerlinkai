@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react';
+import { Plus, Sparkles } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -15,8 +15,10 @@ import {
   useCreateAssessment,
   useDeleteAssessment,
   useRestoreAssessment,
+  useSeedInstruments,
   useUpdateAssessment,
 } from '@/features/assessment-builder/hooks/useAssessments';
+import { useAuthStore } from '@/stores/authStore';
 import { toast } from '@/stores/toastStore';
 import type { SortDirection } from '@/types/address';
 import type {
@@ -121,6 +123,33 @@ export function AssessmentManagementPage() {
   const restore = useRestoreAssessment();
   const remove = useDeleteAssessment();
   const assign = useAssignAssessment();
+  const seedInstruments = useSeedInstruments();
+
+  const isAdmin = useAuthStore((state) => state.user?.role) === 'admin';
+
+  /**
+   * Install the two curated instruments (audit F1).
+   *
+   * The two outcomes are reported differently on purpose. `created: true` is the fresh-deployment
+   * case and is genuinely news. `created: false` means they were already installed — which, given
+   * the admin just pressed a button expecting something to happen, is worth saying plainly rather
+   * than showing a success toast that implies work was done.
+   */
+  async function onSeedInstruments() {
+    try {
+      const result = await seedInstruments.mutateAsync();
+
+      toast.success(
+        result.created
+          ? 'RIASEC and SCCT installed and published.'
+          : 'RIASEC and SCCT are already installed — nothing changed.',
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'The instruments could not be installed.',
+      );
+    }
+  }
 
   function onSort(column: AssessmentSort) {
     if (column === sort) {
@@ -185,15 +214,40 @@ export function AssessmentManagementPage() {
             assignable. RIASEC and SCCT are curated instruments and cannot be AI-edited.
           </p>
         </div>
-        <Button
-          onClick={() => {
-            setEditingRow(null);
-            setFormOpen(true);
-          }}
-        >
-          <Plus className="size-4" aria-hidden="true" />
-          New assessment
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          {/*
+            Install RIASEC & SCCT (audit F1) — administrators only, because the endpoint is.
+            Gated on the signed-in user's role rather than on `base`, which is a *route* fact: an
+            admin browsing the counselor shell is still an admin and the button should still work,
+            while a counselor can never be shown a control that would 403.
+
+            Always offered rather than only when the table looks empty. The list is filtered,
+            sorted and paginated, so "RIASEC is not on this page" is not evidence it is not
+            installed — and the call is idempotent, answering `created: false` and changing
+            nothing when it is. An always-available button that is safe to press beats a
+            conditional one whose condition is a guess.
+          */}
+          {isAdmin ? (
+            <Button
+              variant="secondary"
+              loading={seedInstruments.isPending}
+              onClick={onSeedInstruments}
+            >
+              <Sparkles className="size-4" aria-hidden="true" />
+              Install RIASEC &amp; SCCT
+            </Button>
+          ) : null}
+
+          <Button
+            onClick={() => {
+              setEditingRow(null);
+              setFormOpen(true);
+            }}
+          >
+            <Plus className="size-4" aria-hidden="true" />
+            New assessment
+          </Button>
+        </div>
       </div>
 
       <AssessmentTable

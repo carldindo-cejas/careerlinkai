@@ -39,6 +39,24 @@ export const counselorManagementApi = {
   },
 
   /**
+   * Issue a counselor a fresh temporary password (audit C2) — **the staff account recovery path.**
+   *
+   * This is the only way a counselor who has forgotten their password can get back in. The
+   * self-service `/auth/forgot-password` flow cannot serve them: it withholds its token outside
+   * `local`, stores only the token's hash so nobody can read it back out, and v1 has no email
+   * channel to deliver it through. Before this endpoint the outcome was a permanent lockout
+   * recoverable only by hand-written SQL against production.
+   *
+   * Returns the same shape as `create` — the plaintext exactly once, never retrievable again, and
+   * already flagged `must_change_password` so it dies at the counselor's next sign-in.
+   */
+  resetPassword(id: string): Promise<CreatedCounselor> {
+    return unwrap(
+      httpClient.post<ApiSuccess<CreatedCounselor>>(`/admin/counselors/${id}/reset-password`),
+    );
+  },
+
+  /**
    * The counselor detail page (prompt-driven): every student in this counselor's classes, with
    * their Holland Code and top career/program recommendations. Bounded roster, returned whole.
    */

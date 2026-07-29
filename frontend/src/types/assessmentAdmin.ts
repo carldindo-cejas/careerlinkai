@@ -171,3 +171,25 @@ export interface AssignResult {
   skipped_classes: number;
   version_number: number;
 }
+
+/**
+ * The result of installing the two curated instruments (§22, §23).
+ *
+ * `created` is the whole story for the UI: `true` means this call installed them, `false` means
+ * they were already there and nothing changed. The two version ids are returned so a caller could
+ * link straight to them; the management page does not, because installing lands them in the table
+ * it is already showing.
+ *
+ * **camelCase, unlike every other type in this file** — and that is a faithful description of the
+ * endpoint rather than a slip here. `POST /admin/assessment-templates/seed-instruments` returns
+ * `seedAssessmentInstruments`' own `SeededInstruments` struct straight into the envelope with no
+ * serializer in between, so the wire shape really is camelCase. The rest of the API goes through a
+ * `serialize*` function and is snake_case. Renaming the fields server-side would be the tidier
+ * fix and is deliberately not bundled into this audit change: it is a live contract with backend
+ * tests pinned to it, and a type that lies about the wire is worse than one that is ugly.
+ */
+export interface SeedInstrumentsResult {
+  riasecVersionId: string | null;
+  scctVersionId: string | null;
+  created: boolean;
+}

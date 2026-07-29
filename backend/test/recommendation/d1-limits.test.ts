@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { D1_MAX_BOUND_PARAMS, chunkIds } from '@/lib/d1-batching';
 import { chunkForD1 } from '@/modules/recommendation/recommendation-service';
 
 /**
@@ -54,5 +55,60 @@ describe("D1's 100-bound-parameter limit (§27 — found on the staging deploy)"
   it('handles the small and empty cases without producing an empty statement', () => {
     expect(chunkForD1([])).toEqual([]);
     expect(chunkForD1([1, 2, 3])).toEqual([[1, 2, 3]]);
+  });
+});
+
+/**
+ * The **fourth**, and the same ceiling read from the other side (found on staging, 2026-07-28).
+ *
+ * Everything above guards the *width* of an INSERT. `WHERE id IN (…)` binds one parameter per id,
+ * which is not wide but is arbitrarily long, and it draws on the identical 100-parameter budget.
+ * `scorableCareersForMany` passed **every rankable program** to one `inArray`, so the statement's
+ * size was the size of the catalog.
+ *
+ * That is why audit item P0-1 — growing the catalog from 16 programs to 309 precisely so the
+ * ranking would discriminate between students — is what broke it. `generateFor` threw
+ * `too many SQL variables`, the `AssessmentCompleted` listener swallowed the exception exactly as
+ * designed, and every student who finished both instruments on the deployed Worker got a correctly
+ * scored assessment and **zero recommendations**, with no error anywhere a human would look.
+ *
+ * The fix that made the catalog meaningful is the fix that disabled the feature the catalog is for.
+ * Miniflare enforces no parameter limit, so all 807 tests passed throughout.
+ */
+describe("D1's 100-bound-parameter limit, on the read side (found on staging)", () => {
+  /** The catalog as seed 0004 leaves it, and a deliberately larger one. */
+  const CATALOG_SIZES = [309, 1_000];
+
+  it('never builds an IN clause that binds more than D1 will accept', () => {
+    for (const size of CATALOG_SIZES) {
+      const ids = Array.from({ length: size }, (_, i) => `program-${i}`);
+
+      for (const chunk of chunkIds(ids)) {
+        expect(chunk.length).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMS);
+      }
+    }
+  });
+
+  it('leaves room for the other bindings the same statement carries', () => {
+    // `scorableCareersForMany` also binds `careers.status = 'active'`, and `offeringCountsFor`
+    // binds a status too. A chunk sized to exactly 100 would be over the cap the moment any
+    // predicate joins it — which is how a query that "obviously fits" does not.
+    const ids = Array.from({ length: 309 }, (_, i) => `program-${i}`);
+
+    for (const chunk of chunkIds(ids)) {
+      expect(chunk.length + 2).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMS);
+    }
+  });
+
+  it('loses no ids — a dropped chunk is a program that silently stops being ranked', () => {
+    const ids = Array.from({ length: 309 }, (_, i) => `program-${i}`);
+
+    expect(chunkIds(ids).flat()).toEqual(ids);
+    expect(new Set(chunkIds(ids).flat()).size).toBe(ids.length);
+  });
+
+  it('handles the small and empty cases', () => {
+    expect(chunkIds([])).toEqual([]);
+    expect(chunkIds(['a', 'b'])).toEqual([['a', 'b']]);
   });
 });

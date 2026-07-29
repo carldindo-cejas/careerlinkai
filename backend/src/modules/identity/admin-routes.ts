@@ -151,6 +151,35 @@ adminIdentityRoutes.patch('/counselors/:id', async (c) => {
   return c.json(successEnvelope(serializeCounselor(view), 'Counselor updated successfully.'));
 });
 
+/**
+ * `POST /admin/counselors/{id}/reset-password` (audit C2) — **the staff account recovery path.**
+ *
+ * The second and last response in the system that carries a plaintext password, and it exists
+ * because there was previously no way at all for a counselor who forgot theirs to get back in:
+ * `/auth/forgot-password` withholds its token outside `local`, the token is stored only as a hash
+ * so nobody can read it out, and v1 has no email channel to send it through (deviation D7). The
+ * failure was total and silent — the forgot-password screen promised an administrator could supply
+ * a code that no administrator could obtain.
+ *
+ * Same contract as `POST /counselors`: generated, shown once, never logged, never retrievable,
+ * and already flagged `must_change_password` so it dies at first use. See the service method for
+ * why every session is revoked and both DO counters are cleared.
+ */
+adminIdentityRoutes.post('/counselors/:id/reset-password', async (c) => {
+  const { view, temporaryPassword } = await service(c).resetPassword(
+    requireUser(c),
+    c.req.param('id'),
+    clientIp(c),
+  );
+
+  return c.json(
+    successEnvelope(
+      { ...serializeCounselor(view), temporary_password: temporaryPassword },
+      'Password reset. Share the temporary password securely — it is shown only once, and they must change it at next sign-in.',
+    ),
+  );
+});
+
 adminIdentityRoutes.delete('/counselors/:id', async (c) => {
   await service(c).remove(requireUser(c), c.req.param('id'), clientIp(c));
 

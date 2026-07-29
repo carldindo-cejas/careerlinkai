@@ -34,9 +34,92 @@
 # Note this file is *consumed* by the asset router rather than served: it is not itself reachable
 # at /_headers.
 
+# ── The security headers under /* (audit S1) ─────────────────────────────────────────────────
+#
+# The bearer token is held in `localStorage` (see stores/authStore.ts), which any injected script
+# can read. That is a deliberate, ordinary SPA trade-off, but it makes the *impact* of an XSS
+# total — one injected script is full account takeover, including an administrator's. CSP is what
+# caps that impact, and it was previously absent along with HSTS and framing protection.
+#
+# Every directive below is written to be correct for a **hashed static asset too**, because of the
+# accumulation rule documented above: anything under /* also lands on /assets/*.
+#
+#   script-src 'self'      — no inline scripts and no CDN. Vite emits external modules only, so
+#                            this needs no 'unsafe-inline' and no nonce plumbing. Notably NOT
+#                            'unsafe-eval'; see the Zod note under "What the browser check found".
+#   style-src  'unsafe-inline' — required, and the one relaxation here. Tailwind v4 and the
+#                            Framer Motion transforms both write inline `style` attributes; a
+#                            nonce cannot cover attribute styles, so removing this would break
+#                            every animation and most layout. Style injection is a far weaker
+#                            primitive than script injection, which is the one this file is for.
+#   style-src  https://fonts.googleapis.com  and
+#   font-src   https://fonts.gstatic.com    — the Barlow / Barlow Condensed webfonts the whole
+#                            Industry design system is set in. src/index.css line 1 is an
+#                            `@import url('https://fonts.googleapis.com/css2?family=Barlow…')`,
+#                            and the stylesheet it pulls then requests the .woff2 files from
+#                            fonts.gstatic.com — two origins, so two directives. Added after a
+#                            browser run proved the omission (P1-2); see below. Both are exact
+#                            hosts, not wildcards.
+#   img-src    data: blob: — data: for inline SVG icons, blob: for pdf.js page rendering.
+#   worker-src 'self' blob: — pdf.js is loaded with `?url` (see features/admin/utils/extractText.ts),
+#                            so its worker is a same-origin /assets/ URL and 'self' is what
+#                            actually carries it. `blob:` is kept because pdf.js falls back to a
+#                            blob worker when it cannot use the configured URL directly, and that
+#                            fallback failing would break the PDF import in the assessment builder
+#                            and the knowledge uploader **and nowhere else** — exactly the kind of
+#                            narrow break a CSP ships silently. Verified against pdfjs-dist v6.
+#   connect-src 'self'     — the API is same-origin by construction since the single-Worker
+#                            consolidation, so this needs no allowance for another host.
+#   frame-ancestors 'none' — clickjacking. X-Frame-Options repeats it for older browsers that
+#                            do not implement frame-ancestors; the two are kept in agreement.
+#   form-action / base-uri — close the two redirect-hijack vectors a lone default-src leaves open.
+#
+# HSTS is asserted here rather than left to Cloudflare's dashboard toggle so that it travels with
+# the repository. `includeSubDomains` is safe for careerlinkai.online, which serves nothing on a
+# subdomain that is not this Worker. `preload` is deliberately NOT set: submitting to the preload
+# list is close to irreversible and should be a decision made once the domain is settled, not a
+# side effect of a header file.
+#
+# Note these apply to **static-asset responses only** — `_headers` is consumed by the asset
+# router, and API responses are the Worker's own. That is the correct split for CSP and framing
+# (both are document-level, and the document is always an asset here). If HSTS is ever wanted on
+# API responses too, it belongs in the Hono app, not in this file.
+#
+# ── What the browser check found (P1-2, 2026-07-28) ──────────────────────────────────────────
+#
+# This policy was *reasoned* for three weeks and never *run*. `scripts/csp-check.mjs` drives real
+# Chrome against the local single-origin preview and reports every violation per screen. First run,
+# 15 screens, two findings — both invisible from reading the file:
+#
+#  1. **The webfonts were blocked on every single page.** `style-src 'self' 'unsafe-inline'` does
+#     not cover the `@import` at src/index.css:1, so Barlow and Barlow Condensed never loaded and
+#     the entire app silently rendered in the system sans-serif — the one break that would have
+#     been visible from the back of the room at the defense, and the one that never shows up
+#     locally because `npm run dev` serves no `_headers`. Fixed by the two exact-host allowances
+#     above.
+#
+#     The better fix is to **self-host the fonts** and drop both allowances: this repo already
+#     carries `@fontsource-variable/inter` from the pre-Industry design (installed, never
+#     imported), so the pattern is established. Self-hosting would also stop every student's
+#     browser announcing itself to Google on page load and remove two DNS+TLS handshakes from
+#     first paint on a school connection. Not done here because it changes what ships and P1-2 is
+#     a pre-defense fix; tracked as a follow-up rather than assumed.
+#
+#  2. **Zod 4 probes for eval, is refused, and copes.** Every page also reports one
+#     `script-src blocked eval`, from Zod's JIT feature detection — `try { return Function(''), true }
+#     catch { return false }` — which exists precisely so a CSP without 'unsafe-eval' pushes it onto
+#     its interpreted validator path. Nothing is broken; validation works. **Do not "fix" this by
+#     adding 'unsafe-eval'** — it is the single most dangerous relaxation in CSP, this app holds its
+#     bearer token in localStorage (see the top of this section), and the cost of the current state
+#     is one console line that a library chose to make catchable.
+
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; media-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Frame-Options: DENY
+  Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=()

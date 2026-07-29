@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { describedBy, FieldError } from '@/components/ui/field-error';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useJoinClass } from '@/features/student/hooks/useStudentAccess';
@@ -63,10 +64,13 @@ export function StudentAccessPage() {
     join.mutate(values);
   });
 
+  const codeServerError = serverError?.fieldError('class_code');
+
   return (
     <Card className="w-full max-w-md">
       <CardHeader>
-        <CardTitle>Join your class</CardTitle>
+        {/* The page's `h1` — see the note in CredentialsLoginForm. */}
+        <CardTitle as="h1">Join your class</CardTitle>
         <CardDescription>
           Use the class code from your counselor and the username they gave you.
         </CardDescription>
@@ -85,14 +89,18 @@ export function StudentAccessPage() {
               spellCheck={false}
               placeholder="ABCD-2345"
               className="font-mono tracking-widest uppercase"
-              aria-invalid={Boolean(errors.class_code ?? serverError?.fieldError('class_code'))}
+              aria-invalid={Boolean(errors.class_code ?? codeServerError)}
+              aria-describedby={describedBy(
+                errors.class_code && 'class-code-error',
+                codeServerError && 'class-code-server-error',
+              )}
               {...register('class_code')}
             />
             {errors.class_code ? (
-              <p className="text-sm text-destructive">{errors.class_code.message}</p>
+              <FieldError id="class-code-error">{errors.class_code.message}</FieldError>
             ) : null}
-            {serverError?.fieldError('class_code') ? (
-              <p className="text-sm text-destructive">{serverError.fieldError('class_code')}</p>
+            {codeServerError ? (
+              <FieldError id="class-code-server-error">{codeServerError}</FieldError>
             ) : null}
           </div>
 
@@ -105,10 +113,11 @@ export function StudentAccessPage() {
               placeholder="juan.delacruz"
               className="font-mono"
               aria-invalid={Boolean(errors.username)}
+              aria-describedby={describedBy(errors.username && 'username-error')}
               {...register('username')}
             />
             {errors.username ? (
-              <p className="text-sm text-destructive">{errors.username.message}</p>
+              <FieldError id="username-error">{errors.username.message}</FieldError>
             ) : null}
           </div>
 

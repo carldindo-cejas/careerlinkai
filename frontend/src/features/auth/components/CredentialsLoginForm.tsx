@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { describedBy, FieldError } from '@/components/ui/field-error';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useLogin, type LoginOptions } from '@/features/auth/hooks/useAuth';
@@ -69,10 +70,18 @@ export function CredentialsLoginForm({
     login.mutate(values);
   });
 
+  const emailServerError = serverError?.fieldError('email');
+
   return (
     <Card className="w-full max-w-md">
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        {/*
+          `h1`, not the component's default `h2`. This card is the entire page — the only other
+          heading on the screen is the marketing line on the artwork panel, which is hidden below
+          `lg` and is not what this page is *about*. A sign-in screen whose document outline starts
+          at level two has no title at all as far as a screen reader's heading list is concerned.
+        */}
+        <CardTitle as="h1">{title}</CardTitle>
         <CardDescription>{description}</CardDescription>
       </CardHeader>
 
@@ -87,14 +96,16 @@ export function CredentialsLoginForm({
               type="email"
               autoComplete="email"
               autoFocus
-              aria-invalid={Boolean(errors.email)}
+              aria-invalid={Boolean(errors.email ?? emailServerError)}
+              aria-describedby={describedBy(
+                errors.email && 'email-error',
+                emailServerError && 'email-server-error',
+              )}
               {...register('email')}
             />
-            {errors.email ? (
-              <p className="text-sm text-destructive">{errors.email.message}</p>
-            ) : null}
-            {serverError?.fieldError('email') ? (
-              <p className="text-sm text-destructive">{serverError.fieldError('email')}</p>
+            {errors.email ? <FieldError id="email-error">{errors.email.message}</FieldError> : null}
+            {emailServerError ? (
+              <FieldError id="email-server-error">{emailServerError}</FieldError>
             ) : null}
           </div>
 
@@ -105,10 +116,11 @@ export function CredentialsLoginForm({
               type="password"
               autoComplete="current-password"
               aria-invalid={Boolean(errors.password)}
+              aria-describedby={describedBy(errors.password && 'password-error')}
               {...register('password')}
             />
             {errors.password ? (
-              <p className="text-sm text-destructive">{errors.password.message}</p>
+              <FieldError id="password-error">{errors.password.message}</FieldError>
             ) : null}
           </div>
 

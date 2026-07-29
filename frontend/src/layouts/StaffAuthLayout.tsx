@@ -1,6 +1,6 @@
 import { Link, Outlet } from 'react-router-dom';
 
-import artUrl from '@/assets/careerlinkai_art.png';
+import { BrandArt } from '@/components/brand/BrandArt';
 import { Logo } from '@/components/brand/Logo';
 import { FadeIn } from '@/components/motion/FadeIn';
 import { paths } from '@/routes/paths';
@@ -25,15 +25,20 @@ export function StaffAuthLayout() {
         </Link>
 
         <FadeIn className="mx-auto w-full max-w-xl">
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">
+          {/*
+            A `<p>` set at heading size, not an `h1`. This line is the panel's promise, not the
+            page's subject — the page's subject is the sign-in card, which now carries the `h1`.
+            As an `h1` it both outranked that card and disappeared entirely below `lg`, so the
+            screen's heading outline changed with the viewport width.
+          */}
+          <p className="text-3xl font-bold tracking-tight text-foreground">
             Guidance that starts with evidence.
-          </h1>
+          </p>
           <p className="mt-3 max-w-md text-muted-foreground">
             RIASEC and SCCT assessments, deterministic career matching, and AI explanations
             grounded in your school&apos;s own guidance materials.
           </p>
-          <img
-            src={artUrl}
+          <BrandArt
             alt="Senior high school students exploring career recommendations together"
             className="mt-8 w-full rounded-none border border-border object-contain"
           />

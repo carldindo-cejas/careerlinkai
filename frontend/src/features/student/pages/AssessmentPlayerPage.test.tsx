@@ -90,7 +90,9 @@ describe('AssessmentPlayerPage', () => {
     await screen.findByText('Question number 1?');
 
     // The option is offered by its label alone. No score, no point value, anywhere on the page.
-    expect(screen.getByRole('button', { name: 'Strongly Agree' })).toBeInTheDocument();
+    // `radio` rather than `button` since P2-3: choosing one of five is a radio group, not five
+    // independent toggles — see the player's class doc.
+    expect(screen.getByRole('radio', { name: 'Strongly Agree' })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\b5 points?\b/i);
     expect(document.body.textContent).not.toMatch(/Investigative|dimension|weight/i);
   });
@@ -105,7 +107,7 @@ describe('AssessmentPlayerPage', () => {
     renderPlayer();
 
     await screen.findByText('Question number 1?');
-    await user.click(screen.getByRole('button', { name: 'Strongly Agree' }));
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
 
     await waitFor(() =>
       expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q1', 'q1-o5'),
@@ -163,7 +165,7 @@ describe('AssessmentPlayerPage', () => {
     renderPlayer();
 
     await screen.findByText('Question number 2?');
-    await user.click(screen.getByRole('button', { name: 'Strongly Agree' }));
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
 
     const next = await screen.findByRole('button', { name: 'Next' });
     await waitFor(() => expect(next).toBeEnabled());
@@ -195,7 +197,7 @@ describe('AssessmentPlayerPage', () => {
     renderPlayer();
 
     await screen.findByText('Question number 1?');
-    await user.click(screen.getByRole('button', { name: 'Strongly Agree' }));
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
 
     await screen.findByText(/Network is down\./);
 
@@ -216,7 +218,7 @@ describe('AssessmentPlayerPage', () => {
     await screen.findByText('Question number 1?');
     expect(screen.getByText('2 questions left')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Strongly Agree' }));
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
     await user.click(await screen.findByRole('button', { name: 'Next' }));
     await screen.findByText('Question number 2?');
 
@@ -224,7 +226,7 @@ describe('AssessmentPlayerPage', () => {
     // On the last question, Finish replaces Next — and is refused while this one is unanswered.
     expect(screen.getByRole('button', { name: 'Finish assessment' })).toBeDisabled();
 
-    await user.click(screen.getByRole('button', { name: 'Strongly Agree' }));
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
 
     await screen.findByText('All questions answered');
     await waitFor(() =>
@@ -247,7 +249,7 @@ describe('AssessmentPlayerPage', () => {
     renderPlayer();
 
     await screen.findByText('Question number 2?');
-    await user.click(screen.getByRole('button', { name: 'Strongly Agree' }));
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
 
     const finish = await screen.findByRole('button', { name: 'Finish assessment' });
     await waitFor(() => expect(finish).toBeEnabled());
@@ -296,7 +298,8 @@ describe('AssessmentPlayerPage', () => {
     renderPlayer();
 
     await screen.findByText('Question number 2?');
-    expect(screen.getByText('1 answered')).toBeInTheDocument();
+    // "1 of 2", not "1": read aloud, a bare count has no denominator anywhere near it.
+    expect(screen.getByText('1 of 2 answered')).toBeInTheDocument();
   });
 
   /**
@@ -308,7 +311,7 @@ describe('AssessmentPlayerPage', () => {
     renderPlayer();
 
     await screen.findByText(/already submitted this assessment/i);
-    expect(screen.queryByRole('button', { name: 'Strongly Agree' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: 'Strongly Agree' })).not.toBeInTheDocument();
   });
 
   /**
@@ -342,7 +345,7 @@ describe('AssessmentPlayerPage', () => {
       await screen.findByText('Question number 1?');
       expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
 
-      await user.click(screen.getByRole('button', { name: label }));
+      await user.click(screen.getByRole('radio', { name: label }));
 
       await waitFor(() =>
         expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q1', optionId),
@@ -353,6 +356,151 @@ describe('AssessmentPlayerPage', () => {
       await user.click(next);
 
       await screen.findByText('Question number 2?');
+    });
+  });
+
+  /**
+   * P2-3 — the demo path's accessibility pass, on the screen a student spends ninety of their
+   * hundred minutes in.
+   *
+   * These are not decorative assertions. Sixty items is where every keyboard and screen-reader
+   * cost in this product is multiplied by sixty, and each test below stands for a specific
+   * defect the pass found: five tab stops per question, an option control announced as five
+   * independent toggles, and a question that changed with nothing said about it.
+   */
+  describe('accessibility', () => {
+    it('offers the options as one radio group, labelled by the question', async () => {
+      renderPlayer();
+
+      await screen.findByText('Question number 1?');
+
+      expect(screen.getByRole('radiogroup')).toHaveAccessibleName('Question number 1?');
+      expect(screen.getAllByRole('radio')).toHaveLength(2);
+    });
+
+    /**
+     * One tab stop, not one per option. On the sixty-item RIASEC inventory the difference is 60
+     * presses of Tab against 300 — and the roving `tabIndex` follows the answer, so returning to
+     * a question lands on what the student chose rather than at the top of the list.
+     */
+    it('exposes exactly one tab stop, and moves it to the chosen option', async () => {
+      const user = userEvent.setup();
+      renderPlayer();
+
+      await screen.findByText('Question number 1?');
+
+      const [disagree, agree] = screen.getAllByRole('radio');
+
+      expect(disagree).toHaveAttribute('tabindex', '0');
+      expect(agree).toHaveAttribute('tabindex', '-1');
+
+      await user.click(agree!);
+
+      await waitFor(() => expect(agree).toHaveAttribute('tabindex', '0'));
+      expect(disagree).toHaveAttribute('tabindex', '-1');
+    });
+
+    /** Arrows move and select, wrapping at both ends — what a native radio group does. */
+    it('moves between options with the arrow keys, selecting as it goes', async () => {
+      const user = userEvent.setup();
+      renderPlayer();
+
+      await screen.findByText('Question number 1?');
+
+      const [disagree, agree] = screen.getAllByRole('radio');
+
+      disagree!.focus();
+      await user.keyboard('{ArrowDown}');
+
+      expect(agree).toHaveFocus();
+      expect(agree).toHaveAttribute('aria-checked', 'true');
+      await waitFor(() =>
+        expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q1', 'q1-o5'),
+      );
+
+      // Wrapping: down from the last option returns to the first, as it does in a native group.
+      await user.keyboard('{ArrowDown}');
+
+      expect(disagree).toHaveFocus();
+      await waitFor(() =>
+        expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q1', 'q1-o1'),
+      );
+    });
+
+    /**
+     * The state was `aria-pressed`, which is announced as "pressed" / "not pressed" — an option
+     * that is *on*, rather than the one that is *the answer*, and never one of a set.
+     */
+    it('reports the chosen option as checked rather than as a pressed toggle', async () => {
+      const user = userEvent.setup();
+      renderPlayer();
+
+      await screen.findByText('Question number 1?');
+
+      const agree = screen.getByRole('radio', { name: 'Strongly Agree' });
+
+      expect(agree).toHaveAttribute('aria-checked', 'false');
+      expect(agree).not.toHaveAttribute('aria-pressed');
+
+      await user.click(agree);
+
+      await waitFor(() => expect(agree).toHaveAttribute('aria-checked', 'true'));
+    });
+
+    /**
+     * **The change that was previously silent.** Next swapped the DOM underneath a focused
+     * button and announced nothing — a student navigating by keyboard had no way to know the
+     * question had changed short of re-reading the page.
+     */
+    it('moves focus to the new question when the student advances', async () => {
+      const user = userEvent.setup();
+      renderPlayer();
+
+      await screen.findByText('Question number 1?');
+      await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
+
+      const next = await screen.findByRole('button', { name: 'Next' });
+      await waitFor(() => expect(next).toBeEnabled());
+      await user.click(next);
+
+      const heading = await screen.findByText('Question number 2?');
+
+      await waitFor(() => expect(heading).toHaveFocus());
+    });
+
+    /**
+     * ...but not on arrival. A page that seizes focus on load is its own problem, and the first
+     * index is not a navigation — it is the resume position computed during hydration.
+     */
+    it('does not seize focus when the player first loads', async () => {
+      renderPlayer();
+
+      await screen.findByText('Question number 1?');
+
+      expect(document.body).toHaveFocus();
+    });
+
+    /**
+     * Position is the one fact the focus move above does not carry: the heading announces the
+     * question, not where in sixty it falls. It is deliberately the *only* live region here —
+     * the answered count beside it changes on every tap, and a region that speaks sixty times
+     * per instrument is one a student learns to tune out.
+     */
+    it('announces the position, and states the total with the answered count', async () => {
+      const user = userEvent.setup();
+      renderPlayer();
+
+      await screen.findByText('Question number 1?');
+
+      expect(screen.getByRole('status')).toHaveTextContent('Question 1 of 2');
+      expect(screen.getByText('0 of 2 answered')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
+      await user.click(await screen.findByRole('button', { name: 'Next' }));
+
+      await waitFor(() =>
+        expect(screen.getByRole('status')).toHaveTextContent('Question 2 of 2'),
+      );
     });
   });
 });

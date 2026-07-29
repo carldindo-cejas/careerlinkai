@@ -6,6 +6,7 @@ import {
   classStudents,
   classes,
   counselorProfiles,
+  passwordResetTokens,
   studentProfiles,
   users,
   type CounselorProfile,
@@ -404,6 +405,95 @@ export class CounselorManagementService {
    * students' history stay — removing an account is not shredding the records it produced.
    * An admin cannot arrive here for themselves: `find` only resolves counselors.
    */
+  /**
+   * Reset a counselor's password to a fresh generated temporary one (audit C2).
+   *
+   * ## Why this endpoint has to exist
+   *
+   * Before it, a counselor who forgot their password was **permanently locked out**, and the three
+   * facts that composed into that dead end were each individually reasonable:
+   *
+   *   1. `POST /auth/forgot-password` returns the reset token only when `APP_ENV === 'local'`.
+   *   2. `password_reset_tokens` stores only the SHA-256 *hash* — the plaintext is unrecoverable
+   *      by anyone, an administrator included.
+   *   3. v1 has no email channel at all (§5 defers email/SMS/push; deviation D7), so there is
+   *      nothing to deliver a link with.
+   *
+   * The forgot-password screen told the user "an administrator completes the reset and gives you
+   * the reset code", and no mechanism existed by which an administrator could obtain that code.
+   * The only real recovery was hand-written SQL against production D1.
+   *
+   * ## Why it mirrors `create` rather than the reset-token flow
+   *
+   * This deliberately reuses the §13.1 activation shape that already works: the service
+   * **generates** the password (an admin-typed one ends up in chat logs and sticky notes), returns
+   * the plaintext exactly once, persists only the `AuthGuardDO` hash, and sets
+   * `must_change_password` — so the admin-known credential dies the moment the counselor uses it.
+   * Reviving the token flow instead would have meant building an out-of-band delivery channel for
+   * a token, which is the same problem one layer removed.
+   *
+   * Every session is revoked, and both guards are cleared: a locked-out counselor whose lockout
+   * window is still open must not be handed a working password they then cannot use, and a stale
+   * forgot-password throttle must not outlive the credential it was throttling.
+   */
+  async resetPassword(
+    admin: User,
+    counselorId: string,
+    ipAddress: string | null,
+  ): Promise<{ view: CounselorView; temporaryPassword: string }> {
+    const { user, profile } = await this.find(counselorId);
+
+    const temporaryPassword = generateTemporaryPassword();
+    const guard = staffAuthGuard(this.env, user.email ?? user.id);
+    const passwordHash = await guard.hash(temporaryPassword);
+    const timestamp = now();
+
+    await this.db
+      .update(users)
+      .set({ password: passwordHash, mustChangePassword: true, updatedAt: timestamp })
+      .where(eq(users.id, user.id));
+
+    // A rotated credential must not leave old sessions alive (§38) — the same rule the
+    // self-service change-password path follows.
+    await revokeAllTokensForUser(this.db, user.id);
+
+    // Clear the login lockout: the whole point of this act is to give the counselor a way back in,
+    // and leaving a 15-minute lockout standing would defeat it for no security gain — the
+    // credential the lockout was protecting no longer exists.
+    await guard.clear();
+
+    // Any pending reset token for this email is now meaningless and must not remain usable.
+    if (user.email !== null) {
+      await this.db
+        .delete(passwordResetTokens)
+        .where(eq(passwordResetTokens.email, user.email.toLowerCase()));
+    }
+
+    // The plaintext is **never** written here — not in `newValues`, not in a log line. The audit
+    // row records that a reset happened and who did it, which is the part someone will ask about.
+    await this.audit.write({
+      action: 'COUNSELOR_PASSWORD_RESET',
+      module: MODULE,
+      userId: admin.id,
+      targetType: 'user',
+      targetId: user.id,
+      newValues: { must_change_password: true },
+      ipAddress,
+    });
+
+    const footprints = await this.footprintsFor([user.id]);
+
+    return {
+      view: {
+        user: { ...user, mustChangePassword: true, updatedAt: timestamp },
+        profile,
+        classesCount: footprints.get(user.id)?.classes ?? 0,
+        studentsCount: footprints.get(user.id)?.students ?? 0,
+      },
+      temporaryPassword,
+    };
+  }
+
   async remove(admin: User, counselorId: string, ipAddress: string | null): Promise<void> {
     const { user } = await this.find(counselorId);
     const timestamp = now();

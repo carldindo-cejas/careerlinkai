@@ -34,7 +34,14 @@ export function ResultPage() {
   const returnTo = (useLocation().state ?? null) as ResultPageState | null;
   const showReturn = returnTo !== null && returnTo.from !== paths.studentAssessments;
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading your result…</p>;
+  if (isLoading) {
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Loading your result…
+      </p>
+    );
+  }
+
   if (error || !result) return <Alert tone="danger">This result could not be loaded.</Alert>;
 
   return (
@@ -57,10 +64,17 @@ export function ResultPage() {
             how well you did. There is no pass mark.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-5">
-          {result.dimensions.map((dimension) => (
-            <DimensionBar key={dimension.code} dimension={dimension} />
-          ))}
+        <CardContent>
+          {/*
+            A real list, so a screen reader says "list, 6 items" before reading them. RIASEC has
+            six dimensions and SCCT has four; knowing how many are coming is the difference
+            between a breakdown and an open-ended recital of numbers.
+          */}
+          <ul className="flex flex-col gap-5">
+            {result.dimensions.map((dimension) => (
+              <DimensionBar key={dimension.code} dimension={dimension} />
+            ))}
+          </ul>
         </CardContent>
       </Card>
 
@@ -101,7 +115,16 @@ function Headline({ result }: { result: AssessmentResult }) {
           <p className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
             Your Holland Code
           </p>
-          <p className="font-mono text-5xl font-semibold tracking-[0.2em] text-foreground">{code}</p>
+          {/*
+            Spelled out for the screen reader, drawn as three letters for everyone else. A Holland
+            code is an initialism, and "RIA" or "SEC" is read as a word by most engines — "sek" is
+            not the student's result, and the one line on this page they are most likely to repeat
+            to a counselor is the one they would get wrong.
+          */}
+          <p className="font-mono text-5xl font-semibold tracking-[0.2em] text-foreground">
+            <span aria-hidden="true">{code}</span>
+            <span className="sr-only">{code.split('').join(' ')}</span>
+          </p>
           <p className="max-w-md text-center text-sm text-muted-foreground">
             Your three strongest interest areas, in order:{' '}
             {result.dimensions
@@ -142,7 +165,7 @@ function DimensionBar({ dimension }: { dimension: DimensionScore }) {
   const score = Number(dimension.normalized_score);
 
   return (
-    <div>
+    <li>
       <div className="mb-1 flex items-baseline justify-between gap-4">
         <span className="text-sm font-medium text-foreground">
           <span className="mr-2 font-mono text-muted-foreground">{dimension.code}</span>
@@ -150,17 +173,28 @@ function DimensionBar({ dimension }: { dimension: DimensionScore }) {
         </span>
         <span className="whitespace-nowrap text-sm text-muted-foreground">
           {score.toFixed(0)}
+          {/*
+            The card's description says "each score is out of 100" once, at the top. Read aloud
+            one dimension at a time that context is four items away, and "Investigative, 84" is
+            not a number a student can place — 84 out of what? The scale travels with the score.
+          */}
+          <span className="sr-only"> out of 100</span>
           {dimension.interpretation ? ` · ${dimension.interpretation}` : null}
         </span>
       </div>
 
-      <div className="h-2 w-full overflow-hidden border border-border bg-secondary">
+      {/* The bar is a redraw of the number beside it, so it is hidden rather than given
+          progressbar semantics that would read the same score a second time. */}
+      <div
+        aria-hidden="true"
+        className="h-2 w-full overflow-hidden border border-border bg-secondary"
+      >
         <div className="h-full bg-primary" style={{ width: `${score}%` }} />
       </div>
 
       {dimension.description ? (
         <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{dimension.description}</p>
       ) : null}
-    </div>
+    </li>
   );
 }

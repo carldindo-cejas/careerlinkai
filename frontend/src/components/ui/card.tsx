@@ -1,4 +1,4 @@
-import type { HTMLAttributes } from 'react';
+import type { ComponentPropsWithRef, HTMLAttributes } from 'react';
 
 import { Corners } from '@/components/ui/blueprint';
 import { cn } from '@/components/ui/cn';
@@ -26,9 +26,24 @@ export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElemen
   return <div className={cn('flex flex-col gap-1 p-6 pb-4', className)} {...props} />;
 }
 
-export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
+export interface CardTitleProps extends ComponentPropsWithRef<'h2'> {
+  /**
+   * The heading level this title actually occupies.
+   *
+   * `h2` is the default because that is what every existing caller was written against: a card
+   * sitting directly under the page's `h1`. It is a prop rather than a constant because a heading
+   * level is a fact about the *page*, not about the component — a card title nested inside a
+   * section that already has an `h2` is an `h3`, and a login card that is the only thing on its
+   * screen is the `h1`. Hard-coding `h2` made a screen reader's outline of the recommendations
+   * page read as six sibling sections when it is two sections of three cards, and left the two
+   * sign-in screens with no `h1` at all on mobile.
+   */
+  as?: 'h1' | 'h2' | 'h3' | 'h4';
+}
+
+export function CardTitle({ as: Heading = 'h2', className, ...props }: CardTitleProps) {
   return (
-    <h2 className={cn('text-lg font-semibold uppercase tracking-tight', className)} {...props} />
+    <Heading className={cn('text-lg font-semibold uppercase tracking-tight', className)} {...props} />
   );
 }
 

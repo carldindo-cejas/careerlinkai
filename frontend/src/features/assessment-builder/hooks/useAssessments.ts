@@ -162,3 +162,21 @@ export function useAssignAssessment() {
     },
   });
 }
+
+/**
+ * Install RIASEC and SCCT (audit F1) — admin only.
+ *
+ * Invalidates the list on success for both outcomes, not just `created: true`. If the instruments
+ * turned out to already exist, the list this admin is looking at was evidently missing them, so a
+ * refetch is exactly the right response — it is how they find out the state is not what the screen
+ * showed. Nothing else in the cache is touched: seeding creates templates and versions, and no
+ * class, roster or attempt query can be affected by it.
+ */
+export function useSeedInstruments() {
+  const invalidate = useInvalidateList();
+
+  return useMutation({
+    mutationFn: () => assessmentAdminApi.seedInstruments(),
+    onSuccess: invalidate,
+  });
+}

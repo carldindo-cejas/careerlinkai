@@ -132,6 +132,62 @@ describe('StudentAccessPage', () => {
   });
 
   /**
+   * P2-3. `aria-invalid` announces "invalid" and stops there — the sentence saying *what* was
+   * wrong lived in a neighbouring paragraph the field had no relationship to, reachable only by
+   * leaving the input and reading forward. `aria-describedby` makes the message part of the
+   * field, so it is read on focus and on every return to it.
+   *
+   * Asserted through `toHaveAccessibleDescription` rather than by looking for the attribute:
+   * what matters is that the description *resolves*, and an `aria-describedby` pointing at an id
+   * that does not exist is an attribute that is present and does nothing.
+   */
+  it('attaches each validation message to the field it is about', async () => {
+    const user = userEvent.setup();
+    renderAccessPage();
+
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/class code/i)).toHaveAccessibleDescription(
+        'Enter your class code.',
+      ),
+    );
+    expect(screen.getByLabelText(/username/i)).toHaveAccessibleDescription('Enter your username.');
+  });
+
+  /**
+   * The server's field-scoped 429 has to reach the field too, not only the general alert path.
+   * It is also the case that used to set `aria-invalid` from the client error alone, so a
+   * throttled code was announced as valid while a red message sat under it.
+   */
+  it('attaches a server field error to its field as well', async () => {
+    vi.mocked(studentAccessApi.join).mockRejectedValue(
+      new ApiRequestError('Validation failed.', 429, {
+        class_code: ['Too many failed attempts. Try again in 900 seconds.'],
+      }),
+    );
+
+    renderAccessPage();
+    await submit('HVJE-5977', 'juan.delacruz');
+
+    const code = await screen.findByLabelText(/class code/i);
+
+    await waitFor(() => expect(code).toHaveAttribute('aria-invalid', 'true'));
+    expect(code).toHaveAccessibleDescription(/too many failed attempts/i);
+  });
+
+  /**
+   * The page's own title. It was an `h2` inside a card, while the only `h1` on the screen was the
+   * marketing line on the artwork panel — which is hidden below `lg`, so on a phone this screen
+   * had no `h1` at all and its heading outline started at level two.
+   */
+  it('titles itself with the one h1 on the page', () => {
+    renderAccessPage();
+
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join your class');
+  });
+
+  /**
    * The invariant this whole screen exists to hold: a student has no password, so there is
    * nowhere on this page to type one — and no "forgot password" link either, since there is
    * nothing to forget (§38).

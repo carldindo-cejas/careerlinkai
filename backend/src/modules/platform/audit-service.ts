@@ -145,6 +145,10 @@ export type AuditAction =
   // suspended it, and who removed it are questions with exactly one honest source of answers.
   | 'COUNSELOR_CREATED'
   | 'COUNSELOR_UPDATED'
+  // Audit C2: an admin issued a counselor a fresh temporary password. Its own action rather than a
+  // COUNSELOR_UPDATED, because "who reset whose credential, and when" is the question an incident
+  // review actually asks, and it must be filterable without reading every update's diff.
+  | 'COUNSELOR_PASSWORD_RESET'
   | 'COUNSELOR_DELETED';
 
 /**
@@ -273,6 +277,10 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   // Counselor management.
   COUNSELOR_CREATED: 'CREATE',
   COUNSELOR_UPDATED: 'UPDATE',
+  // UPDATE, not CREATE: nothing new exists afterwards — an existing account's credential changed.
+  // It sits alongside STAFF_PASSWORD_CHANGED / STAFF_PASSWORD_RESET_COMPLETED, which classify the
+  // same kind of act the same way.
+  COUNSELOR_PASSWORD_RESET: 'UPDATE',
   COUNSELOR_DELETED: 'DELETE',
 };
 

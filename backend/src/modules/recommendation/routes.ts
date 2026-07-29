@@ -6,6 +6,9 @@ import {
   AI_REQUEST_LIMIT,
   AI_REQUEST_WINDOW_SECONDS,
   aiRateLimitGuard,
+  RECOMMENDATION_REGENERATE_LIMIT,
+  RECOMMENDATION_REGENERATE_WINDOW_SECONDS,
+  recommendationRegenerateGuard,
 } from '@/lib/auth-guard';
 import { successEnvelope, ApiError } from '@/lib/envelope';
 import { parseBody } from '@/lib/validation';
@@ -101,6 +104,65 @@ async function latestFor(c: Context<AppEnv>) {
 
 studentRecommendationRoutes.get('/recommendations', latestFor);
 studentRecommendationRoutes.get('/recommendations/latest', latestFor);
+
+/**
+ * `POST /student/recommendations/regenerate` (audit C4) — **the recovery path that did not exist.**
+ *
+ * Until this endpoint, `RecommendationService.generateFor()` had exactly one caller in the system:
+ * the `AssessmentCompleted` listener. `dispatch()` catches and logs every listener failure by
+ * design — correctly, since a recommendation engine having a bad day must not turn a completed
+ * assessment into a 500 while the student is sitting on the submit screen. But nothing was ever
+ * paired with that swallow. A transient D1 error during the listener left a student with both
+ * assessments SCORED and **no recommendations, permanently**, being told by their own screen to
+ * "complete both assessments" — advice they had already followed. The only escape was a counselor
+ * resetting an attempt and the student re-sitting sixty items.
+ *
+ * The same endpoint also answers the slower problem: recommendations are generated once, at submit,
+ * against the catalog as it stood that day. An administrator who adds twenty colleges next month
+ * changes nothing for any existing student. This is how they catch up.
+ *
+ * Safe to call at any time. `generateFor` is idempotent by construction (§26) — it deletes the
+ * student's whole set and rewrites it from the same inputs — so pressing this twice produces the
+ * same rows, not two sets. `null` is returned unchanged when the student genuinely has not finished
+ * both instruments, which keeps this endpoint's "nothing to show" indistinguishable from the GET's.
+ */
+studentRecommendationRoutes.post('/recommendations/regenerate', async (c) => {
+  const user = requireUser(c);
+  const db = createDatabase(c.env.DB);
+
+  // Charged on every attempt, allowed or not — this guards D1 write volume, not a failure pattern.
+  const state = await recommendationRegenerateGuard(c.env, user.id).charge(
+    RECOMMENDATION_REGENERATE_LIMIT,
+    RECOMMENDATION_REGENERATE_WINDOW_SECONDS,
+  );
+
+  if (state.locked) {
+    throw ApiError.tooManyRequests({
+      recommendations: [
+        `Recommendations were rebuilt very recently. Try again in ${state.retryAfterSeconds} seconds.`,
+      ],
+    });
+  }
+
+  const service = new RecommendationService(db);
+
+  await service.generateFor(user.id);
+
+  // Re-read rather than serializing what `generateFor` returned: it answers with *counts*, and the
+  // screen needs the hydrated set (careers, programs, the college join). Reading it back is also
+  // what makes the `null` case honest — if generation could not run, this returns exactly what the
+  // GET would, instead of a success shape describing a set that is not there.
+  const set = await service.latestFor(user.id);
+
+  return c.json(
+    successEnvelope(
+      set === null ? null : serializeRecommendationSet(set),
+      set === null
+        ? 'No recommendations could be generated yet. Complete both RIASEC and SCCT first.'
+        : 'Recommendations rebuilt from your latest results.',
+    ),
+  );
+});
 
 /**
  * `POST /student/recommendations/{id}/explain` (§20) — "request AI explanation, if not
@@ -371,3 +433,57 @@ counselorRecommendationRoutes.get('/students/:studentId/recommendations', async 
     ),
   );
 });
+
+/**
+ * `POST /counselor/students/{id}/recommendations/regenerate` (audit C4) — the staff-side recovery.
+ *
+ * The student-facing sibling above covers a student who notices the problem themselves. This covers
+ * the case that actually happens in a school: the *counselor* is the one who spots that a student
+ * who finished both instruments has no cards, and the student may not log in again for a week.
+ *
+ * The same policy as the GET beside it, run first and unchanged — a student outside this
+ * counselor's classes answers **404**, not 403, so status codes cannot be used to enumerate student
+ * ids. Regenerating is not a more privileged act than reading here: both are "this counselor's own
+ * student", and `generateFor` derives everything from that student's own results and the shared
+ * catalog. There is no input from the caller that could steer the outcome.
+ */
+counselorRecommendationRoutes.post(
+  '/students/:studentId/recommendations/regenerate',
+  async (c) => {
+    const db = createDatabase(c.env.DB);
+    const studentId = c.req.param('studentId');
+
+    await authorizeStudentRecommendations(db, requireUser(c), studentId);
+
+    // Keyed on the student, not the counselor — see `recommendationRegenerateGuard`. A counselor
+    // working through a roster is not throttled after five students; a student cannot dodge their
+    // own limit by asking staff to press it either.
+    const state = await recommendationRegenerateGuard(c.env, studentId).charge(
+      RECOMMENDATION_REGENERATE_LIMIT,
+      RECOMMENDATION_REGENERATE_WINDOW_SECONDS,
+    );
+
+    if (state.locked) {
+      throw ApiError.tooManyRequests({
+        recommendations: [
+          `This student's recommendations were rebuilt very recently. Try again in ${state.retryAfterSeconds} seconds.`,
+        ],
+      });
+    }
+
+    const service = new RecommendationService(db);
+
+    await service.generateFor(studentId);
+
+    const set = await service.latestFor(studentId);
+
+    return c.json(
+      successEnvelope(
+        set === null ? null : serializeRecommendationSet(set),
+        set === null
+          ? 'Nothing could be generated — this student has not completed both RIASEC and SCCT.'
+          : 'Recommendations rebuilt from this student’s latest results.',
+      ),
+    );
+  },
+);

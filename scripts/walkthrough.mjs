@@ -182,6 +182,155 @@ async function waitForCall(page, fragment, method, timeoutMs = 20_000) {
 const answerCount = () => apiCalls.filter((c) => c.path.includes('/answers')).length;
 
 /**
+ * The structural accessibility audit, run on each screen of the demo path (P2-3).
+ *
+ * It lives inside the walkthrough rather than in a script of its own for one reason: the player is
+ * the screen that matters most here, and reaching it needs a class, a roster, an assignment and a
+ * live attempt — which is precisely what this script has already built by the time it gets there.
+ * A separate a11y script could audit every screen except the one worth auditing.
+ *
+ * Four checks, chosen because each stands for a defect the pass actually found rather than for a
+ * WCAG clause:
+ *
+ *   - **One `h1`.** The two sign-in screens had none below `lg` — their only `h1` was the
+ *     marketing line on an artwork panel that is hidden on a phone, so the heading outline
+ *     changed with the viewport.
+ *   - **No skipped levels.** The recommendations page ran `h1` → `h2` (section) → `h2` (card), so
+ *     eight headings read as eight siblings and the page could not be skimmed by structure.
+ *   - **Every control named.** Icon-only buttons and repeated labels ("Start", "View on Google
+ *     Maps") are indistinguishable in a screen reader's element list.
+ *   - **Every image has `alt`.** Cheap, and the artwork panels carry real `alt` text worth keeping.
+ *
+ * The name computation is deliberately the *simple* one — `aria-label`, `aria-labelledby`, a
+ * `<label>`, `title`, then visible text. It is not the full accname algorithm, but it errs toward
+ * finding a name, so anything it reports as nameless genuinely is.
+ */
+async function auditA11y(page, label) {
+  const findings = await page.evaluate(() => {
+    const name = (el) => {
+      const labelledBy = el.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const text = labelledBy
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent ?? '')
+          .join(' ')
+          .trim();
+        if (text) return text;
+      }
+
+      const aria = el.getAttribute('aria-label')?.trim();
+      if (aria) return aria;
+
+      if (el.id) {
+        const forLabel = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (forLabel?.textContent?.trim()) return forLabel.textContent.trim();
+      }
+
+      const wrapping = el.closest('label');
+      if (wrapping?.textContent?.trim()) return wrapping.textContent.trim();
+
+      const title = el.getAttribute('title')?.trim();
+      if (title) return title;
+
+      return (el.innerText ?? el.textContent ?? '').trim();
+    };
+
+    // `offsetParent === null` is display:none *or* a fixed-position element. The skip link is the
+    // only fixed thing here and it has a name, so this is a safe stand-in for "on the screen".
+    const onScreen = (el) => el.offsetParent !== null || getComputedStyle(el).position === 'fixed';
+
+    const headings = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')]
+      .filter(onScreen)
+      .map((el) => ({ level: Number(el.tagName[1]), text: el.innerText.trim().slice(0, 40) }));
+
+    const skips = [];
+    let previous = 0;
+    for (const heading of headings) {
+      if (previous !== 0 && heading.level > previous + 1) {
+        skips.push(`h${previous} → h${heading.level} at "${heading.text}"`);
+      }
+      previous = heading.level;
+    }
+
+    const nameless = [...document.querySelectorAll('button, a[href], input, select, textarea')]
+      .filter(onScreen)
+      .filter((el) => el.type !== 'hidden')
+      .filter((el) => name(el) === '')
+      .map((el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}`);
+
+    const unaltedImages = [...document.querySelectorAll('img')]
+      .filter(onScreen)
+      .filter((el) => el.getAttribute('alt') === null)
+      .map((el) => el.getAttribute('src')?.slice(-40) ?? '(no src)');
+
+    return {
+      h1s: headings.filter((h) => h.level === 1).map((h) => h.text),
+      skips,
+      nameless,
+      unaltedImages,
+    };
+  });
+
+  check(
+    `[a11y] ${label}: exactly one h1`,
+    findings.h1s.length === 1,
+    findings.h1s.join(' | ') || 'none',
+  );
+  check(`[a11y] ${label}: no skipped heading levels`, findings.skips.length === 0, findings.skips.join('; '));
+  check(
+    `[a11y] ${label}: every control has an accessible name`,
+    findings.nameless.length === 0,
+    findings.nameless.join(', '),
+  );
+  check(
+    `[a11y] ${label}: every image has alt text`,
+    findings.unaltedImages.length === 0,
+    findings.unaltedImages.join(', '),
+  );
+}
+
+/**
+ * The skip link (P2-3), checked the only way that means anything: by pressing Tab.
+ *
+ * The sidebar is nine links rendered before the page content on every signed-in route, so without
+ * this a keyboard user tabs the whole navigation again on every screen. It is `sr-only` until
+ * focused, which is exactly the kind of thing that reads as correct in the source and is invisible
+ * in the browser — a `focus:` variant that loses the cascade leaves a focused element nobody can
+ * see, which is worse than having no skip link at all.
+ */
+async function auditSkipLink(page, label) {
+  await page.evaluate(() => document.body.focus());
+  await page.keyboard.press('Tab');
+
+  const focused = await page.evaluate(() => {
+    const el = document.activeElement;
+    if (!el) return null;
+
+    const box = el.getBoundingClientRect();
+
+    return {
+      text: (el.innerText ?? '').trim(),
+      href: el.getAttribute('href'),
+      // The sr-only clip is 1×1; anything a sighted keyboard user can actually see is bigger.
+      visible: box.width > 20 && box.height > 10,
+    };
+  });
+
+  check(
+    `[a11y] ${label}: the first Tab reaches a visible skip link`,
+    focused?.href === '#main-content' && focused.visible === true,
+    `${focused?.text ?? 'nothing focused'} (${focused?.visible ? 'visible' : 'still clipped'})`,
+  );
+
+  await page.keyboard.press('Enter');
+
+  check(
+    `[a11y] ${label}: activating it moves focus into <main>`,
+    await page.evaluate(() => document.activeElement?.id === 'main-content'),
+  );
+}
+
+/**
  * Answer every item of an attempt through the UI, one click per question.
  *
  * **Each click waits for its own answer POST to land before the next one is made.** The player
@@ -191,16 +340,22 @@ const answerCount = () => apiCalls.filter((c) => c.path.includes('/answers')).le
  * twice and the one behind it never at all, so the run POSTed the right *number* of answers and the
  * server still refused the submit with "1 required question(s) are still unanswered". The server was
  * right. Waiting on the POST, rather than on a stopwatch, removes the race instead of hiding it.
+ *
+ * **The options are `radio`, not `button` (P2-3).** They were five `<button aria-pressed>` elements
+ * until the accessibility pass made them a proper radio group — one tab stop, arrow keys, and
+ * "selected, 3 of 5" instead of "pressed". This script asks for them by the role a student's
+ * screen reader sees, so a regression in that semantic is a red walkthrough rather than a silent
+ * loss nobody without a screen reader would notice.
  */
 async function answerEveryItem(page, questions, labelFor) {
   let answered = 0;
 
-  for (const question of questions) {
+  for (const [index, question] of questions.entries()) {
     const before = answerCount();
 
     try {
       await page
-        .getByRole('button', { name: labelFor(question), exact: true })
+        .getByRole('radio', { name: labelFor(question), exact: true })
         .first()
         .click({ timeout: 10_000 });
     } catch {
@@ -215,7 +370,22 @@ async function answerEveryItem(page, questions, labelFor) {
     if (answerCount() === before) break; // The click produced no answer — stop rather than skew.
 
     answered += 1;
-    await page.waitForTimeout(150); // Let the next question paint before clicking into it.
+
+    /**
+     * **Advance explicitly.** The player used to auto-advance on a 150 ms `setTimeout`; that was
+     * removed deliberately, because two taps inside one timeout window queued two advances and a
+     * student could skip a question they never saw. This script was written against the old
+     * behaviour and still assumed it — so it clicked the same first question sixty times, POSTed
+     * sixty answers to one item, and then found no "Finish assessment" button because the player
+     * had never left question one. Sixty green answer calls and a red finish is exactly what that
+     * looks like from outside.
+     *
+     * The last question is deliberately left on screen: finishing is the caller's business.
+     */
+    if (index < questions.length - 1) {
+      await page.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 10_000 });
+      await page.waitForTimeout(150); // Let the next question paint before clicking into it.
+    }
   }
 
   return answered;
@@ -268,12 +438,19 @@ function makeGuidancePdf(lines) {
  */
 async function activateStaff(page, email, newPassword, who, door) {
   await page.goto(`${APP}${door}`);
+
+  // The staff sign-in card, audited on the counselor's door only — it is the first screen of the
+  // demo path, and the admin's door renders the same shared component with different copy.
+  if (door === '/login') {
+    await auditA11y(page, 'counselor login');
+  }
+
   await page.locator('#email').fill(email);
   await page.locator('#password').fill(TEMP_PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
 
   // The temp password must NOT open the app — it must land on the rotation gate and nothing else.
-  await page.waitForURL('**/change-password', { timeout: 30_000 });
+  await page.waitForURL('**/change-password', { timeout: NAV_TIMEOUT });
   check(`[${who}] the temporary password opens only /change-password`, true);
   await shot(page, `${who}-forced-rotation`);
 
@@ -285,7 +462,7 @@ async function activateStaff(page, email, newPassword, who, door) {
   // Changing a password revokes every session (§38), so the client must be signed out — and
   // signed out *at this role's own door*, since each door refuses the other roles and
   // /admin-login is unlinked. Landing an admin on /login would be a lockout.
-  await page.waitForURL((u) => u.pathname === door, { timeout: 30_000 });
+  await page.waitForURL((u) => u.pathname === door, { timeout: NAV_TIMEOUT });
   check(`[${who}] rotating the password revokes the session and returns to ${door}`, true);
 
   // The temp password must now be dead.
@@ -303,7 +480,7 @@ async function activateStaff(page, email, newPassword, who, door) {
   await page.locator('#password').fill(newPassword);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.waitForURL((u) => u.pathname !== door && !u.pathname.includes('change-password'), {
-    timeout: 30_000,
+    timeout: NAV_TIMEOUT,
   });
   check(
     `[${who}] the rotated password signs in and clears the gate`,
@@ -320,7 +497,34 @@ async function tokenOf(page) {
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: !HEADED });
 
-console.log(`\napp: ${APP}\napi: ${API}\n`);
+/**
+ * The 30 s Playwright default is fine against localhost and too tight against a deployed Worker.
+ *
+ * Run against staging, this script failed three times at three *different* `waitForURL` calls,
+ * each of which passed in under two seconds when re-run on its own — the signature of latency, not
+ * of a broken step. The remote path adds a round trip to the APAC colo, a Durable Object cold start
+ * on `AuthGuardDO`, and a 600,000-iteration PBKDF2 verify that the Worker has to chain in six calls
+ * under Cloudflare's 100,000-per-call ceiling, all while two browser contexts are live.
+ *
+ * Raised rather than retried: a retry loop would hide a step that had genuinely become slow, which
+ * is exactly the kind of regression a walkthrough is supposed to notice.
+ */
+const NAV_TIMEOUT = Number(flag('timeout', '90000'));
+
+// Applied at the source rather than at each of the dozen call sites, so a context created later
+// cannot quietly miss it.
+const newContext = browser.newContext.bind(browser);
+
+browser.newContext = async (...options) => {
+  const context = await newContext(...options);
+
+  context.setDefaultTimeout(NAV_TIMEOUT);
+  context.setDefaultNavigationTimeout(NAV_TIMEOUT);
+
+  return context;
+};
+
+console.log(`\napp: ${APP}\napi: ${API}\ntimeout: ${NAV_TIMEOUT} ms\n`);
 
 // ══════════════════════════════════════════════════════════════════════════════════════
 // A. ADMIN — activation, the RIASEC/SCCT instruments, and the academic catalog (Phase 0, 2)
@@ -355,7 +559,7 @@ await admin.getByRole('button', { name: 'Add college' }).click();
 await admin.locator('#college-name').fill(`Walkthrough University ${STAMP}`);
 await admin.locator('#college-description').fill('Created by the Phase 0-3 walkthrough.');
 await admin.locator('form').getByRole('button', { name: 'Add college' }).click();
-await admin.waitForURL(/\/admin\/colleges\/[0-9a-f-]{36}/, { timeout: 30_000 });
+await admin.waitForURL(/\/admin\/colleges\/[0-9a-f-]{36}/, { timeout: NAV_TIMEOUT });
 await admin.waitForTimeout(1500);
 const collegeUrl = admin.url();
 check(
@@ -387,8 +591,12 @@ await admin.goto(`${APP}/admin/careers`);
 await admin.getByRole('button', { name: 'Add career' }).click();
 await admin.locator('#career-title').fill(`Software Engineer ${STAMP}`);
 await admin.locator('#career-riasec').fill('iec'); // lowercase in — uppercase stored
-await admin.locator('#career-salary').fill('PHP 40,000 - 120,000/mo');
-await admin.locator('#career-outlook').fill('High demand');
+// Migration 0013 split the old free-text `#career-salary` into two numeric fields and turned
+// `#career-outlook` from a text input into a lookup <select>. This script still filled the old
+// shapes and had not been run since, so it timed out on a field that no longer exists.
+await admin.locator('#career-salary-min').fill('40000');
+await admin.locator('#career-salary-max').fill('120000');
+await admin.locator('#career-outlook').selectOption({ label: 'High Demand' });
 await admin.locator('form').getByRole('button', { name: 'Add career' }).click();
 await admin.waitForTimeout(3500);
 
@@ -443,9 +651,23 @@ await counselor.goto(`${APP}/counselor/classes`);
 await counselor.getByRole('button', { name: 'New class' }).click();
 await counselor.locator('#name').fill(`Grade 12 STEM A — Walkthrough ${STAMP}`);
 await counselor.locator('#academic_year').fill('2026-2027');
-await counselor.locator('#grade_level').fill('Grade 12');
+// Migration 0017 replaced the free-text `#grade_level` box with two lookup <select>s, because
+// "Gr 12" typed into a text field produced a profile value §27 could not read. Same staleness as
+// the career form above — this script had not been run since either change.
+//
+// The strand option's visible text is `name (description)`, so it is matched on its value rather
+// than an exact label a copy edit would break.
+await counselor.locator('#grade_level_id').selectOption({ label: 'Grade 12' });
+await counselor
+  .locator('#shs_strand_id')
+  .selectOption(
+    await counselor
+      .locator('#shs_strand_id option', { hasText: /^Academic/ })
+      .first()
+      .getAttribute('value'),
+  );
 await counselor.getByRole('button', { name: 'Create class' }).click();
-await counselor.waitForURL(/\/counselor\/classes\/[0-9a-f-]{36}/, { timeout: 30_000 });
+await counselor.waitForURL(/\/counselor\/classes\/[0-9a-f-]{36}/, { timeout: NAV_TIMEOUT });
 await counselor.waitForTimeout(2000);
 
 const classId = counselor.url().split('/').pop();
@@ -464,7 +686,7 @@ await shot(counselor, 'counselor-class');
 // ── Roster: preview → edit → confirm ──────────────────────────────────────────────────
 await counselor.locator('#names').fill('Juan Dela Cruz\nJuan Dela Cruz\nJosé Peña\nMadonna');
 await counselor.getByRole('button', { name: 'Generate usernames' }).click();
-await counselor.waitForSelector('#username-0', { timeout: 30_000 });
+await counselor.waitForSelector('#username-0', { timeout: NAV_TIMEOUT });
 
 const proposed = [];
 for (let i = 0; i < 4; i += 1) {
@@ -510,7 +732,7 @@ await shot(counselor, 'counselor-roster-confirmed');
 const riasecOption = counselor.locator('#assessment option', { hasText: 'RIASEC' }).first();
 // `attached`, not the default `visible`: an <option> is never "visible" to Playwright, so waiting
 // on visibility here waits forever on an element that is already there.
-await riasecOption.waitFor({ state: 'attached', timeout: 30_000 });
+await riasecOption.waitFor({ state: 'attached', timeout: NAV_TIMEOUT });
 const riasecVersionId = await riasecOption.getAttribute('value');
 check(
   '[counselor] the picker offers RIASEC because it has a PUBLISHED version',
@@ -547,6 +769,30 @@ instrument(student, 'student');
 // username, removed enrolment — answers with the *same bytes* (§38); the real reason goes only to
 // the audit log.
 await student.goto(`${APP}/join`);
+
+/**
+ * The field-level message, checked against an **empty** submit rather than a wrong code (P2-3).
+ *
+ * The wrong-code path deliberately produces no field error at all — §38's generic 401 carries one
+ * message for all six failure modes and attaches it to neither field, precisely so the endpoint
+ * cannot be used to work out which half was wrong. The client-side "Enter your class code." is
+ * therefore the only message this screen ever puts *on* a field, and it is the one that has to be
+ * reachable: `aria-invalid` announces "invalid" and stops there.
+ */
+await student.getByRole('button', { name: 'Sign in' }).click();
+await student.waitForTimeout(1000);
+check(
+  '[a11y] join: the validation message is attached to the field, not merely printed beside it',
+  await student.evaluate(() => {
+    const input = document.querySelector('#class_code');
+    const ids = input?.getAttribute('aria-describedby')?.split(/\s+/) ?? [];
+
+    // A describedby pointing at an id that does not exist is an attribute that is present and
+    // does nothing — so this resolves the reference rather than asserting the attribute exists.
+    return ids.length > 0 && ids.every((id) => Boolean(document.getElementById(id)?.textContent));
+  }),
+);
+
 await student.locator('#class_code').fill('ZZZZ-9999');
 await student.locator('#username').fill('juan.delacruz');
 await student.getByRole('button', { name: 'Sign in' }).click();
@@ -560,10 +806,14 @@ check(
 );
 await shot(student, 'student-wrong-code');
 
+// The first screen of the demo path, audited with the generic 401 on it — so the alert is in the
+// tree and the heading outline is the one a student actually meets, not that of a pristine form.
+await auditA11y(student, 'join');
+
 await student.locator('#class_code').fill(joinCode);
 await student.locator('#username').fill('juan.delacruz');
 await student.getByRole('button', { name: 'Sign in' }).click();
-await student.waitForURL('**/student**', { timeout: 30_000 });
+await student.waitForURL('**/student**', { timeout: NAV_TIMEOUT });
 await student.waitForTimeout(2500);
 check('[student] joins with only a class code and a username', true, student.url().replace(APP, ''));
 
@@ -596,6 +846,11 @@ check(
 );
 await shot(student, 'student-dashboard');
 
+// The first screen inside the app shell, so this is where the skip link is checked. Once per run
+// is enough — it is rendered by AppShell, which every signed-in route composes.
+await auditA11y(student, 'student dashboard');
+await auditSkipLink(student, 'student dashboard');
+
 await student.goto(`${APP}/student/profile`);
 await student.waitForTimeout(2500);
 check(
@@ -607,6 +862,9 @@ check(
 // ── The player ────────────────────────────────────────────────────────────────────────
 await student.goto(`${APP}/student/assessments`);
 await student.waitForTimeout(2500);
+// The action buttons read "Start" but are *named* "Start <assessment title>" (P2-3): two
+// assignments meant two buttons called "Start", which is two identical rows in a screen reader's
+// element list. Matched loosely so this keeps working either way.
 await student
   .getByRole('button', { name: /start|continue|resume/i })
   .first()
@@ -633,6 +891,54 @@ check(
 );
 await shot(student, 'student-player');
 
+/**
+ * The player's accessibility, on a live 60-item attempt (P2-3).
+ *
+ * This is where every keyboard and screen-reader cost in the product is multiplied by sixty, and
+ * the three checks below are the three things that were wrong: five tab stops per question instead
+ * of one, an option control announced as five independent toggles rather than one answer out of
+ * five, and a question that changed with nothing said about it.
+ *
+ * Asked through Chrome's own accessibility tree — `getByRole('radiogroup')` resolves the role and
+ * the `aria-labelledby` name the way a screen reader does, which is the whole point of checking it
+ * here rather than only in jsdom.
+ */
+await auditA11y(student, 'player');
+
+const firstQuestionText = startCall?.body?.data?.questions?.[0]?.question_text ?? '';
+check(
+  '[a11y] player: the options are one radio group, named by the question',
+  (await student.getByRole('radiogroup', { name: firstQuestionText }).count()) === 1,
+  firstQuestionText.slice(0, 50),
+);
+
+check(
+  '[a11y] player: the group is one tab stop, not one per option',
+  await student.evaluate(() => {
+    const radios = [...document.querySelectorAll('[role="radio"]')];
+
+    return (
+      radios.length > 1 && radios.filter((el) => el.getAttribute('tabindex') === '0').length === 1
+    );
+  }),
+);
+
+// Arrows move *and* select, as they do in a native radio group — the behaviour a student who has
+// ever filled in a web form already has in their fingers.
+await student.locator('[role="radio"]').first().focus();
+await student.keyboard.press('ArrowDown');
+await student.waitForTimeout(500);
+check(
+  '[a11y] player: the arrow keys move between options and select as they go',
+  await student.evaluate(() => {
+    const radios = [...document.querySelectorAll('[role="radio"]')];
+
+    return (
+      document.activeElement === radios[1] && radios[1]?.getAttribute('aria-checked') === 'true'
+    );
+  }),
+);
+
 // Answers shaped so the result is hand-computable: Strongly Agree on every Investigative item,
 // Agree on every Artistic one, Strongly Disagree everywhere else → Holland Code "IAR", with
 // Investigative at exactly 100.00. A scoring engine checked only against itself proves nothing.
@@ -654,12 +960,15 @@ check(
   answerCalls.length >= 60 && answerCalls.every((c) => c.status === 200),
   `${answerCalls.length} calls, ${answerCalls.filter((c) => c.status !== 200).length} failed`,
 );
+// The player was redesigned to "one screen, one way to finish": the remaining-count no longer
+// names the total ("All questions answered", not "All 60 questions answered"), and the second
+// submit button was removed in favour of a single "Finish assessment" on the last question.
 check(
-  '[student] the UI reports all 60 answered and enables submit',
-  /All 60 questions answered/i.test(await student.locator('body').innerText()),
+  '[student] the UI reports everything answered and enables finish',
+  /All questions answered/i.test(await student.locator('body').innerText()),
 );
 
-await student.getByRole('button', { name: 'Submit assessment' }).click();
+await student.getByRole('button', { name: 'Finish assessment' }).click();
 
 const submitCall = await waitForCall(student, '/submit', 'POST');
 check(
@@ -693,6 +1002,14 @@ check('[student] the result screen renders the Holland Code', /IAR/.test(resultT
 check('[student] the result screen renders the per-dimension breakdown', /Investigative/i.test(resultText));
 await shot(student, 'student-result');
 
+await auditA11y(student, 'result');
+check(
+  '[a11y] result: the Holland Code is spelled out for a screen reader',
+  // Most engines pronounce "IAR" as a word, and this is the one line a student repeats to their
+  // counselor. The drawn version is aria-hidden; the spelled one is what is announced.
+  /I A R/.test(await student.locator('body').innerText()),
+);
+
 // ══════════════════════════════════════════════════════════════════════════════════════
 // D. PHASE 4 — SCCT, then the deterministic recommendations (§11 v1.2, §26, §27)
 // ══════════════════════════════════════════════════════════════════════════════════════
@@ -723,7 +1040,7 @@ await shot(student, 'student-recommendations-not-yet');
 const scctOption = counselor.locator('#assessment option', { hasText: 'SCCT' }).first();
 await counselor.goto(`${APP}/counselor/classes/${classId}`);
 await counselor.waitForTimeout(3000);
-await scctOption.waitFor({ state: 'attached', timeout: 30_000 });
+await scctOption.waitFor({ state: 'attached', timeout: NAV_TIMEOUT });
 const scctVersionId = await scctOption.getAttribute('value');
 
 await counselor.locator('#assessment').selectOption(scctVersionId);
@@ -738,10 +1055,12 @@ check(
 
 // --- SCCT ---------------------------------------------------------------------------------
 // RIASEC's card now offers "See my result", so the only Start button on this page is SCCT's.
+// `^Start\b` rather than `^Start$`: the accessible name is "Start <assessment title>" since P2-3,
+// while the *visible* label is still the single word.
 await student.goto(`${APP}/student/assessments`);
 await student.waitForTimeout(3000);
 const startsBefore = apiCalls.filter((c) => c.path.includes('/start')).length;
-await student.getByRole('button', { name: /^Start$/i }).first().click();
+await student.getByRole('button', { name: /^Start\b/i }).first().click();
 
 // Wait for *this* start, not the RIASEC one still sitting in the array.
 const deadline = Date.now() + 20_000;
@@ -761,7 +1080,7 @@ const scctAnswered = await answerEveryItem(student, scctQuestions, () => 'Agree'
 check('[student] answered all 30 SCCT items', scctAnswered === 30, `${scctAnswered} answered`);
 
 const submitsBefore = apiCalls.filter((c) => c.path.includes('/submit')).length;
-await student.getByRole('button', { name: 'Submit assessment' }).click();
+await student.getByRole('button', { name: 'Finish assessment' }).click();
 
 const submitDeadline = Date.now() + 25_000;
 while (
@@ -832,6 +1151,10 @@ check(
   /no AI decided/i.test(recsText),
 );
 await shot(student, 'student-recommendations');
+
+// The end of the demo path, and the densest screen on it: two ranked sections of cards, each card
+// carrying a score, a rank and two disclosures. The heading nesting is what makes it skimmable.
+await auditA11y(student, 'recommendations');
 
 // ══════════════════════════════════════════════════════════════════════════════════════
 // E. PHASE 5a — knowledge upload through the browser, then a grounded AI explanation

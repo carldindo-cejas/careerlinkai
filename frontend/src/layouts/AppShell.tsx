@@ -68,6 +68,27 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
 
   return (
     <div className="flex min-h-screen bg-background">
+      {/*
+        The skip link, first in the DOM and visible only while focused.
+
+        The sidebar is eight or nine navigation links, and it is rendered before the page content
+        on every route in this shell — so without this, a keyboard or screen-reader user tabs
+        through the whole navigation again on every single screen. On the assessment player, which
+        a student reaches sixty times in a row, that is the difference between the product being
+        usable without a mouse and merely being operable.
+      */}
+      <a
+        href="#main-content"
+        // `fixed`, not `absolute`: nothing here establishes a containing block, so an absolutely
+        // positioned link is placed against the document and scrolls away with it. The link is
+        // normally the first thing Tab reaches, but it is also what Shift+Tab reaches from the
+        // top of a scrolled page — and landing on an invisible focused element is the bug this
+        // whole control exists to prevent.
+        className="sr-only rounded-none bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50"
+      >
+        Skip to main content
+      </a>
+
       {/* Desktop sidebar */}
       <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col bg-sidebar lg:flex">
         {sidebar}
@@ -126,7 +147,10 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
             reads as a property of the session rather than as the first card on a page. */}
         {banner}
 
-        <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">
+        {/* `tabIndex={-1}` so the skip link above can actually put focus here. A bare `#id` target
+            that is not focusable moves the *scroll* position and leaves the focus ring back on the
+            link, so the next Tab returns to the navigation the student just skipped. */}
+        <main id="main-content" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 p-4 focus-visible:outline-none sm:p-6">
           <Outlet />
         </main>
       </div>

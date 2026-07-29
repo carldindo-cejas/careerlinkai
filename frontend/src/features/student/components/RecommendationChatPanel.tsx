@@ -59,7 +59,18 @@ export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendat
         </Button>
 
         {open ? (
-          <div className="fixed inset-0 z-50 flex flex-col bg-black/50" role="dialog" aria-modal="true">
+          <div
+            className="fixed inset-0 z-50 flex flex-col bg-black/50"
+            role="dialog"
+            aria-modal="true"
+            // A dialog with no name is announced as "dialog" and nothing else. Escape closes it
+            // because a modal that can only be dismissed by finding the X is a trap for anyone
+            // navigating by keyboard.
+            aria-label="Ask about my results"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setOpen(false);
+            }}
+          >
             <button
               type="button"
               className="flex-1"
@@ -166,7 +177,20 @@ function ChatSurface({
         </div>
       </header>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
+      {/*
+        `role="log"` — a transcript that grows at the bottom, which is precisely what the role
+        describes, and it carries an implicit polite live region. Without it an assistant reply
+        arrives in total silence: the student sends a question, the panel scrolls itself, and
+        nothing tells them the answer is there. It sits on this container rather than on the `<ul>`
+        inside it because the `<ul>` does not exist until the first message lands, and a live
+        region that is *mounted* holding content announces nothing.
+      */}
+      <div
+        ref={scrollRef}
+        role="log"
+        aria-label="Conversation"
+        className="flex-1 overflow-y-auto px-4 py-4"
+      >
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading your conversation…</p>
         ) : messages.length === 0 ? (

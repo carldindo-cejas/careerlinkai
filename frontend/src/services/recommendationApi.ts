@@ -41,6 +41,35 @@ export const recommendationApi = {
       ),
     );
   },
+
+  /**
+   * Rebuild my own recommendations from my latest results (audit C4).
+   *
+   * Two situations need this, and neither had any recovery before it existed. The first is a
+   * generation that failed: recommendations are produced by an `AssessmentCompleted` listener whose
+   * exceptions are deliberately swallowed (a failing listener must not turn a completed assessment
+   * into a 500), so a transient error left a student with both assessments done and no cards, being
+   * told to "complete both assessments". The second is slower and certain — the set is computed
+   * once, against the catalog as it was that day, so every college added afterwards is invisible to
+   * every existing student until this runs.
+   *
+   * Idempotent on the server: it replaces the student's whole set rather than appending, so
+   * pressing it twice is indistinguishable from pressing it once. Rate-limited per student.
+   */
+  regenerateMine(): Promise<RecommendationSet | null> {
+    return unwrap(
+      httpClient.post<ApiSuccess<RecommendationSet | null>>('/student/recommendations/regenerate'),
+    );
+  },
+
+  /** The same, performed by a counselor for one of their own students. Same 404-not-403 rule. */
+  regenerateForStudent(studentId: string): Promise<RecommendationSet | null> {
+    return unwrap(
+      httpClient.post<ApiSuccess<RecommendationSet | null>>(
+        `/counselor/students/${studentId}/recommendations/regenerate`,
+      ),
+    );
+  },
 };
 
 /**

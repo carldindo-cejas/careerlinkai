@@ -133,3 +133,19 @@ export function useDeleteCounselor() {
     onSuccess: invalidate,
   });
 }
+
+/**
+ * Issue a counselor a fresh temporary password (audit C2).
+ *
+ * Invalidated like the other three because the reset flips `must_change_password` back on, and the
+ * list renders account state — leaving it stale would show an account as settled while it is
+ * waiting on a rotation.
+ */
+export function useResetCounselorPassword() {
+  const invalidate = useInvalidateCounselors();
+
+  return useMutation({
+    mutationFn: (id: string) => counselorManagementApi.resetPassword(id),
+    onSuccess: invalidate,
+  });
+}

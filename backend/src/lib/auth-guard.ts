@@ -47,6 +47,23 @@ export const FORGOT_PASSWORD_LIMIT = 3;
 export const FORGOT_PASSWORD_WINDOW_SECONDS = 60 * 60;
 
 /**
+ * Audit C4: 5 recommendation regenerations per student per 10 minutes. A usage limiter — every
+ * attempt is charged, allowed or not.
+ *
+ * Regeneration calls no model and costs no neurons, so this is not an AI budget: it guards **D1**.
+ * One run scans the rankable catalog and then replaces the student's whole set in a batched
+ * delete-plus-insert, which on the Free plan's daily row limits is the most expensive thing a
+ * student can trigger at will. Five in ten minutes is far above any legitimate use (the button
+ * exists for the rare case where generation failed) and far below what would matter.
+ *
+ * Deliberately **not** the AI limiter's counter, for the reason the forgot-password throttle is not
+ * the login lockout's: sharing an instance would let one feature's usage lock a user out of an
+ * unrelated one.
+ */
+export const RECOMMENDATION_REGENERATE_LIMIT = 5;
+export const RECOMMENDATION_REGENERATE_WINDOW_SECONDS = 10 * 60;
+
+/**
  * One instance per staff account (§38 v1.5): the object that derives the account's hash is
  * the object that counts its failures, so the count is exact and brute force against one
  * account is serialized by construction.
@@ -83,4 +100,20 @@ export function aiRateLimitGuard(env: Env, userId: string): DurableObjectStub<Au
  */
 export function forgotPasswordGuard(env: Env, email: string): DurableObjectStub<AuthGuardDO> {
   return env.AUTH_DO.get(env.AUTH_DO.idFromName(`forgot:${email.trim().toLowerCase()}`));
+}
+
+/**
+ * One instance per **student** for the regeneration throttle (audit C4), keyed on whose
+ * recommendations are being rebuilt rather than on who asked.
+ *
+ * That distinction is the point. A counselor regenerating for a student charges the *student's*
+ * counter, so a counselor with sixty students is not throttled after five of them — while a student
+ * cannot escape their own limit by getting a counselor to press the button for them either. The
+ * resource being protected is the work done per student, so the student is the correct key.
+ */
+export function recommendationRegenerateGuard(
+  env: Env,
+  studentId: string,
+): DurableObjectStub<AuthGuardDO> {
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`regen:${studentId}`));
 }

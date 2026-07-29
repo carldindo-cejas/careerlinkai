@@ -1,6 +1,26 @@
 # Production Readiness Requirements
 
-**Audited:** 2026-07-25 · **Current live prod code:** `careerlinkai` Worker last deployed 2026-04-25 (Initial Commit era — Phases A–H absent).
+**Audited:** 2026-07-25 · **Revised:** 2026-07-28 (full-stack audit — see [`AUDIT-2026-07-28.md`](AUDIT-2026-07-28.md)) · **Current live prod code:** `careerlinkai` Worker last deployed 2026-04-25 (Initial Commit era — Phases A–H absent).
+
+> **2026-07-28 corrections.** Three things in the 07-25 version of this file were wrong or missing
+> and would have produced a broken production database if followed literally:
+>
+> 1. **The migration count was stale** — it said "all 13 migrations (0001–0013)". There are **19**
+>    (`0001`–`0019`). `wrangler d1 migrations apply` applies whatever is pending, so the command was
+>    always right; the prose would have led someone to stop verifying six migrations early.
+> 2. **The catalog seed named here was the demo fixture.** `seeds/0002_academic_catalog.sql` holds
+>    5 colleges, 10 careers and 16 programs, and §27 keeps a top **ten** — so seeding production
+>    with it gives every student the entire career catalog, reordered. Production must be seeded
+>    with **`seeds/0004_academic_catalog_expansion.sql`** (20 HEIs, 68 careers, 48 canonical
+>    programs, 309 offerings, 933 mappings). See audit finding C1.
+> 3. **Installing RIASEC and SCCT was not listed at all.** A freshly migrated database has **no
+>    assessments**. The instruments arrive only via
+>    `POST /api/v1/admin/assessment-templates/seed-instruments`, which now has an
+>    "Install RIASEC & SCCT" button on the admin Assessments page (audit finding F1). Without this
+>    step the deployment is live, signed-in-able, and unable to assess anybody.
+>
+> The `db:seed:*:production` scripts that this file listed as a to-do now exist in
+> `backend/package.json`.
 
 This file records what stands between the current repo state and a working production
 deploy at `careerlinkai.online`. Staging (`careerlinkai-staging`) is fully deployed and
@@ -27,27 +47,47 @@ npx wrangler queues create careerlinkai-ai-dlq
 ```
 
 ### 2. Production D1 has zero migrations applied
-All 13 migrations (0001–0013) are pending on `CareerLinkAI_Main`. The database has no tables.
+All **19** migrations (0001–0019) are pending on `CareerLinkAI_Main`. The database has no tables.
 
 ```bash
 npm run db:migrate:production   # wrangler d1 migrations apply CareerLinkAI_Main --remote --env production
 ```
 
+Verify afterwards that 19 applied — not 13, which is what the previous revision of this file said:
+
+```bash
+npx wrangler d1 migrations list CareerLinkAI_Main --remote --env production   # expect: no pending
+```
+
 ### 3. Production database is not seeded
-After migrating: staff accounts, academic catalog, AI policy. Staff **must** go through the
-bootstrap script (it derives PBKDF2 hashes at run time — never the committed
-`seeds/0001_staff_accounts.sql`, which publishes the password it encodes). No `:production`
-seed npm scripts exist yet, so catalog/ai-policy run directly.
+After migrating: staff accounts, academic catalog, AI policy.
+
+Staff **must** go through the bootstrap script (it derives PBKDF2 hashes at run time — never the
+committed `seeds/0001_staff_accounts.sql`, which publishes the password it encodes).
+
+The catalog seed is **0004, not 0002**. `0002` is the 10-career demo fixture; because §27 keeps a
+top ten, seeding production with it hands every student the whole catalog in a different order and
+the recommendation engine appears to do nothing (audit C1). `0004` is the real catalog and is
+idempotent, so re-running it is safe.
 
 ```bash
 node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
-npx wrangler d1 execute CareerLinkAI_Main --remote --env production --file=./seeds/0002_academic_catalog.sql
-npx wrangler d1 execute CareerLinkAI_Main --remote --env production --file=./seeds/0003_ai_policy.sql
+npm run db:seed:catalog:full:production    # seeds/0004 — 20 HEIs, 68 careers, 48 programs
+npm run db:seed:ai-policy:production       # seeds/0003
 ```
 
-Bootstrap prints the temp password **once**; accounts land with `must_change_password = 1`
-so first login forces rotation. To-do: add `db:seed:*:production` scripts to
-`backend/package.json` mirroring the `:staging` ones.
+Bootstrap prints the temp password **once**; accounts land with `must_change_password = 1` so first
+login forces rotation.
+
+### 3b. RIASEC and SCCT are not installed by any seed
+The two curated instruments are created through the real `AssessmentBuilderService` (§57 requires
+them to pass the same confirmation gate a counselor does), so no `.sql` file can install them — a
+D1 binding exists only inside the Worker. **A migrated, seeded production still has zero
+assessments until this runs**, and every student's assessment list is empty.
+
+Sign in as the administrator after deploying and press **Install RIASEC & SCCT** on
+`/admin/assessment-templates`. It is idempotent. (Equivalent to
+`POST /api/v1/admin/assessment-templates/seed-instruments` with an admin bearer token.)
 
 ### 4. ~~Frontend has no production build target~~ — RESOLVED by the single-Worker consolidation
 The blocker was real and is now structurally gone rather than filled in: there is no
@@ -97,17 +137,34 @@ ingestion step if grounded explanations are required in prod.
 ---
 
 ## Recommended production cutover order
+
+Corrected 2026-07-28. Steps 4 and 7 are new; step 6 previously named the wrong seed, and the old
+steps 4/6 ("add frontend .env.production", "deploy frontend to prod Pages") are gone — the
+single-Worker consolidation removed the separate frontend artifact entirely.
+
 ```
 1. npx wrangler queues create careerlinkai-default-dlq
    npx wrangler queues create careerlinkai-ai-dlq
-2. npm run db:migrate:production
-3. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
-   seed catalog (0002) + ai-policy (0003) on prod
-4. add frontend .env.production + build/deploy:production scripts
-5. npm run deploy:production            # backend Worker
-6. build + deploy frontend to prod Pages
-7. smoke-test https://careerlinkai.online/api/v1/health, then login + forced rotation
+2. npm run db:migrate:production                   # 19 migrations, not 13
+3. npx wrangler d1 migrations list CareerLinkAI_Main --remote --env production   # expect none pending
+4. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
+                                                   # prints the temp password ONCE — capture it
+5. npm run db:seed:catalog:full:production         # seeds/0004 (NOT 0002 — see blocker 3)
+6. npm run db:seed:ai-policy:production
+7. npm run deploy:production                       # publishes SPA + API in one versioned deploy
+8. curl https://careerlinkai.online/api/v1/health  # expect {"environment":"production"}
+9. Sign in as admin → forced password rotation → /admin/assessment-templates →
+   "Install RIASEC & SCCT"                         # without this there are no assessments at all
+10. End-to-end smoke: create a class, join as a student, complete RIASEC + SCCT,
+    confirm recommendations appear and differ from another student's profile
 ```
 
-Steps 1 and 4 (create DLQs, add missing scripts) are safe prep that touch nothing live and
-can be done ahead of time, leaving a clean one-command-per-tier cutover for when you decide.
+Steps 1–3 are safe prep that touch nothing live and can be done ahead of time, leaving a clean
+cutover for when you decide. Step 10 is the one that actually proves the deployment: steps 8 and 9
+can both pass on a system that still recommends the same ten careers to everybody.
+
+**Rollback.** Workers keeps every deployment as a version.
+`npx wrangler deployments list --env production` then
+`npx wrangler rollback [version-id] --env production` reverts the script. Note this reverts *code
+only* — an applied D1 migration is not undone by a rollback, so a deploy that ships a destructive
+migration is not recoverable this way. None of 0001–0019 drop data.

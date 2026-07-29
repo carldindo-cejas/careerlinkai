@@ -130,6 +130,33 @@ describe('LoginPage (counselor login)', () => {
     expect(screen.queryByLabelText(/class code/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/username/i)).not.toBeInTheDocument();
   });
+
+  /**
+   * P2-3. Both staff screens share this form, so both are covered by asserting it once.
+   * `aria-invalid` on its own says "invalid" and nothing more — the reason has to be attached to
+   * the field, or it is reachable only by tabbing out of the input and reading forward.
+   */
+  it('attaches each validation message to the field it is about', async () => {
+    const user = userEvent.setup();
+    renderPage(<LoginPage />);
+
+    await user.type(screen.getByLabelText(/email/i), 'not-an-email');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/email/i)).toHaveAccessibleDescription(
+        'Enter a valid email address.',
+      ),
+    );
+    expect(screen.getByLabelText(/password/i)).toHaveAccessibleDescription('Password is required.');
+  });
+
+  /** The card is the page, so its title is the page's `h1` — see StudentAccessPage for why. */
+  it('titles itself with the one h1 on the page', () => {
+    renderPage(<LoginPage />);
+
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Counselor Login');
+  });
 });
 
 describe('AdminLoginPage', () => {

@@ -20,11 +20,53 @@ export function useMyRecommendations() {
   });
 }
 
-export function useStudentRecommendations(studentId: string) {
+/**
+ * One of *my* students, read by a counselor (§4). 404s — never 403s — for a student outside their
+ * classes, so a status code cannot be used to enumerate student ids.
+ *
+ * `enabled` is a parameter rather than always-on because the caller that needs this is a roster of
+ * students with one expanded at a time (`ClassRecommendationsPanel`). There is no bulk endpoint
+ * here — the admin's roster view gets its rows hydrated server-side, this one does not — so a
+ * component that mounted the hook per student eagerly would fire one request per enrolled student
+ * on page load, for cards nobody has opened. Same reasoning as `useCareerPrograms` below.
+ */
+export function useStudentRecommendations(studentId: string, enabled = true) {
   return useQuery({
     queryKey: recommendationKeys.forStudent(studentId),
     queryFn: () => recommendationApi.getForStudent(studentId),
-    enabled: Boolean(studentId),
+    enabled: enabled && Boolean(studentId),
+  });
+}
+
+/**
+ * Rebuild my own recommendations (audit C4).
+ *
+ * The response **is** the new set, so it is written straight into the cache with `setQueryData`
+ * rather than invalidated. Invalidating would discard what this request just returned and pay a
+ * second round trip to fetch the identical bytes — and, worse, would blank the cards for the
+ * duration of that refetch, which is precisely the "I have nothing" state the student pressed this
+ * button to escape.
+ */
+export function useRegenerateMyRecommendations() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => recommendationApi.regenerateMine(),
+    onSuccess: (set) => {
+      queryClient.setQueryData(recommendationKeys.mine, set);
+    },
+  });
+}
+
+/** The counselor's equivalent, for one of their own students. Same cache-write reasoning. */
+export function useRegenerateStudentRecommendations(studentId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => recommendationApi.regenerateForStudent(studentId),
+    onSuccess: (set) => {
+      queryClient.setQueryData(recommendationKeys.forStudent(studentId), set);
+    },
   });
 }
 

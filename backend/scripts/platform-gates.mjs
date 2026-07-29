@@ -19,9 +19,13 @@
  *      Worker must stay under 2.5 MB against the Free plan's 3 MB cap. The margin is the
  *      point: the gate should fire on the dependency that *approaches* the cliff, not the
  *      one that falls off it.
+ *   4. **Shipped asset weight** (`--assets`, audit P1 / plan P1-3): needs a real
+ *      `frontend/dist`, so it runs in the frontend CI job rather than this one. See the gate
+ *      itself for why `--bundle` cannot cover it.
  *
  * Usage:  node scripts/platform-gates.mjs           # config + source gates (fast, offline)
  *         node scripts/platform-gates.mjs --bundle  # additionally build and weigh the bundle
+ *         node scripts/platform-gates.mjs --assets  # additionally weigh frontend/dist
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -401,6 +405,136 @@ function walkJs(dir) {
     if (statSync(path).isDirectory()) {
       files.push(...walkJs(path));
     } else if (entry.endsWith('.js') || entry.endsWith('.mjs')) {
+      files.push(path);
+    }
+  }
+
+  return files;
+}
+
+// --- Gate 4: shipped asset weight (--assets only) ------------------------------------------
+
+/**
+ * **The guard audit finding P1 shipped without.**
+ *
+ * A 3.26 MB master PNG was the login screen's logo for the whole of the project's life, and
+ * nothing anywhere measured it. Gate 3 above cannot: it weighs the **Worker script**, and
+ * Cloudflare stores static assets separately, against no bundle limit at all. So the one number
+ * CI reported was the one number the defect could not move. It was found by looking at a build
+ * log by hand — which is not a gate, it is a habit, and habits do not survive a deadline.
+ *
+ * Three budgets, because the failure has three shapes:
+ *
+ *   a. **One heavy media file** (≤ 600 KiB). The literal P1 shape — someone imports
+ *      `logo-master.png` instead of `logo-256.png` and the login screen quietly costs 4 MB again.
+ *   b. **Total media weight** (≤ 1.5 MiB). Ten 300 KiB images pass (a) individually and are the
+ *      same problem; a per-file cap alone would wave them through.
+ *   c. **One heavy script chunk** (≤ 1000 KiB). See the note on the number below.
+ *
+ * **This walks all of `dist/`, not just `dist/assets/`.** Files in `frontend/public/` are copied
+ * to the root of `dist` verbatim and unhashed (`logo.png` is there today), so a master asset
+ * dropped in `public/` ships exactly the same bytes to exactly the same browsers while evading a
+ * gate that looks only at `assets/`. Two ways in, one gate.
+ *
+ * Source maps are excluded: `.assetsignore` keeps them out of the upload, so they cost a student
+ * nothing. This gate measures what is *served*.
+ */
+if (process.argv.includes('--assets')) {
+  console.log('\nAsset weight gate (frontend/dist):');
+
+  const distDir = join(backendDir, '..', 'frontend', 'dist');
+
+  // `scripts/build-frontend.mjs --ensure-only` creates an empty `dist/` so Wrangler's config can
+  // load without a Vite build. Weighing that would report a comfortable pass on nothing at all —
+  // the most dangerous result a size gate can produce.
+  if (!existsSync(join(distDir, 'index.html'))) {
+    gate(
+      'frontend/dist holds a real build',
+      false,
+      `No index.html under ${distDir}. Run \`npm run build\` in ../frontend first — an empty or ensure-only dist/ would pass every budget below while measuring nothing.`,
+    );
+  } else {
+    // Anything that is not code and not a Cloudflare control file is media: images, fonts,
+    // video, audio. Extension-allowlisting the *code* side (rather than listing image formats)
+    // means a format nobody thought of — .avif, .heic, a stray .mp4 — is measured by default.
+    const CODE_EXTENSIONS = ['.js', '.mjs', '.cjs', '.css', '.html', '.json', '.wasm'];
+    const IGNORED = ['.map', '.assetsignore', '_headers', '_redirects', '.DS_Store'];
+
+    /** The pdfjs worker: a vendor artifact, fetched only by the one screen that parses a PDF. */
+    const CHUNK_EXEMPT = /(^|[\\/])pdf\.worker\./;
+
+    const MEDIA_FILE_LIMIT = 600 * 1024;
+    const MEDIA_TOTAL_LIMIT = 1536 * 1024;
+    const CHUNK_LIMIT = 1000 * 1024;
+
+    const shipped = [];
+
+    for (const path of walkAll(distDir)) {
+      const name = relative(distDir, path).replaceAll('\\', '/');
+
+      if (IGNORED.some((suffix) => name.endsWith(suffix))) {
+        continue;
+      }
+
+      shipped.push({
+        name,
+        bytes: statSync(path).size,
+        isCode: CODE_EXTENSIONS.some((extension) => name.endsWith(extension)),
+      });
+    }
+
+    const kib = (bytes) => `${(bytes / 1024).toFixed(0)} KiB`;
+    const media = shipped.filter((file) => !file.isCode);
+    const chunks = shipped.filter((file) => file.isCode && !CHUNK_EXEMPT.test(file.name));
+
+    const heavyMedia = media.filter((file) => file.bytes > MEDIA_FILE_LIMIT);
+    const heaviestMedia = Math.max(0, ...media.map((file) => file.bytes));
+
+    gate(
+      `no media file over ${kib(MEDIA_FILE_LIMIT)} (heaviest: ${kib(heaviestMedia)})`,
+      heavyMedia.length === 0,
+      `${heavyMedia.map((file) => `${file.name} = ${kib(file.bytes)}`).join(', ')} — this is audit P1 recurring. Export a sized derivative (the logo is 14 kB at 256 px; the hero plate is 66 kB as WebP) and import that, not the master.`,
+    );
+
+    const mediaTotal = media.reduce((sum, file) => sum + file.bytes, 0);
+
+    gate(
+      `total media weight ${kib(mediaTotal)} ≤ ${kib(MEDIA_TOTAL_LIMIT)} (${media.length} files)`,
+      mediaTotal <= MEDIA_TOTAL_LIMIT,
+      'Ten images just under the per-file cap are the same defect as one over it. Optimize, or drop what nothing renders — Phase 0 found two assets no import referenced at all.',
+    );
+
+    /**
+     * **1000 KiB, not the 600 KiB the media files get, and that is a recorded compromise.**
+     *
+     * `index-*.js` is ~921 KiB today: one chunk holding every admin, counselor and student page,
+     * which is audit finding P2 and is scheduled as P3-3 (code splitting, target < 350 KiB on the
+     * student path). Setting this budget to 600 KiB now would mean landing a gate that fails on
+     * `main` from its first commit — a red build nobody can fix without doing an unrelated item
+     * first, which is how gates get commented out. So it is a **ratchet**: ~8% of headroom over
+     * today's largest chunk, enough that the build passes and not enough that anything meaningful
+     * can be added without a deliberate decision. **P3-3 lowers it.**
+     */
+    const heavyChunks = chunks.filter((file) => file.bytes > CHUNK_LIMIT);
+    const heaviestChunk = Math.max(0, ...chunks.map((file) => file.bytes));
+
+    gate(
+      `no script/style chunk over ${kib(CHUNK_LIMIT)} (heaviest: ${kib(heaviestChunk)}; pdf.worker exempt)`,
+      heavyChunks.length === 0,
+      `${heavyChunks.map((file) => `${file.name} = ${kib(file.bytes)}`).join(', ')} — this is a ratchet set just above the pre-P3-3 baseline, so it firing means the bundle grew. Split the route group (P3-3) rather than raising the number.`,
+    );
+  }
+}
+
+function walkAll(dir) {
+  const files = [];
+
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+
+    if (statSync(path).isDirectory()) {
+      files.push(...walkAll(path));
+    } else {
       files.push(path);
     }
   }
