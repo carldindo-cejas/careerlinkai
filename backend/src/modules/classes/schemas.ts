@@ -81,9 +81,35 @@ export const confirmRosterSchema = z.object({
 export const listClassesQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   per_page: z.coerce.number().int().min(1).max(100).default(20),
+  /**
+   * Admin-only narrowing, added by P3-6 (audit F5): the classes belonging to one counselor.
+   *
+   * A counselor's own list is already scoped to them by `ClassService.list`, so this changes
+   * nothing for that caller — it exists because an administrator handing a departing counselor's
+   * classes to a replacement needs to see *that counselor's* classes, and "every class in the
+   * school, find the nine that are theirs" is not a workflow.
+   */
+  counselor_id: z.string().uuid().optional(),
+});
+
+/**
+ * `PATCH /admin/classes/:id` — reassignment, and **only** reassignment (audit F5, plan P3-6).
+ *
+ * A separate schema from `updateClassSchema` rather than a field added to it, because these are
+ * two different acts with two different authorities. Renaming a class or archiving it is something
+ * its own counselor does; handing it to somebody else is an administrative transfer of ownership,
+ * and `counselor_id` must not become writable on the route a counselor can reach — a counselor who
+ * could set it could quietly give away (or take) a class and its students' results.
+ *
+ * That is why `counselor_id` is absent from `createClassSchema` too: a class's owner is the
+ * counselor who created it (§13.2), and this endpoint is the only thing in the system that moves it.
+ */
+export const reassignClassSchema = z.object({
+  counselor_id: z.string().uuid('Choose a counselor to hand this class to.'),
 });
 
 export type CreateClassInput = z.infer<typeof createClassSchema>;
 export type UpdateClassInput = z.infer<typeof updateClassSchema>;
+export type ReassignClassInput = z.infer<typeof reassignClassSchema>;
 export type PreviewRosterInput = z.infer<typeof previewRosterSchema>;
 export type ConfirmRosterInput = z.infer<typeof confirmRosterSchema>;

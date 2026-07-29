@@ -77,6 +77,16 @@ export class ApiError extends Error {
     readonly status: ContentfulStatusCode,
     message: string,
     readonly errors: Record<string, string[]> = {},
+    /**
+     * Seconds until the caller may retry — rendered as the `Retry-After` response header by
+     * `app.onError`, which is the only place in the system that turns an `ApiError` into HTTP.
+     *
+     * A 429 without it is a 429 the client has to guess at, and clients guess by retrying
+     * immediately: the standard header is what lets a caller back off instead of hammering the
+     * limiter that just refused it. Carried on the error rather than set at each throw site so
+     * every 429 in the system answers the same way (P3-4).
+     */
+    readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -102,9 +112,13 @@ export class ApiError extends Error {
     return new ApiError(422, message, errors);
   }
 
-  /** 429 — rate limited (§41). */
-  static tooManyRequests(errors: Record<string, string[]>, message = 'Validation failed.'): ApiError {
-    return new ApiError(429, message, errors);
+  /** 429 — rate limited (§41). `retryAfterSeconds` becomes the `Retry-After` header. */
+  static tooManyRequests(
+    errors: Record<string, string[]>,
+    message = 'Validation failed.',
+    retryAfterSeconds?: number,
+  ): ApiError {
+    return new ApiError(429, message, errors, retryAfterSeconds);
   }
 
   /**

@@ -57,6 +57,12 @@ STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
 STAFF_TOKEN_TTL_HOURS = "168"
 ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+# Audit S2 / plan P3-4 — the coarse per-user request budget, in requests per minute, charged
+# in authenticate() against a per-user AuthGuardDO counter. A capacity number, not a security
+# rule, which is why it is a var: 300/min is far above any human workflow (the heaviest is a
+# student answering a 60-item instrument, one POST per answer, and nobody answers five per
+# second) and far below what a scripted loop can spend of the Free plan's 100k/day.
+API_RATE_LIMIT_PER_MINUTE = "300"
 
 # --- Local (emulated, disposable) ----------------------------------------------------
 [[d1_databases]]

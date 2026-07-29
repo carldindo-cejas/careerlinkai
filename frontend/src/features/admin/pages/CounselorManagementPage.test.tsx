@@ -181,3 +181,61 @@ describe('CounselorManagementPage — reset password', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * The F5 removal guard, from the screen's side (plan P3-6).
+ *
+ * The server now refuses `DELETE /admin/counselors/{id}` while the counselor still holds live
+ * classes, because deleting them used to leave those classes pointing at an account that no longer
+ * exists — permanently, since `counselor_id` was writable by nothing. A refusal is only half an
+ * answer, though: what makes it a fix rather than an obstruction is that the admin is told *how
+ * many* and pointed at the one screen that can move them.
+ */
+describe('CounselorManagementPage — the F5 removal guard', () => {
+  beforeEach(() => {
+    useToastStore.setState({ toasts: [] });
+
+    vi.mocked(counselorManagementApi.list).mockReset().mockResolvedValue(page([MARIA, RUEL]));
+    vi.mocked(counselorManagementApi.remove).mockReset();
+  });
+
+  it('shows the server’s reason and a link to reassign, rather than a bare failure', async () => {
+    vi.mocked(counselorManagementApi.remove).mockRejectedValue(
+      new ApiRequestError('This counselor still has classes.', 422, {
+        classes: ['This counselor still has 2 classes. Reassign them to another counselor first, or delete them.'],
+      }),
+    );
+
+    const user = renderPage();
+
+    await screen.findByText('Maria Santos');
+
+    await user.click(within(row('Maria Santos')).getByRole('button', { name: /remove/i }));
+    await user.click(within(row('Maria Santos')).getByRole('button', { name: /confirm removal/i }));
+
+    expect(await screen.findByText(/still has 2 classes/i)).toBeInTheDocument();
+
+    // The remedy, and it goes to the counselor whose classes they are — a link to the wrong
+    // detail page would be worse than no link.
+    const link = screen.getByRole('link', { name: /reassign their classes/i });
+
+    expect(link).toHaveAttribute('href', `/admin/counselors/${MARIA.id}`);
+  });
+
+  /** Any other failure keeps the old message: only F5 has somewhere for the admin to go. */
+  it('falls back to the plain message for a failure that is not about classes', async () => {
+    vi.mocked(counselorManagementApi.remove).mockRejectedValue(
+      new ApiRequestError('Counselor not found.', 404),
+    );
+
+    const user = renderPage();
+
+    await screen.findByText('Maria Santos');
+
+    await user.click(within(row('Maria Santos')).getByRole('button', { name: /remove/i }));
+    await user.click(within(row('Maria Santos')).getByRole('button', { name: /confirm removal/i }));
+
+    expect(await screen.findByText('Counselor not found.')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /reassign their classes/i })).not.toBeInTheDocument();
+  });
+});

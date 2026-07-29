@@ -38,6 +38,28 @@ export const AI_REQUEST_LIMIT = 10;
 export const AI_REQUEST_WINDOW_SECONDS = 60;
 
 /**
+ * Audit S2: the **coarse per-user budget over every authenticated request**, checked in
+ * `authenticate()` — the one place in the system a bearer token becomes a user.
+ *
+ * The five limiters above and below it are per-*feature*: they guard a neuron quota, a credential,
+ * or one expensive service call, and between them they cover perhaps a dozen endpoints. Everything
+ * else — `/student/assignments`, `/counselor/classes`, `/admin/careers`, the dashboards, the
+ * notification poll — had no counter of any kind, so one signed-in student looping one cheap GET
+ * could spend the account's whole Free-plan day (100k requests) on everyone else's behalf.
+ *
+ * The **limit** is a var (`API_RATE_LIMIT_PER_MINUTE`, see `lib/config.ts`) rather than a constant
+ * here, and it is the only one of the six that is. The others encode a security or cost rule that
+ * should not move without a code review; this one is a capacity number whose right value depends on
+ * the plan and on how many students are in the building — and the test suite has to be able to move
+ * it, because a suite compresses hundreds of a user's requests into a few seconds and would
+ * otherwise be measuring its own fixtures.
+ *
+ * The window is fixed, not sliding (see `AuthGuardDO.charge`), so the worst case is a user who
+ * spends the whole budget in the first second of a window and waits out the rest of it.
+ */
+export const API_RATE_LIMIT_WINDOW_SECONDS = 60;
+
+/**
  * M2: 3 forgot-password requests per email per hour. A usage limiter (every request is charged),
  * because an *unauthenticated* caller drives it — each request otherwise overwrote the pending
  * reset token (denying a legitimate reset) and wrote an audit row + a token row. It was the only
@@ -62,6 +84,22 @@ export const FORGOT_PASSWORD_WINDOW_SECONDS = 60 * 60;
  */
 export const RECOMMENDATION_REGENERATE_LIMIT = 5;
 export const RECOMMENDATION_REGENERATE_WINDOW_SECONDS = 10 * 60;
+
+/**
+ * Plan P3-7: at most **one dead-letter alert per queue per 15 minutes**.
+ *
+ * Not a security counter and not a cost limiter — an *alert-fatigue* limiter, which is the same
+ * mechanism pointed at a different problem. A broken pipeline does not dead-letter one message, it
+ * dead-letters every message: the DLQ consumer takes them ten at a time, so an afternoon of
+ * failures would put hundreds of identical notification rows in front of every administrator, and
+ * the second one adds nothing the first did not already say. An alert nobody reads is worse than
+ * no alert, because it also hides the ones that matter.
+ *
+ * The suppression is stated inside the notification itself rather than left implicit — a message
+ * that says "3 jobs failed" when 300 did is a worse lie than silence.
+ */
+export const DLQ_ALERT_LIMIT = 1;
+export const DLQ_ALERT_WINDOW_SECONDS = 15 * 60;
 
 /**
  * One instance per staff account (§38 v1.5): the object that derives the account's hash is
@@ -93,6 +131,16 @@ export function aiRateLimitGuard(env: Env, userId: string): DurableObjectStub<Au
 }
 
 /**
+ * One instance per user for the S2 general API budget — a **third** instance for a user who also
+ * has an `ai:` and a `regen:` one, for the reason every prefix in this file exists: sharing a
+ * counter would let one feature's usage lock a user out of an unrelated one. A student who spends
+ * their ten AI explanations must still be able to answer question 41.
+ */
+export function apiRateLimitGuard(env: Env, userId: string): DurableObjectStub<AuthGuardDO> {
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`api:${userId}`));
+}
+
+/**
  * One instance per email for the forgot-password throttle (M2). **A different instance from the
  * login lockout on the same email** (`forgot:` prefix), so a reset request never charges the login
  * counter and a login failure never charges this one — the two limits are independent by
@@ -116,4 +164,14 @@ export function recommendationRegenerateGuard(
   studentId: string,
 ): DurableObjectStub<AuthGuardDO> {
   return env.AUTH_DO.get(env.AUTH_DO.idFromName(`regen:${studentId}`));
+}
+
+/**
+ * One instance per **dead-letter queue** for the P3-7 alert throttle — keyed on the queue rather
+ * than on a recipient, because the thing being rate-limited is the *event*, not a person: two
+ * administrators must not each receive a full storm just because there are two of them, and the AI
+ * queue going quiet is a different fact from the default queue going quiet.
+ */
+export function dlqAlertGuard(env: Env, queueName: string): DurableObjectStub<AuthGuardDO> {
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`dlq:${queueName}`));
 }

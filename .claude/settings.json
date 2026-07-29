@@ -23,7 +23,14 @@
       "PowerShell(cd c:\\\\careerlinkai_v1\\\\frontend; npm test 2>&1 | Select-String -Pattern \"Test Files|Tests |FAIL|×\" | Select-Object -First 10; cd c:\\\\careerlinkai_v1\\\\backend; npm run gate:platform 2>&1 | Select-Object -Last 2; \"PLATFORM=$LASTEXITCODE\")",
       "PowerShell(cd c:\\\\careerlinkai_v1\\\\backend; npm run gate:bundle 2>&1 | Select-String -Pattern \"gzipped bundle|All platform|failed\"; \"BUNDLE=$LASTEXITCODE\"; cd c:\\\\careerlinkai_v1\\\\frontend; npm run build 2>&1 | Select-String -Pattern \"built in|error\"; \"BUILD=$LASTEXITCODE\")",
       "PowerShell(cd c:\\\\careerlinkai_v1\\\\frontend; npm run gate:assets 2>&1 | Select-Object -Last 20; \"ASSETS=$LASTEXITCODE\")",
-      "PowerShell(cd c:\\\\careerlinkai_v1\\\\frontend; npm run type-check 2>&1 | Select-Object -Last 1; \"FE-TSC=$LASTEXITCODE\"; npm test 2>&1 | Select-String -Pattern \"Test Files|Tests \" | Select-Object -First 2; npm run build 2>&1 | Select-String \"built in\"; \"FE-BUILD=$LASTEXITCODE\"; npm run gate:assets 2>&1 | Select-String -Pattern \"✓ no media|✓ total media|✓ no script|✓ all 7|✓ entry closure|✓ heaviest route|✓ student screen|All platform\"; \"GATE=$LASTEXITCODE\")"
+      "PowerShell(cd c:\\\\careerlinkai_v1\\\\frontend; npm run type-check 2>&1 | Select-Object -Last 1; \"FE-TSC=$LASTEXITCODE\"; npm test 2>&1 | Select-String -Pattern \"Test Files|Tests \" | Select-Object -First 2; npm run build 2>&1 | Select-String \"built in\"; \"FE-BUILD=$LASTEXITCODE\"; npm run gate:assets 2>&1 | Select-String -Pattern \"✓ no media|✓ total media|✓ no script|✓ all 7|✓ entry closure|✓ heaviest route|✓ student screen|All platform\"; \"GATE=$LASTEXITCODE\")",
+      "Bash(sort -t: -k2 -rn)",
+      "Bash(node -e ' *)",
+      "Bash(cp src/middleware/authenticate.ts /tmp/auth.bak)",
+      "Bash(cp /tmp/auth.bak src/middleware/authenticate.ts && grep -c \"c.get\\('user'\\) !== undefined\" src/middleware/authenticate.ts && npx vitest run test/platform/rate-limit.test.ts 2>&1 | grep -E \"Tests \")"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }

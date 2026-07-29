@@ -324,6 +324,13 @@ function CounselorRow({
   const suspended = counselor.status === 'suspended';
 
   /**
+   * The F5 refusal, distinguished from every other failure because it is the only one with
+   * something for the admin to *do*. The server keys it under `classes` and includes the count.
+   */
+  const blockedByClasses =
+    remove.error instanceof ApiRequestError ? remove.error.fieldError('classes') : undefined;
+
+  /**
    * Reset this counselor's password (audit C2).
    *
    * Confirmed rather than immediate, because it is destructive in a way that is easy to
@@ -456,7 +463,22 @@ function CounselorRow({
           )}
         </div>
 
-        {update.isError || remove.isError ? (
+        {/*
+          **Removal is refused while the counselor still holds classes** (audit F5, plan P3-6), and
+          a refusal has to carry its remedy or it is just a dead end with better wording. The
+          server's field error names the count; the link goes to the one screen that can move them.
+        */}
+        {blockedByClasses ? (
+          <div className="w-full text-sm text-destructive">
+            <p>{blockedByClasses}</p>
+            <Link
+              to={counselorDetailPath(counselor.id)}
+              className="mt-1 inline-block font-medium underline"
+            >
+              Reassign their classes
+            </Link>
+          </div>
+        ) : update.isError || remove.isError ? (
           <p className="w-full text-sm text-destructive">
             {(update.error ?? remove.error)?.message ?? 'The change failed.'}
           </p>

@@ -494,8 +494,50 @@ export class CounselorManagementService {
     };
   }
 
+  /**
+   * Soft-delete a counselor — **refused while they still hold live classes** (audit F5, plan P3-6).
+   *
+   * ## Why the refusal, and not a cascade
+   *
+   * Deleting a counselor never touched their classes: the classes stayed, pointing at an account
+   * that no longer exists. Nothing was lost (an admin can still reach every class), and nothing
+   * could be repaired either — `counselor_id` was writable by no endpoint in the system, so the
+   * class could not be handed to a replacement, and the replacement therefore could not see their
+   * own students' results or use the join code. The state was permanent and silent.
+   *
+   * Cascading was the obvious alternative and is wrong: a class carries a roster, attempts, results
+   * and recommendations, and removing an account is not a reason to shred the records it produced
+   * (§12's whole posture). Archiving the classes automatically is wrong for a quieter reason — it
+   * would end a term for forty students because an administrator pressed a button about somebody's
+   * *account*.
+   *
+   * So the answer is to refuse and say what to do instead. `PATCH /admin/classes/{id}` is now that
+   * "instead", which is why this guard could not have shipped before the reassignment endpoint did:
+   * a refusal with no remedy is just a dead end with better wording.
+   *
+   * ## Why *live* classes rather than *active* ones
+   *
+   * The count used here is exactly the one the admin list already shows next to the counselor's
+   * name (`footprintsFor` → `classes_count`, every class with `deleted_at IS NULL`). An archived
+   * class blocking removal is mildly annoying; a guard whose count disagrees with the number on the
+   * screen is a bug report. What blocks is what is displayed.
+   */
   async remove(admin: User, counselorId: string, ipAddress: string | null): Promise<void> {
     const { user } = await this.find(counselorId);
+
+    const liveClasses = (await this.footprintsFor([user.id])).get(user.id)?.classes ?? 0;
+
+    if (liveClasses > 0) {
+      throw ApiError.validation(
+        {
+          classes: [
+            `This counselor still has ${liveClasses} ${liveClasses === 1 ? 'class' : 'classes'}. Reassign ${liveClasses === 1 ? 'it' : 'them'} to another counselor first, or delete ${liveClasses === 1 ? 'it' : 'them'}.`,
+          ],
+        },
+        'This counselor still has classes.',
+      );
+    }
+
     const timestamp = now();
 
     await this.db

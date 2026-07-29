@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { StudentRecommendationLists } from '@/components/recommendations/StudentRecommendationLists';
+import { CounselorClassesPanel } from '@/features/admin/components/CounselorClassesPanel';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -111,6 +112,14 @@ export function CounselorDetailPage() {
           {data.counselor.specialization ? ` · ${data.counselor.specialization}` : ''}
         </p>
       </div>
+
+      {/*
+        The classes this counselor owns, and the only control in the system that moves one
+        (audit F5, plan P3-6). It sits above the student table because reassignment is what an
+        admin comes to this page to *do* when a counselor is leaving — the students below are the
+        thing being handed over, and they follow their class.
+      */}
+      <CounselorClassesPanel counselorId={counselorId} counselorName={data.counselor.name} />
 
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">

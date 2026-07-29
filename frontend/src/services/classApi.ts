@@ -81,4 +81,39 @@ export const classApi = {
       httpClient.post<ApiSuccess<ClassRoom>>(`/counselor/classes/${id}/regenerate-code`),
     );
   },
+
+  /**
+   * One counselor's live classes — **admin only** (audit F5, plan P3-6).
+   *
+   * The server ignores `counselor_id` for a counselor caller rather than honouring it, so this is
+   * not a way for one counselor to read another's list; it exists for the admin screen that hands a
+   * departing counselor's classes to a replacement, where "every class in the school, find the nine
+   * that are theirs" is not a workflow.
+   *
+   * One page of 100 rather than a walk: a counselor with more than a hundred live classes is not a
+   * situation this screen is for, and the `pagination.total` comes back so the caller can say so
+   * instead of silently showing the first hundred (F3's lesson).
+   */
+  listForCounselor(counselorId: string): Promise<Paginated<ClassRoom>> {
+    return unwrap(
+      httpClient.get<ApiSuccess<Paginated<ClassRoom>>>('/counselor/classes', {
+        params: { counselor_id: counselorId, per_page: CLASSES_PAGE_SIZE },
+      }),
+    );
+  },
+
+  /**
+   * Hand a class to a different counselor — **admin only** (audit F5, plan P3-6).
+   *
+   * A different endpoint from `update` on purpose: `counselor_id` is not a field of the counselor's
+   * own PATCH, because a counselor who could set it could hand a colleague's class to themselves
+   * and inherit a roster's results with it.
+   */
+  reassign(id: string, counselorId: string): Promise<ClassRoom> {
+    return unwrap(
+      httpClient.patch<ApiSuccess<ClassRoom>>(`/admin/classes/${id}`, {
+        counselor_id: counselorId,
+      }),
+    );
+  },
 };

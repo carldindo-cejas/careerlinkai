@@ -2,6 +2,7 @@ import { createApp } from '@/app';
 import type { Env } from '@/env';
 import { handleAiJob, markAiJobFailed, type AiJobMessage } from '@/jobs/ai-jobs';
 import { runNightlyCleanup } from '@/jobs/cleanup';
+import { alertDeadLetteredBatch } from '@/jobs/dlq-alert';
 
 /**
  * The Worker entry (FULLPLAN §16, §42).
@@ -49,6 +50,10 @@ export default {
         console.error(
           JSON.stringify({
             level: 'error',
+            // P3-7: a stable marker for a Workers Logs alert to filter on. The notification below
+            // reaches an administrator inside the app; this reaches whoever is watching the logs,
+            // and unlike the notification it is written for **every** message, unthrottled.
+            alert: 'dead_letter_queue',
             message: 'Job dead-lettered after exhausting retries.',
             queue: batch.queue,
             type: message.body?.type,
@@ -57,6 +62,45 @@ export default {
 
         await markAiJobFailed(env, message.body).catch(() => undefined);
         message.ack();
+      }
+
+      /**
+       * **P3-7: tell a human.** Before this, a dead-lettered job was logged and acked, and nothing
+       * else happened — a silently failing AI queue and an idle one look identical from every
+       * screen in the app, so the first person to notice was the reviewer whose draft never came.
+       *
+       * After the acks, deliberately: the messages are already accounted for, so an alert that
+       * fails cannot cost the batch. Absorbed for the same reason `dispatch()` absorbs a listener —
+       * a notification must never fail the thing it is about, least of all when that thing is the
+       * recording of a failure.
+       */
+      try {
+        const alert = await alertDeadLetteredBatch(
+          env,
+          batch.queue,
+          batch.messages.map((message) => message.body?.type),
+        );
+
+        console.warn(
+          JSON.stringify({
+            level: 'warn',
+            message: alert.notified
+              ? 'Dead-letter alert sent to administrators.'
+              : 'Dead-letter alert suppressed (throttled, or no active administrator).',
+            queue: batch.queue,
+            dead_lettered: alert.count,
+            recipients: alert.recipients,
+          }),
+        );
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            message: 'Dead-letter alerting itself failed.',
+            queue: batch.queue,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
       }
 
       return;

@@ -17,7 +17,7 @@ import { generationRoutes } from '@/modules/ai/generation-routes';
 import { adminAiRoutes } from '@/modules/ai/routes';
 import { builderRoutes } from '@/modules/assessment/builder-routes';
 import { adminRoutes, publicCatalogRoutes } from '@/modules/catalog/routes';
-import { counselorRoutes } from '@/modules/classes/routes';
+import { adminClassRoutes, counselorRoutes } from '@/modules/classes/routes';
 import { adminIdentityRoutes } from '@/modules/identity/admin-routes';
 import { authRoutes } from '@/modules/identity/routes';
 import { studentAccessRoutes } from '@/modules/identity/student-access-routes';
@@ -65,7 +65,10 @@ export function createApp() {
       origin: (_origin, c: Context<AppEnv>) => c.env.FRONTEND_URL,
       allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Authorization', 'Content-Type', 'Accept', 'X-Correlation-Id'],
-      exposeHeaders: ['X-Correlation-Id'],
+      // `Retry-After` is exposed for the same reason `X-Correlation-Id` is: a cross-origin
+      // caller cannot read a header the response does not allow it to, so a 429 would arrive
+      // carrying back-off advice the client is not permitted to see (P3-4).
+      exposeHeaders: ['X-Correlation-Id', 'Retry-After'],
       maxAge: 600,
     }),
   );
@@ -112,6 +115,9 @@ export function createApp() {
   // Platform module's routers (audit-log viewer + the three role dashboards, notifications).
   api.route('/admin', adminIdentityRoutes);
   api.route('/admin', adminPlatformRoutes);
+  // P3-6 (audit F5): class reassignment. The Class module's only /admin endpoint, kept off the
+  // /counselor prefix on purpose — `counselor_id` must not be writable by a counselor.
+  api.route('/admin', adminClassRoutes);
   api.route('/counselor', counselorPlatformRoutes);
   api.route('/student', studentPlatformRoutes);
   api.route('/notifications', notificationRoutes);
@@ -137,7 +143,16 @@ export function createApp() {
    */
   app.onError((error, c) => {
     if (error instanceof ApiError) {
-      return c.json(errorEnvelope(error.message, error.errors), error.status);
+      const response = c.json(errorEnvelope(error.message, error.errors), error.status);
+
+      // The one place an ApiError becomes HTTP, so the one place `Retry-After` can be set for
+      // every limiter at once (P3-4). A 429 without it is a 429 the client guesses at — and
+      // clients guess by retrying straight into the counter that just refused them.
+      if (error.retryAfterSeconds !== undefined) {
+        response.headers.set('Retry-After', String(Math.max(1, error.retryAfterSeconds)));
+      }
+
+      return response;
     }
 
     /**

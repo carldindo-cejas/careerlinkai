@@ -237,3 +237,55 @@ a nested route (`/admin/colleges/…`) to confirm the SPA fallback, and check De
 
 `wrangler tail --env production` streams live logs with the §52 correlation ids if anything needs
 chasing.
+
+---
+
+## 8. Operational settings that live in the dashboard, not in this repository
+
+Two things the code deliberately does not — and cannot — do for itself. Both are one-time setup on a
+deployed environment, and neither shows a symptom when it is missing, which is why they are written
+down rather than left as folklore.
+
+### 8.1 A WAF rate-limiting rule for unauthenticated traffic (audit S2)
+
+P3-4 put a coarse per-user budget (`API_RATE_LIMIT_PER_MINUTE`, 300/min, see
+`src/middleware/rate-limit.ts`) on every **authenticated** request. That is the half a Worker can
+enforce, because it needs a token to know whose budget to charge. It leaves anonymous traffic
+uncovered by anything except the two credential-specific counters (`/auth/login`'s lockout,
+`/student-access/join`'s throttle) — and an anonymous flood costs a Worker invocation each even when
+it is refused.
+
+The other half belongs at the edge, where a request is rejected before the Worker is invoked at all
+and therefore costs no CPU and no invocation:
+
+> **Cloudflare dashboard → Security → WAF → Rate limiting rules**
+>
+> * Expression: `(http.request.uri.path contains "/api/v1/")`
+> * Characteristics: IP
+> * Rate: ~600 requests / 1 minute · Action: Block · Duration: 10 minutes
+>
+> 600/min per IP, not 300: a whole computer lab shares one public IP, so this ceiling has to clear
+> forty students answering an assessment together with room to spare. It is a flood stop, not a
+> budget — the budget is the per-user one, which a shared IP cannot confuse.
+
+Verify by looking at the rule's own request counter in the dashboard after a day of real traffic; if
+it is blocking anything at all during a class, the number is too low.
+
+### 8.2 A Workers Logs alert on dead-lettered jobs (plan P3-7)
+
+A dead-lettered job now raises an in-app notification to every active administrator (see
+`src/jobs/dlq-alert.ts`), which reaches whoever is signed in. The log line beside it is for whoever
+is not:
+
+```json
+{ "level": "error", "alert": "dead_letter_queue", "queue": "careerlinkai-ai-dlq", … }
+```
+
+`alert` is a stable field written for **every** dead-lettered message, unthrottled — unlike the
+notification, which is capped at one per queue per 15 minutes so a broken pipeline cannot bury the
+bell. Filter on `alert = "dead_letter_queue"` in **Workers → Logs → Alerts** to get it out of the
+app entirely (email, or a webhook).
+
+Neither alert path can tell you *why* a job failed. That is the `Queue job failed.` line from the
+source-queue consumer, three attempts earlier, which carries the error message and the correlation
+id.

@@ -621,13 +621,87 @@ vendor dependency growing past the parsers still trips it.
   `testTimeout` is raised to 15 s so a two-core CI runner does not hit it.
 * **Effort:** 3–4 h (as estimated).
 
-### `[ ]` **P3-4 — General API rate limiting** *(audit S2)*
+### `[x]` **P3-4 — General API rate limiting** — *done 2026-07-30. 877 → 892 BE. Found `/admin/dashboard` authenticating **six times per request**.*
 
-* **Why:** auth and AI paths are well throttled; **everything else is not**. One authenticated
-  student looping `/student/assignments` can exhaust the Free plan's 100k requests/day for everyone.
-* **Do:** coarse per-user limiter (~300 req/min) as global middleware reusing `AuthGuardDO.charge()`,
-  **or** Cloudflare WAF rate-limiting rules at the edge (costs no Worker CPU — likely the better call).
-* **Effort:** 3–4 h.
+Scoped as written — a coarse per-user limiter at ~300 req/min reusing `AuthGuardDO.charge()`. The
+item's own alternative ("**or** Cloudflare WAF rules at the edge — likely the better call") is
+answered rather than ignored: see below.
+
+**It is charged inside `authenticate()`, not as a global middleware, and the item's wording made
+that look easier than it is.** Hono's `app.use('*', …)` runs *before* the sub-router that owns
+`authenticate()`, so a global middleware cannot see the user — it would have to charge after
+`next()`, i.e. after the request it was meant to refuse had already run its queries. Mounting a
+`rateLimit()` on each of the twelve routers instead puts one guarantee in twelve places, which is
+the F1/F2 defect class this plan opens by naming: the thirteenth router forgets and nothing fails.
+`authenticate()` is the single point where a token becomes a `User`, and a route that does not pass
+through it has no user to charge.
+
+**The defect that fell out of it, on the first test run.** §10 gives every module its own routes
+file and several mount on the same prefix — six routers share `/admin`, four share `/counselor`.
+Hono merges each sub-app's `use('*')` into the parent as `/{prefix}/*`, so a path whose handler
+lives in the last-registered router runs the entire middleware chain of every router in front of it.
+Measured through the new counter — which charges exactly once per execution of that middleware —
+`/counselor/dashboard` ran `authenticate()` **4** times, `/admin/counselors` **5**, and
+**`/admin/dashboard` 6**, at two D1 reads each. **Twelve reads to answer "who is this"** on the
+admin's landing screen, before the handler ran one query of its own, against a free Worker's
+50-subrequest ceiling (§45). Every response was correct throughout, which is why 877 green tests and
+three phases of staging runs had nothing to say about it. A token cannot change mid-request, so an
+early return when `c.get('user')` is already set is the whole fix, and it keeps the §10 router
+layout. The counter is the only instrument in the system that could see this, so the guard lives in
+its test file and is stated as a budget claim: **one request costs one unit**, or the number in
+wrangler.toml means six different things depending on which screen was opened.
+
+**The limit is a var, and it is the only one of the six limiters that is.** `AI_REQUEST_LIMIT` and
+friends encode a security or cost rule that should not move without review; this is a capacity
+number whose right value depends on the plan and the size of the school. It also has to be movable
+by the suite: a test file compresses a day of one user's requests into three seconds
+(`player.test.ts` alone drives ~200), so `wrangler.test.toml` runs at a ceiling no fixture can reach
+— **the one var deliberately out of lockstep with wrangler.toml**, with the reason written where it
+is set. The limiter still executes on every request the whole suite makes; only the number moves.
+`platform-gates.mjs` now asserts every numeric var `lib/config.ts` requires is declared in all three
+scopes, because `requireNumber` throws and this one is read inside `authenticate()`: an environment
+that omitted it would answer **500 to every authenticated request**, and environments inherit no vars.
+
+**`Retry-After` is now set for every 429 in the system**, from `app.onError` — the one place an
+`ApiError` becomes HTTP — rather than at each throw site, and exposed through CORS beside
+`X-Correlation-Id` (a cross-origin caller cannot read a header it is not allowed to see). The five
+pre-existing limiters gained it for free. A 429 without it is a 429 the client guesses at, and
+clients guess by retrying immediately into the counter that just refused them.
+
+**The WAF half is documented, not claimed.** A per-user counter cannot express an anonymous flood —
+there is no user to charge — and unauthenticated traffic still costs an invocation even when
+refused. That belongs at the edge, and the edge is dashboard configuration: not in this repository,
+not testable, not reviewable in a pull request. So it is written up as an operational step in
+**DEPLOYMENT.md §8.1** (600/min per IP, not 300 — a computer lab shares one public IP and forty
+students answering together must clear it) rather than asserted here as if it had been done. The two
+are complementary; only one of them can have tests.
+
+* **Cost, stated plainly:** one DO round trip per authenticated request, charged even on the refused
+  one. That is the structural disadvantage of limiting inside the Worker rather than in front of it.
+  Net effect is still strongly negative on subrequests, because the `authenticate()` fix removed up
+  to **10 D1 reads** from the admin screens in the same change.
+* **Files:** `src/middleware/rate-limit.ts` (new), `middleware/authenticate.ts`,
+  `lib/{auth-guard,config,envelope}.ts`, `src/app.ts`, `src/env.ts`,
+  `test/platform/rate-limit.test.ts` (new), `scripts/platform-gates.mjs`,
+  `wrangler.{toml,test.toml,local.toml,dev.toml}`, `DEPLOYMENT.md`
+* **Verify:** ✅ **15 tests, and every guard fired red before it was trusted** (P1-3's rule).
+  Removing the idempotence fix → the "one unit per request" and "every router" tests go red;
+  removing the `Retry-After` line → its test goes red; the charge itself unwired → the limit tests go
+  red. All restored and green. The four claims pinned are the ones that would be silently false if
+  the limiter were mounted the obvious way: it applies to **every** authenticated router (proven by
+  spending the budget on three prefixes and being refused on a fourth), it is keyed per user, an
+  unauthenticated request never charges it (ten 401s leave the budget whole) and a rate-limited user
+  can still sign in.
+  ✅ **No 429 anywhere in a real browser run** — `walkthrough.mjs` **95/98** against the local
+  single-origin Worker at the production number (300), the only 3 failures being the same known
+  Phase 5a RAG legs `wrangler.local.toml` cannot serve (`RETRIEVAL_UNAVAILABLE`, no
+  `[ai]`/`[[vectorize]]`), identical to P3-3's run. One student POSTed **61 answers, 0 failed**, as
+  fast as Playwright can click, alongside a full admin catalog build and a counselor roster — and
+  the log contains **zero** 429s and zero unexpected console errors. That is the thing no unit test
+  can tell you: whether the number chosen is above the heaviest workflow the product actually has.
+  All 31 `[a11y]` checks green. `csp-check.mjs` **PASS, 15 screens** (Zod's accepted `eval` probe on
+  12 of them, as P3-3 recorded).
+* **Effort:** 3–4 h (as estimated).
 
 ### `[x]` **P3-5 — Backup and disaster recovery** — *done 2026-07-29. 815 → 834. Four D1 defects found.*
 
@@ -722,22 +796,138 @@ doc as unrun rather than implied to be covered.
   type-check · lint · `gate:platform` · `gate:bundle` (260 KiB) · `gate:assets` · build all clean.
 * **Effort:** 2–3 h (as estimated).
 
-### `[ ]` **P3-6 — Class reassignment / guard counselor deletion** *(audit F5)*
+### `[x]` **P3-6 — Class reassignment / guard counselor deletion** — *done 2026-07-30. 892 → 907 BE, 182 → 195 FE.*
 
-* **Why:** deleting a counselor soft-deletes the user and leaves their classes pointing at a deleted
-  owner. Admins can still reach them (`canViewClass` passes admins), so nothing is lost — but
-  `counselor_id` is set at creation and never writable, so **a class can never be handed to a
-  replacement counselor**.
-* **Do:** block deletion when live classes exist, **or** add `PATCH /admin/classes/:id { counselor_id }`
-  with a reassignment step. The UI already shows `classes_count` per counselor.
-* **Effort:** 4–6 h.
+**Both halves, not the item's "or".** The item offered a choice — block deletion, *or* add the
+reassignment endpoint — and either alone is worse than useless. A guard with no remedy is a dead end
+with better wording; a reassignment endpoint nobody is ever pointed at is F1's defect class again
+(and P3-2a had just found a *third* live instance of that in the catalog module). The guard is what
+makes the state unreachable, and the endpoint is what makes the guard escapable, so they shipped
+together and the refusal message names the remedy.
 
-### `[ ]` **P3-7 — DLQ alerting**
+**`PATCH /admin/classes/:id { counselor_id }` is on its own admin router, and that is the load-bearing
+decision.** `PATCH /counselor/classes/:id` already exists and admins can call it, so adding
+`counselor_id` there would have been two lines — but that route is mounted behind
+`ensureRole('counselor', 'admin')`, so the field would be writable by **every counselor in the
+school**, each of whom could hand a colleague's class to themselves and inherit a roster's results
+with it. A separate router behind `ensureRole('admin')` makes that impossible by construction rather
+than by remembering to check inside a handler. There is a test for it, and the test goes red the
+moment `counselor_id` joins `updateClassSchema`.
 
-* **Why:** dead-lettered jobs are logged and acked — nothing notifies a human. A silently failing AI
-  generation queue looks identical to an idle one.
-* **Do:** Workers Logs alert, or a `scheduled` check that writes an admin notification on DLQ activity.
-* **Effort:** 2 h.
+**What "reassigned" has to mean, and what it would have been easy to ship instead.** The response
+body is not the claim — `counselor_id` in a serializer is cosmetic. What is asserted is that the
+*other* endpoints answer differently: the class enters the new counselor's list and leaves the old
+one's, `GET /counselor/classes/:id` **404s for the previous owner** (not 403 — §19's "not yours" and
+"not real" are the same answer, and a transfer must not turn that rule into an existence oracle), the
+roster travels with it, and the admin's `/admin/counselors/:id/students` view — which resolves
+students *through* classes — moves with it too.
+
+**Three refusals, each closing the same defect from a different side.** A suspended counselor, a
+soft-deleted one, and an **admin** are all rejected as targets. The last one is the least obvious and
+the most important: an admin can already *see* every class, so it reads like a harmless choice — but
+`counselor_id` is what the counselor list, the students view and every ownership check read, and an
+admin sitting in that column is a class that belongs to nobody in the only sense the word is used
+here. Handing a class to an account that cannot manage it is the exact defect this item exists to
+fix, re-created by the fix.
+
+**Same owner writes nothing.** Reassigning a class to the counselor who already owns it returns 200
+and produces no audit row and no notification — the rule `update()` already follows for its status
+transition. An audit row claiming a transfer that did not happen is worse than no row, because this
+trail is the record of *who moved a class and when*.
+
+**The guard blocks on the number already on screen.** `classes_count` on the admin list counts every
+class with `deleted_at IS NULL`, and that is exactly what refuses the delete. An archived class
+blocking removal is mildly annoying; a guard whose count disagrees with the number rendered beside
+the counselor's name is a bug report. Cascading was considered and rejected — a class carries a
+roster, attempts, results and recommendations, and removing an *account* is not a reason to shred the
+records it produced (§12) — as was auto-archiving, which would end a term for forty students because
+an administrator pressed a button about somebody's login.
+
+* **Also:** `CLASS_REASSIGNED` is its own audit action recording **both** counselor ids, because
+  "which counselor lost this class" is unanswerable from the new value alone; the new owner is
+  notified (§44's direct-call form, as the assignment fan-out is) since a class appearing in a
+  counselor's list with no explanation is how a transfer becomes a support ticket; the *previous*
+  owner deliberately is not, because the usual reason for doing this is that they have left.
+  `?counselor_id=` on the class list is **ignored for a counselor** rather than honoured — their
+  scope is themselves, and the parameter exists for the one caller already entitled to the whole
+  table.
+* **The UI is the panel, and it fetches on open.** `CounselorClassesPanel` on the admin's counselor
+  detail page: the target is picked **once** at the top and each class carries its own Reassign
+  button, so one departing counselor and one replacement is one choice and nine presses rather than
+  nine choices. A "reassign all" button is deliberately absent — it would be N requests behind one
+  control, and a failure halfway through leaves a state nobody asked for with nothing on screen
+  saying which half moved. Each press is one call and one audit row. The candidate picker is the
+  P3-2 server-backed typeahead, fetched on open (a detail page should not spend a request on a
+  picker nobody touched) and **saying when it truncates**. Every row's button carries an
+  `aria-label` naming its class — two rows otherwise present two identically-named "Reassign"
+  buttons, the same a11y defect P3-2a found on the canonical-programme rows.
+* **Files:** `modules/classes/{routes,schemas,class-service}.ts`,
+  `modules/identity/counselor-management-service.ts`, `modules/platform/audit-service.ts`,
+  `src/app.ts`, `test/classes/reassignment.test.ts` (new),
+  `frontend/src/features/admin/components/CounselorClassesPanel.tsx` (new) + its test,
+  `features/admin/pages/{CounselorDetailPage,CounselorManagementPage}.tsx`,
+  `features/admin/hooks/usePlatformAdmin.ts`, `services/classApi.ts`,
+  `CounselorManagementPage.test.tsx`
+* **Verify:** ✅ **15 backend + 13 frontend tests, guards fired red first.** Disabling the
+  live-class guard → 2 tests red; making `counselor_id` writable on the counselor route → the
+  refusal test red; removing the fetch-on-open, the self-exclusion and the row `aria-label` → 8
+  frontend tests red. All restored and green. Full run: backend **907 passing** (69 files, was
+  877/66), frontend **195** (23 files, was 182/22); type-check · lint · `gate:platform` ·
+  `gate:bundle` (266 KiB) · `gate:assets` · build all clean, and the demo path re-walked in real
+  Chrome (see P3-4's verify line — the same run covers all three items).
+  ⚠️ **One thing the red run corrected, recorded rather than smoothed over:** widening
+  `adminClassRoutes`' own `ensureRole` to admit counselors leaves the 403 test **green**, because
+  every router mounted on `/admin` declares the same gate and Hono runs all of their chains, so the
+  first one refuses. That is defence in depth, not redundancy to delete — but it means the 403 is a
+  claim about the *prefix*, and the test now says so. The assertion that pins this item's own
+  decision is the second half of it.
+* **Effort:** 4–6 h (as estimated).
+
+### `[x]` **P3-7 — DLQ alerting** — *done 2026-07-30. 892 BE includes its 7.*
+
+**The queue consumer, not the `scheduled` sweep the item also offered.** The consumer wins on every
+axis: it fires the moment the message dies rather than up to 24 hours later, it already holds the
+batch (so the count and the job types are in hand with no state to persist and re-read), and it costs
+nothing at all on the overwhelming majority of days when nothing dead-letters. A cron sweep would
+have had to invent somewhere to *record* DLQ activity in order to notice it later — a table whose
+only reader is the thing that writes it.
+
+**The alert has to arrive where an administrator already looks.** H1 made a dead-lettered job
+recorded — logged, marked FAILED where it can be, acked rather than dropped. It did not make it
+*noticed*: `console.error` reaches Workers Logs, which is somewhere you look once you already suspect
+something, and the defining property of a failing background queue is that it produces no symptom to
+suspect. So it is a §44 notification to every active administrator, which is in the shell of every
+signed-in page. Counselors and students are not told; a dead queue is an operator's problem.
+
+**One alert per queue per 15 minutes, and the alert says so.** A broken pipeline does not
+dead-letter one message, it dead-letters every message, ten at a time — so the un-throttled version
+of this feature is a hundred identical rows in the bell, which is an alert nobody reads and therefore
+worse than none, because it also hides the ones that matter. The throttle is `AuthGuardDO.charge()`
+again, keyed on the **queue** rather than on a recipient (two administrators must not each receive a
+full storm just because there are two of them, and the AI queue going quiet is a different fact from
+the default queue going quiet). And the suppression is stated in the message body — *"further alerts
+for this queue are muted for 15 minutes, so this may not be all of them"* — because "3 jobs failed"
+when 300 did is a worse lie than silence.
+
+**Both channels, deliberately different.** The notification is throttled and per batch; the log line
+gained a stable `alert: "dead_letter_queue"` field and is written for **every** message, unthrottled,
+so a Workers Logs alert can filter on it and reach someone who is not signed in. Documented as an
+operational step in **DEPLOYMENT.md §8.2**, along with the note that neither channel can say *why* a
+job failed — that is the `Queue job failed.` line from the source consumer, three attempts earlier,
+which carries the error and the correlation id.
+
+* **Files:** `src/jobs/dlq-alert.ts` (new), `src/index.ts`, `lib/auth-guard.ts`,
+  `test/platform/dlq-alert.test.ts` (new), `DEPLOYMENT.md`
+* **Verify:** ✅ **7 tests driving the real `queue()` entry point with real DLQ batches**, the same
+  way `test/ai/queue-consumer.test.ts` drives the source-queue path. Unwiring the alert call → **6 of
+  7 red**; disabling the throttle → the two throttle tests red. Both restored and green.
+  ✅ **Alerting cannot cost the batch** — proven by breaking it for real rather than by reading the
+  `try`/`catch`: `queue()` takes its `env` as a parameter, so the binding the alert reaches for first
+  is replaced with one that throws while `DB` stays real. Every message is still acked, no alert is
+  half-sent, and the *next* batch on that queue still reaches an administrator. A message already in
+  a dead-letter queue has nowhere further to fall; "this job died and the consumer recording it died
+  too" is the one outcome this must never produce.
+* **Effort:** 2 h (as estimated).
 
 ---
 
@@ -779,13 +969,20 @@ doc as unrun rather than implied to be covered.
         P3-5  backup & restore                     ✅ done — a stock D1 dump is restorable only by D1; fixed
         P3-2  catalog search                       ✅ done — the Colleges page was already showing 20 of 20
         P3-3  code splitting                       ✅ done — 972 → 507 KiB; the 350 kB target is below the framework floor
+        P3-4  rate limiting                        ✅ done — found /admin/dashboard authenticating 6× per request
+        P3-6  class reassignment                   ✅ done — a class could never be handed to a replacement
+        P3-7  DLQ alerting                         ✅ done — one alert per queue per 15 min, and it says so
+        ────────────────────────────────────────────────── hardened
 NOW ──► P3-1  production cutover                   (3–5 h)   ← needs your credentials
         ────────────────────────────────────────────────── launched
-        P3-4  rate limiting
-        P3-6  class reassignment    P3-7  DLQ alerting
-        ────────────────────────────────────────────────── hardened
-        Phase 4
+        Phase 4  (+ two dashboard-side steps: DEPLOYMENT.md §8.1 WAF rule, §8.2 Workers Logs alert)
 ```
+
+**P3-1 is now the only thing between here and production**, and the three items that used to sit
+*after* it were brought forward on purpose: two of them turned out to be about states a live
+deployment cannot get back out of. P3-6's was permanent by construction — `counselor_id` was writable
+by nothing, so the first counselor to leave took their classes' ownership with them for good. P3-7's
+was permanent by silence. Doing either after launch means doing it to real data.
 
 **Minimum before the defense: all three done.** They earned their place at the top of this list. P1-2
 found a CSP that stripped the app's typeface on every screen, in production and nowhere else. P2-2
@@ -814,4 +1011,5 @@ system — and the fourth, the stale walkthrough, was the tool that was supposed
 | 2026-07-29 | P3-2a | **867** BE / **171** FE | The two defects P3-2 exposed, fixed rather than filed as P4 items. **`/admin/canonical-programs/options` had no caller at all** — not the program form its own comment named, not anything else; the endpoint and its hook were both orphans reachable only by `curl`. That is **F1 and F2 together**, the defect class this plan opens by naming, sitting unnoticed in the catalog module. It was also unbounded, under a comment reading "Two dozen rows at thesis scale", while migration 0018 mints a new entry for every unseen programme code an admin types. Separately, **the merge target picker was reading the current page rather than the catalog** — so past one page an entry could not be merged into a target on another, and P3-2's own search made that worse before better: find the target, press Merge, and it is still not among the candidates. One fix for both, since the orphaned endpoint is precisely what the picker needed. An a11y defect fell out of testing it: nine rows presented nine identically-named "Merge" buttons to a screen reader, with nothing to say which entry was about to be retired. |
 | 2026-07-29 | P3-2 | **863** BE / **165** FE | Catalog search, filter, sort and paging (F3 + F4). The item was written about the careers picker; **the Colleges page turned out to be the one already over the edge** — no pager, no search, and a request that sent no `per_page`, so it took the API's default of 20 against a catalog of exactly 20 seeded colleges. It was showing 20 of 20 and looking complete. Adding `sort=created_at` also required making paging *total* first: seed 0004 inserts its 68 careers in one statement and SQLite evaluates `'now'` once per statement, so **every seeded career shares one `created_at` to the millisecond** — an `ORDER BY` over an all-ties column is unspecified per execution, which permits a row on two pages and another on none. Every list now ends its order on the id. Search terms are escaped, so `100%` stops meaning "starts with 100". The picker fetches on open rather than on mount and **says when it is truncating** — the silence was what made F3 invisible. Three private copies of `useDebouncedValue` became one; `SearchInput` and `Pagination` were extracted from `AddressTable` and it now consumes them. Every guard fired red before it was trusted. |
 | 2026-07-29 | P3-3 | **877** BE / **182** FE | Code splitting (audit P2). The item asked for < 350 kB on the student path and the honest answer is **507 KiB**, because **41% of the 936 kB chunk was framework, not pages** — React, React DOM, React Router, TanStack Query and axios are reached by `main.tsx` and `ProtectedRoute` before the app can know which shell to fetch, and that closure is **399 KiB** on its own. 350 kB is below the floor; the two dependency-level ways under it are measured and filed as P4-15/P4-16 rather than guessed at. What the split did buy: **972 → 507 KiB raw, 279 → 159 KiB gzipped**, and a student no longer downloads 262 KiB of admin, counselor and builder pages. Seven groups rather than five — the builder is routed by *both* staff shells and `/join` is not a staff door. **The gate matters more than the split**: one static import of a group barrel folds it back into the entry with a green build, a green type-check and 182 green tests, so `--assets` now reads Vite's manifest and weighs each route's closure. Proven by breaking it — `admin-*.js` ceased to exist, the entry went 209 → 468 kB, **4 gates red, exit 1**. **Two defects found:** `walkthrough.mjs` had been stale since P3-2 (still driving the `<select>` the catalog-search item replaced with a typeahead) and said so only because P3-3 ran it; and **`React.lazy` caches its own rejection**, so `ErrorBoundary`'s "Try again" cannot recover a failed chunk — "Go home" can, because it is a full document navigation. Re-walked in real Chrome: **95/98**, the 3 failures being the same known RAG legs; **csp-check PASS on 15 screens**, with Zod's accepted `eval` probe now firing on 12 of them instead of 15. |
+| 2026-07-30 | P3-4, P3-6, P3-7 | **907** BE / **195** FE | The last three Phase 3 items, and **the first of them found a defect none of the other 877 tests could see**. P3-4's per-user counter charges once per execution of `authenticate()`, which made it the only instrument in the system that can count them — and it counted **six** on `/admin/dashboard`, five on `/admin/counselors`, four on `/counselor/dashboard`. §10 gives every module its own routes file and six of them mount on `/admin`; Hono merges each sub-app's `use('*')` into the parent, so a path whose handler sits in the last-registered router runs the full middleware chain of every router in front of it. **Twelve D1 reads to answer "who is this"** on the admin's landing screen, against a 50-subrequest ceiling, with every response correct throughout. One early return fixed it. The limiter itself is charged inside `authenticate()` rather than as a global middleware (Hono's global `use` runs before the sub-router, so it cannot see the user) and its limit is a var — the only one of six that is, because a test file compresses a day of one user's requests into three seconds. `Retry-After` now lands on every 429 in the system from `app.onError`, so the five pre-existing limiters gained it for free; the WAF half S2 also wants is written up in DEPLOYMENT.md §8.1 rather than claimed here, because dashboard configuration cannot have tests. **P3-6 did both halves of its "or", since either alone is worse than useless**: `counselor_id` was writable by nothing, so a departing counselor's classes were stuck pointing at a removed account *permanently* — an admin could see them and no replacement could ever be given them. The endpoint lives on its own `/admin` router rather than as a field on the counselor's PATCH, because that route admits counselors and the field would have let any of them hand a colleague's class to themselves. Deletion is now refused on exactly the `classes_count` already rendered beside the name, and the refusal links to the screen that fixes it. **P3-7 alerts once per queue per 15 minutes and says that it is doing so** — a broken pipeline dead-letters every message, ten at a time, and "3 jobs failed" when 300 did is a worse lie than silence. Proven un-breakable-by-alerting the honest way: `queue()` takes its env as a parameter, so the binding the alert reaches for first was replaced with one that throws, and every message was still acked. |
 | 2026-07-28 | P2-2 | **811** BE / 112 FE | Staging rehearsal. **`generateFor` 500'd on D1's 100-parameter limit — every student got zero recommendations, caused by P0-1's own catalog expansion.** Fixed via `chunkIds`; 4 regression tests. `walkthrough.mjs` un-rotted (4 stale selectors + a removed auto-advance). Two duplicate careers archived. C1 proven live: **0/10 overlap** between opposite profiles. |

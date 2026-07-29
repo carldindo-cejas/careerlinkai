@@ -145,6 +145,42 @@ gate(
   'Test the AI/RAG pipelines against a stubbed gateway, never a live binding.',
 );
 
+/**
+ * **Every numeric `[vars]` entry `lib/config.ts` requires, in every scope** (plan P3-4).
+ *
+ * `requireNumber` throws on a missing or unparseable var rather than falling back to a silent
+ * default, which is the right call and also raises the stakes: `API_RATE_LIMIT_PER_MINUTE` is read
+ * inside `authenticate()`, so an environment that omits it does not degrade — **every
+ * authenticated request in that environment 500s**. Wrangler environments inherit no vars, and a
+ * `[vars]` block is exactly the sort of thing that gets copied for a new environment and edited
+ * incompletely. Cheaper to fail here than at 8 a.m. on a Monday.
+ */
+const REQUIRED_NUMERIC_VARS = [
+  'STUDENT_JOIN_CODE_TTL_DAYS',
+  'STUDENT_TOKEN_TTL_HOURS',
+  'STAFF_TOKEN_TTL_HOURS',
+  'ASSESSMENT_GENERATION_MAX_QUESTIONS',
+  'API_RATE_LIMIT_PER_MINUTE',
+];
+
+for (const name of REQUIRED_NUMERIC_VARS) {
+  // Three scopes in wrangler.toml (top level, staging, production) — the same count the
+  // AUTH_DO gate asserts, and for the same inheritance reason.
+  const declared = (wranglerToml.match(new RegExp(`^${name} = "\\d+"`, 'gm')) ?? []).length;
+
+  gate(
+    `wrangler.toml: ${name} declared as a number in all three scopes`,
+    declared >= 3,
+    `Found ${declared} declaration(s); expected 3. lib/config.ts throws on a missing numeric var — for API_RATE_LIMIT_PER_MINUTE that means every authenticated request in that environment answers 500.`,
+  );
+
+  gate(
+    `wrangler.test.toml: ${name} declared (the suite boots the same config code)`,
+    new RegExp(`^${name} = "\\d+"`, 'm').test(wranglerTestToml),
+    `Add ${name} to wrangler.test.toml's [vars].`,
+  );
+}
+
 // The Phase H operational surfaces (audit H1 / M11 / observability). Each is a config-only
 // capability a deploy ships fine without — so a missing one is exactly the silent kind of gap
 // these gates exist to catch: a dropped dead-lettered job, unpersisted logs, no housekeeping.

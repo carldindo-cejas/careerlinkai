@@ -5,6 +5,7 @@ import {
   classes,
   gradeLevels,
   shsStrands,
+  users,
   type ClassRoom,
   type GradeLevel,
   type ShsStrand,
@@ -21,6 +22,7 @@ import type { Env } from '@/env';
 import { generateJoinCode } from '@/modules/classes/join-code';
 import type { CreateClassInput, UpdateClassInput } from '@/modules/classes/schemas';
 import { AuditService } from '@/modules/platform/audit-service';
+import { NotificationService } from '@/modules/platform/notification-service';
 import { authorizeClass } from '@/policies/class';
 
 /**
@@ -52,12 +54,28 @@ export class ClassService {
     this.audit = new AuditService(db);
   }
 
-  /** The caller's classes; an admin sees every class (§39). */
-  async list(user: User, page: number, perPage: number): Promise<PaginatedData<ClassRoom>> {
+  /**
+   * The caller's classes; an admin sees every class (§39).
+   *
+   * `counselorId` narrows an admin's view to one counselor's classes (P3-6) and is **ignored for a
+   * counselor**, not honoured — deliberately. Honouring it would turn a list endpoint into an
+   * existence oracle: "give me counselor X's classes" answering an empty page for a colleague who
+   * has none and an empty page for a colleague who has nine is fine, but any future join or count
+   * added here would start leaking. A counselor's scope is themselves, full stop; the parameter
+   * exists for the one caller who is already entitled to the whole table.
+   */
+  async list(
+    user: User,
+    page: number,
+    perPage: number,
+    counselorId?: string,
+  ): Promise<PaginatedData<ClassRoom>> {
+    const owner = user.role === 'admin' ? counselorId : user.id;
+
     const scope =
-      user.role === 'admin'
+      owner === undefined
         ? isNull(classes.deletedAt)
-        : and(eq(classes.counselorId, user.id), isNull(classes.deletedAt));
+        : and(eq(classes.counselorId, owner), isNull(classes.deletedAt));
 
     const [total] = await this.db.select({ value: count() }).from(classes).where(scope);
 
@@ -271,6 +289,91 @@ export class ClassService {
         [applyGlobalAssignments(this.db)],
       );
     }
+
+    return { ...existing, ...changes };
+  }
+
+  /**
+   * **Hand a class to a different counselor** (audit F5, plan P3-6) — admin only.
+   *
+   * ## The gap this closes
+   *
+   * `counselor_id` is set at creation and was writable by nothing: not `updateClassSchema`, not any
+   * endpoint, not any admin screen. So when a counselor left, their classes stayed pointed at the
+   * account that left with them. Nothing was lost — `canViewClass` passes admins, so the rosters,
+   * results and recommendations all stayed reachable — but no replacement counselor could ever be
+   * given the class, which meant no replacement could see their own students' results, use the
+   * class's join code, or close its assignments. The recovery was hand-written SQL, which is the
+   * same place audit C2 (`resetPassword`) started.
+   *
+   * ## Why the target must be an *active* counselor
+   *
+   * Handing a class to a suspended account, a soft-deleted one, or an admin produces a class whose
+   * owner cannot manage it — the shape of the defect this method exists to fix, re-created by the
+   * fix. Admins are excluded even though they can *see* every class: `counselor_id` is what the
+   * counselor list, the students view and every ownership check read, and an admin in that column
+   * is a class that belongs to nobody in the only sense the word is used here.
+   *
+   * ## Same owner is a no-op, not an error and not an audit row
+   *
+   * Reassigning a class to the counselor who already owns it changes nothing, so it writes nothing
+   * — same rule the status transition in `update()` follows. An audit row claiming a transfer that
+   * did not happen is worse than no row: this trail is the record of who moved a class and when.
+   */
+  async reassign(
+    admin: User,
+    id: string,
+    counselorId: string,
+    ipAddress: string | null,
+  ): Promise<ClassRoom> {
+    const existing = await this.find(admin, id);
+
+    if (existing.counselorId === counselorId) {
+      return existing;
+    }
+
+    const target = await this.db.query.users.findFirst({
+      where: and(eq(users.id, counselorId), isNull(users.deletedAt)),
+    });
+
+    if (target?.role !== 'counselor' || target.status !== 'active') {
+      throw ApiError.validation({
+        counselor_id: ['Choose an active counselor to hand this class to.'],
+      });
+    }
+
+    const changes = { counselorId: target.id, updatedAt: now() };
+
+    await this.db.update(classes).set(changes).where(eq(classes.id, existing.id));
+
+    await this.audit.write({
+      action: 'CLASS_REASSIGNED',
+      module: MODULE,
+      userId: admin.id,
+      targetType: 'class',
+      targetId: existing.id,
+      // Both ends recorded: "who lost this class" is the question asked when a counselor says a
+      // class has vanished from their list, and it is unanswerable from the new value alone.
+      oldValues: { counselor_id: existing.counselorId },
+      newValues: { counselor_id: target.id },
+      ipAddress,
+    });
+
+    /**
+     * Tell the new owner (§44's direct-call form, as the assignment fan-out does).
+     *
+     * A class appearing in a counselor's list with no explanation is how a transfer becomes a
+     * support question. The *previous* owner is deliberately not notified here: the administrator
+     * doing this is generally acting because that person has left, and a notification to an account
+     * nobody is signing into is a row nobody reads. If offboarding ever needs a hand-over receipt,
+     * the audit row above is the honest place to read it from.
+     */
+    await new NotificationService(this.db).send({
+      userId: target.id,
+      title: 'A class was assigned to you',
+      message: `You are now the counselor for ${existing.name} (${existing.academicYear}). Its roster, assignments and results are on your Classes page.`,
+      category: 'CLASS',
+    });
 
     return { ...existing, ...changes };
   }

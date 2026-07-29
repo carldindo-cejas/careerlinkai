@@ -47,6 +47,8 @@ export interface Env {
   STUDENT_TOKEN_TTL_HOURS: string;
   STAFF_TOKEN_TTL_HOURS: string;
   ASSESSMENT_GENERATION_MAX_QUESTIONS: string;
+  /** Audit S2 / plan P3-4 — the coarse per-user request budget. See `lib/config.ts`. */
+  API_RATE_LIMIT_PER_MINUTE: string;
 }
 
 /**

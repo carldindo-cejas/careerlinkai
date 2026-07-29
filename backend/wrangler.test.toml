@@ -25,8 +25,10 @@
 # real-model smoke check is ever wanted, it belongs in its own suite, run deliberately, with
 # its own config — not wired into the gate that has to be green on every push.
 #
-# Keep the `[vars]` below in lockstep with wrangler.toml. Everything else here is deliberately
-# identical, so a test exercises the same router, middleware and SQL dialect as production.
+# Keep the `[vars]` below in lockstep with wrangler.toml — with exactly one deliberate exception,
+# `API_RATE_LIMIT_PER_MINUTE`, whose reason is written out where it is set. Everything else here is
+# deliberately identical, so a test exercises the same router, middleware and SQL dialect as
+# production.
 
 name = "careerlinkai"
 main = "src/index.ts"
@@ -42,6 +44,21 @@ STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
 STAFF_TOKEN_TTL_HOURS = "168"
 ASSESSMENT_GENERATION_MAX_QUESTIONS = "50"
+# **The one var deliberately out of lockstep with wrangler.toml** (which is "300"), and the
+# reason is the suite's own shape rather than a shortcut.
+#
+# P3-4 charges every authenticated request against a per-user, per-*minute* counter. A test file
+# compresses what a human does in a day into a few seconds: `test/assessment/player.test.ts` alone
+# drives one student through three 60-item instruments — ~200 requests as fast as workerd can
+# serve them — and DO storage is shared across the tests in a file (see test/setup.ts). At the
+# production number that file would start failing on the fixture, not on the product, and the
+# failure would arrive in whichever file happened to grow past the line next.
+#
+# So the suite runs with the limiter *installed and executing on every request* — the DO round
+# trip, the atomic charge, the 429 path all real — at a ceiling no fixture can reach.
+# `test/platform/rate-limit.test.ts` then sets a small limit on `env` and drives both sides of the
+# decision, which is the only way to test a per-minute budget inside a suite that has no minutes.
+API_RATE_LIMIT_PER_MINUTE = "1000000"
 
 [[d1_databases]]
 binding = "DB"

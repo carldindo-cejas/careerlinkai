@@ -52,6 +52,11 @@ export type AuditAction =
   | 'CLASS_UPDATED'
   | 'CLASS_DELETED'
   | 'CLASS_CODE_REGENERATED'
+  // P3-6 (audit F5). Its own action rather than a CLASS_UPDATED, for the same reason
+  // CANONICAL_PROGRAM_MERGED is not one: it moves who can see a roster's results, and "which
+  // counselor lost this class, and when" has to be answerable by filtering rather than by reading
+  // every update row's diff.
+  | 'CLASS_REASSIGNED'
   | 'ROSTER_STUDENTS_ENROLLED'
   | 'ROSTER_STUDENT_REMOVED'
   | 'COLLEGE_CREATED'
@@ -224,6 +229,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   CLASS_DELETED: 'DELETE',
   /** A rotation revokes the old code — an update to the class, not a new class. */
   CLASS_CODE_REGENERATED: 'UPDATE',
+  CLASS_REASSIGNED: 'UPDATE',
   ROSTER_STUDENTS_ENROLLED: 'CREATE',
   ROSTER_STUDENT_REMOVED: 'DELETE',
   // Catalog.

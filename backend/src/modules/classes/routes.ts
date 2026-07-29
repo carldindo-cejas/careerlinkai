@@ -15,6 +15,7 @@ import {
   createClassSchema,
   listClassesQuerySchema,
   previewRosterSchema,
+  reassignClassSchema,
   updateClassSchema,
 } from '@/modules/classes/schemas';
 import { serializeClass } from '@/modules/classes/serializers';
@@ -84,9 +85,14 @@ counselorRoutes.get('/class-options', async (c) => {
 counselorRoutes.get('/classes', async (c) => {
   // Through `parseQuery`, not a bare `.parse()`: an out-of-range `per_page` is a client
   // mistake and must answer 422, not 500 (see lib/validation.ts).
-  const query = parseQuery(c, listClassesQuerySchema, ['page', 'per_page']);
+  const query = parseQuery(c, listClassesQuerySchema, ['page', 'per_page', 'counselor_id']);
 
-  const page = await classService(c).list(requireUser(c), query.page, query.per_page);
+  const page = await classService(c).list(
+    requireUser(c),
+    query.page,
+    query.per_page,
+    query.counselor_id,
+  );
 
   return c.json(
     successEnvelope(
@@ -186,4 +192,43 @@ counselorRoutes.delete('/classes/:id/students/:studentId', async (c) => {
   );
 
   return c.body(null, 204);
+});
+
+// --- Admin: class reassignment (audit F5, plan P3-6) ----------------------------------
+
+/**
+ * The Class module's `/admin` router — one endpoint, and it is on its own prefix for a reason
+ * rather than for symmetry.
+ *
+ * Reassignment is the one operation on a class that a counselor must **not** be able to perform.
+ * `/counselor/classes/:id` is mounted behind `ensureRole('counselor', 'admin')`, so a
+ * `counselor_id` accepted there would be writable by every counselor in the school — each of whom
+ * could hand a colleague's class to themselves, or their own away, and inherit or shed a roster's
+ * results with it. A separate router behind `ensureRole('admin')` makes that impossible by
+ * construction instead of by remembering to check inside the handler.
+ */
+export const adminClassRoutes = new Hono<AppEnv>();
+
+adminClassRoutes.use('*', authenticate());
+adminClassRoutes.use('*', ensureRole('admin'));
+adminClassRoutes.use('*', ensurePasswordChanged());
+
+/**
+ * `PATCH /admin/classes/{id}` — hand a class to a different counselor.
+ *
+ * A PATCH rather than a POST /transfer: this is a change to one field of a resource that already
+ * exists, and the audit row (`CLASS_REASSIGNED`, both counselor ids recorded) is what makes it an
+ * event. Same-owner is a no-op that writes nothing — see the service.
+ */
+adminClassRoutes.patch('/classes/:id', async (c) => {
+  const input = await parseBody(c, reassignClassSchema);
+
+  const classRoom = await classService(c).reassign(
+    requireUser(c),
+    c.req.param('id'),
+    input.counselor_id,
+    clientIp(c),
+  );
+
+  return c.json(successEnvelope(serializeClass(classRoom), 'Class reassigned successfully.'));
 });

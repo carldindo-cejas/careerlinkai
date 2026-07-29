@@ -16,7 +16,8 @@ type NumericVar =
   | 'STUDENT_JOIN_CODE_TTL_DAYS'
   | 'STUDENT_TOKEN_TTL_HOURS'
   | 'STAFF_TOKEN_TTL_HOURS'
-  | 'ASSESSMENT_GENERATION_MAX_QUESTIONS';
+  | 'ASSESSMENT_GENERATION_MAX_QUESTIONS'
+  | 'API_RATE_LIMIT_PER_MINUTE';
 
 function requireNumber(env: Env, key: NumericVar): number {
   const raw = env[key];
@@ -54,4 +55,22 @@ export function assessmentGenerationMaxQuestions(env: Env): number {
  */
 export function staffTokenTtlHours(env: Env): number {
   return requireNumber(env, 'STAFF_TOKEN_TTL_HOURS');
+}
+
+/**
+ * The S2 general API budget: requests per minute per authenticated user (plan P3-4).
+ *
+ * **This one throws on every authenticated request if the var is missing**, which is a far wider
+ * blast radius than the four above — so `scripts/platform-gates.mjs` asserts it is declared in all
+ * three wrangler scopes, statically, on every push. That is the deal this module's header describes
+ * (a missing var is a deployment error, not a silent default) with the check moved early enough to
+ * be worth having: an environment that forgot it fails the gate rather than the deploy, and fails
+ * the deploy rather than the school day.
+ *
+ * A silent fallback was considered and rejected for the usual reason — the fallback that gets
+ * chosen is either so high it is not a limit or so low it breaks a lab of forty, and either way
+ * nobody finds out which until it matters.
+ */
+export function apiRateLimitPerMinute(env: Env): number {
+  return requireNumber(env, 'API_RATE_LIMIT_PER_MINUTE');
 }

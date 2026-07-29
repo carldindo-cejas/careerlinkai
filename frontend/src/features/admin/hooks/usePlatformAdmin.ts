@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { classApi } from '@/services/classApi';
 import { counselorManagementApi } from '@/services/counselorManagementApi';
 import { platformApi } from '@/services/platformApi';
 import type {
@@ -19,6 +20,7 @@ export const platformAdminKeys = {
   auditFilterOptions: ['admin', 'audit-logs', 'filter-options'] as const,
   counselors: (params: Record<string, unknown>) => ['admin', 'counselors', params] as const,
   counselorStudents: (id: string) => ['admin', 'counselors', id, 'students'] as const,
+  counselorClasses: (id: string) => ['admin', 'counselors', id, 'classes'] as const,
 };
 
 export function useAdminDashboard() {
@@ -80,11 +82,54 @@ export function useExportAuditLogs() {
   });
 }
 
-export function useCounselors(params: { page?: number; search?: string; status?: string }) {
+/**
+ * `enabled` follows the P2-1 / P3-2 pattern: a picker that fetches on **open** rather than on
+ * mount, so a screen holding several of them costs one request per picker a user actually used.
+ */
+export function useCounselors(
+  params: { page?: number; search?: string; status?: string },
+  enabled = true,
+) {
   return useQuery({
     queryKey: platformAdminKeys.counselors(params),
     queryFn: () => counselorManagementApi.list(params),
     placeholderData: (previous) => previous,
+    enabled,
+  });
+}
+
+/**
+ * One counselor's live classes (audit F5, plan P3-6) — the list the reassignment panel works
+ * through, and the same set whose non-emptiness refuses `DELETE /admin/counselors/{id}`.
+ */
+export function useCounselorClasses(counselorId: string) {
+  return useQuery({
+    queryKey: platformAdminKeys.counselorClasses(counselorId),
+    queryFn: () => classApi.listForCounselor(counselorId),
+    enabled: counselorId !== '',
+  });
+}
+
+/**
+ * Hand one class to another counselor.
+ *
+ * Invalidates the counselor **list** as well as the two class queries: `classes_count` is rendered
+ * on every row of it, and it is the number the deletion guard refuses on — a stale one would tell
+ * an admin the class had not moved and then refuse the removal for a class that is no longer there.
+ */
+export function useReassignClass(fromCounselorId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ classId, counselorId }: { classId: string; counselorId: string }) =>
+      classApi.reassign(classId, counselorId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: platformAdminKeys.counselorClasses(fromCounselorId),
+      });
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'counselors'] });
+      void queryClient.invalidateQueries({ queryKey: ['classes'] });
+    },
   });
 }
 
