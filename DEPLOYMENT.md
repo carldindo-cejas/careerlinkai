@@ -164,6 +164,17 @@ one release — add columns, do not rename or drop them in the same deploy that 
 shape. If a rollback is needed *across* a destructive migration, the honest answer is restore from a
 D1 point-in-time backup, not `wrangler rollback`.
 
+That restore is now a procedure rather than a sentence — see **[`BACKUP-AND-RECOVERY.md`](BACKUP-AND-RECOVERY.md)**.
+The short version, in the order you should try them:
+
+```bash
+cd backend
+npx wrangler d1 time-travel restore CareerLinkAI_Main --env production --timestamp <ISO-8601>
+#   ↑ in place, no dump, no downtime window, anything inside 30 days — try this first
+
+npm run db:backup:production   # take one BEFORE every migration; the RPO is 24 h otherwise
+```
+
 **If a deploy fails mid-way:** Wrangler uploads assets and script together and switches atomically, so
 a failed deploy leaves the previous version serving. Nothing is half-live.
 

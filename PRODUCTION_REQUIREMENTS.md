@@ -168,3 +168,17 @@ can both pass on a system that still recommends the same ten careers to everybod
 `npx wrangler rollback [version-id] --env production` reverts the script. Note this reverts *code
 only* — an applied D1 migration is not undone by a rollback, so a deploy that ships a destructive
 migration is not recoverable this way. None of 0001–0019 drop data.
+
+**Backups.** The database side of that gap is closed by
+[`BACKUP-AND-RECOVERY.md`](BACKUP-AND-RECOVERY.md) (plan P3-5). Two things to fold into the cutover
+above rather than leave for later:
+
+* Run `npm run db:backup:production` **immediately after step 6**, before the first deploy — the
+  first backup of a system is the one it is easiest to postpone, and steps 4–6 are exactly the state
+  that is expensive to recreate by hand.
+* Put the daily job on a schedule the same day. Until it exists the RPO is "everything since the
+  last time someone remembered".
+
+Time Travel covers the first 30 days in place with nothing to configure, which is most of what
+actually goes wrong; the exports cover the database being deleted and the account being lost, which
+it cannot.

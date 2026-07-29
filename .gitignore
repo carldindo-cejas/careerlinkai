@@ -9,6 +9,12 @@ frontend/dist/
 .wrangler/
 .dev.vars
 
+# D1 dumps (plan P3-5). Never committed: a dump is the whole database — every user row, every
+# PBKDF2 hash, every audit log. Backups belong in the offsite store BACKUP-AND-RECOVERY.md names,
+# not in a git history that is cloned onto every machine that ever touches this project.
+.backups/
+wrangler.drill.toml
+
 # Environment
 .env
 .env.local

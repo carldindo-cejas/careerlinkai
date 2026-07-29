@@ -32,7 +32,15 @@
     "db:seed:catalog:full:staging": "wrangler d1 execute CareerLinkAI_Staging --remote --env staging -y --file=./seeds/0004_academic_catalog_expansion.sql",
     "db:seed:ai-policy:staging": "wrangler d1 execute CareerLinkAI_Staging --remote --env staging -y --file=./seeds/0003_ai_policy.sql",
     "db:seed:catalog:full:production": "wrangler d1 execute CareerLinkAI_Main --remote --env production -y --file=./seeds/0004_academic_catalog_expansion.sql",
-    "db:seed:ai-policy:production": "wrangler d1 execute CareerLinkAI_Main --remote --env production -y --file=./seeds/0003_ai_policy.sql"
+    "db:seed:ai-policy:production": "wrangler d1 execute CareerLinkAI_Main --remote --env production -y --file=./seeds/0003_ai_policy.sql",
+    "_comment:db:backup": "Plan P3-5. Exports AND verifies: the dump's per-table row counts are compared against the live database's own COUNT(*), because `wrangler d1 export` exits 0 on an empty database and a mistargeted --env writes a perfect backup of nothing, every night, until the restore. Retention and the offsite copy are in BACKUP-AND-RECOVERY.md.",
+    "db:backup:staging": "node scripts/d1-backup.mjs --env staging",
+    "db:backup:production": "node scripts/d1-backup.mjs --env production",
+    "db:backup:local": "node scripts/d1-backup.mjs --local",
+    "_comment:db:restore": "Takes --from/--into and refuses to guess either. For an in-place rollback inside 30 days use `wrangler d1 time-travel restore` instead — it needs no dump and leaves no window in which the data is absent.",
+    "db:restore": "node scripts/d1-restore.mjs",
+    "_comment:db:restore:drill": "The rehearsal. Restores a backup into a throwaway local database, boots the real Worker against it, and asserts a student is served the recommendations the backup holds. Nothing it does can reach a deployed database.",
+    "db:restore:drill": "node scripts/restore-drill.mjs --env staging"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
