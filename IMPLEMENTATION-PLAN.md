@@ -359,10 +359,82 @@ standalone a11y script could audit every screen except the one worth auditing.
 
 ## Phase 3 — Before production launch
 
-### `[!]` **P3-1 — Production cutover** *(audit C3 — blocked on you)*
+### `[~]` **P3-1 — Production cutover** — *steps 1–8 done 2026-07-30. Found the defect step 8 exists to find. Steps 9–10 need a browser.*
 
-Needs live Cloudflare credentials and is irreversible; deliberately not automated. Runbook is in
-`PRODUCTION_REQUIREMENTS.md` and is now correct (19 migrations, seed 0004, install step, rollback).
+`[~]` and not `[x]` for one reason: steps 9 and 10 — the forced rotation, **Install RIASEC & SCCT**,
+and the two-profile end-to-end smoke — require a human in a browser and have not been run. Per this
+document's own rule, the code being deployed is not the item being done. **A production with no
+assessments installed cannot assess anybody**, so step 9 is not paperwork.
+
+**What is live and verified:** `https://careerlinkai.online/api/v1/health` →
+`{"status":"ok","environment":"production","version":"v1"}` on both apex and `www`; the served
+`index.html` is the current build (entry `index-DCwsQ7y5.js` and `index-C6tHFjIC.css`, hashes
+matching the local `dist/` exactly, P3-3's modulepreload split present, and none of the April build's
+Fraunces preconnects); all five route chunks 200 with `immutable` caching; CSP, HSTS, X-Frame-Options
+and Permissions-Policy all present on the document with one `Cache-Control` value, not the
+accumulation P1-2 checked for. D1: **19 migrations applied, 20 colleges / 68 careers / 48 canonical /
+309 offerings / 933 mappings, 0 case-insensitive duplicates, 0 programmes with a NULL canonical
+link** — P1-0's and P2-2's defect classes both checked on the real database rather than assumed.
+
+**The cutover's own step 8 caught a defect that had been wrong in three documents at once.** Wrangler
+derives an environment's script name as `<name>-<env>`, so `npm run deploy:production` publishes
+**`careerlinkai-production`** — and `careerlinkai.online` was attached to the bare **`careerlinkai`**
+script, from the era when production was a plain `wrangler deploy` and no environments existed.
+`DEPLOYMENT.md` (§ the routing diagram *and* the environments table), `PRODUCTION_REQUIREMENTS.md` §6
+and `wrangler.toml`'s own comment all stated the two were one script. **Nothing caught it because
+`--env production` had never once been run** — staging is `careerlinkai-staging` and proves the
+derivation, which is exactly the evidence that would have predicted this. So the first cutover
+published a *third* Worker, healthy and correct and reachable by nobody, while the live domain went on
+serving the April build. `curl` on the domain is the only instrument that could see it, and it is
+step 8.
+
+**The obvious fix was tried first and refused by Cloudflare, which is the more useful finding.**
+Pinning `name = "careerlinkai"` in `[env.production]` to overwrite the legacy script in place
+resolves correctly (proven: `deployments list --env production` returned the April history) — and the
+deploy is then **rejected**: *"New version of script does not export class `NotificationDO` which is
+depended on by existing Durable Objects."* The legacy script holds live DO instances of a class that
+appears **in no committed config and nowhere in the current codebase** — the Initial Commit's
+`wrangler.toml` has no `[[migrations]]` and no `durable_objects` block at all. Its migration-tag state
+is therefore not derivable from this repository, and the only way through is a `deleted_classes`
+migration that destroys DO data nobody can inspect first. Deleting production Durable Objects to work
+around a *naming* mismatch is the wrong trade, so the domains were moved to the environment Wrangler
+already names.
+
+* **The attachment is now in `wrangler.toml`**, not the dashboard —
+  `[[env.production.routes]]` with `custom_domain = true`, for apex and `www`. Which script answers
+  the live domain was previously a fact stored only in a UI, which is how it drifted from three
+  documents without any of them going red; it is now re-asserted by every `wrangler deploy` and
+  reviewable in a diff.
+* **The legacy `careerlinkai` script is deliberately left deployed and domain-less** as a rollback
+  target. This also defuses rather than creates a footgun: a `wrangler deploy` with no `--env` targets
+  that script using the top-level `[vars]` block, which declares `APP_ENV = "local"` and
+  `FRONTEND_URL = localhost:5173` **against production's D1, R2, KV and queues**. Under the rejected
+  in-place approach that mistake would have put a Worker believing itself local onto the live domain;
+  now it publishes something unreachable.
+* **A queue accepts exactly one consumer**, so the first deploy's registrations had to be detached
+  from the abandoned sibling before the real one could take them (`Cannot delete this Worker as it is
+  a consumer for a Queue [code: 10064]`). Worth knowing before any future re-point: the failure
+  arrives at *delete* time, not at deploy time.
+* **Login was verified against the deployed Worker, not just asserted.** `bootstrap-staff.mjs` carries
+  `--verify-url` precisely because the script's PBKDF2 must agree with the Worker's — and it could not
+  be used here, since the accounts are seeded before the deploy exists. Checked afterwards by hand:
+  `POST /api/v1/auth/login` → **200, `role: admin`, `must_change_password: true`, token issued, 3.0 s**.
+  That latency is the finding: 600,000 iterations running inside `AuthGuardDO`'s 30-second budget
+  (deviation D14) on a Free-plan Worker whose own limit is 10 ms. It also proves the DO migration
+  applied on the fresh script.
+* **First backup taken before the first deploy**, per this plan's own note that steps 4–6 are the
+  state most expensive to recreate: **PASS — 432.4 KB, 45 tables, 1,516 rows**, verified table by
+  table against the live database, with the Time Travel bookmark recorded.
+* **Migrations were not all pending.** The runbook expected 19; production already had 0001–0016 from
+  an earlier partial run, so only 0017–0019 applied. `migrations list` then confirmed none pending,
+  which is the assertion that actually matters and the reason the runbook asks for it separately.
+* **Still open:** steps 9–10, and Vectorize `careerlinkai_main_knowledge` remains empty (§7 of
+  `PRODUCTION_REQUIREMENTS.md`) — RAG-grounded explanations need an ingestion pass; the deterministic
+  §27 reasons work without it, which is the §29 posture.
+
+Original runbook, for the record. Needs live Cloudflare credentials and is irreversible; deliberately
+not automated. `PRODUCTION_REQUIREMENTS.md` is correct on migrations, seed 0004, the install step and
+rollback.
 
 ```
 1. npx wrangler queues create careerlinkai-default-dlq
@@ -973,16 +1045,24 @@ which carries the error and the correlation id.
         P3-6  class reassignment                   ✅ done — a class could never be handed to a replacement
         P3-7  DLQ alerting                         ✅ done — one alert per queue per 15 min, and it says so
         ────────────────────────────────────────────────── hardened
-NOW ──► P3-1  production cutover                   (3–5 h)   ← needs your credentials
+        P3-1  production cutover, steps 1–8       ✅ done — the domain pointed at a different script
+NOW ──► P3-1  production cutover, steps 9–10      (~30 m)   ← browser: rotate, install RIASEC & SCCT, smoke
         ────────────────────────────────────────────────── launched
         Phase 4  (+ two dashboard-side steps: DEPLOYMENT.md §8.1 WAF rule, §8.2 Workers Logs alert)
 ```
 
-**P3-1 is now the only thing between here and production**, and the three items that used to sit
-*after* it were brought forward on purpose: two of them turned out to be about states a live
+**P3-1's remaining half is the only thing between here and production**, and the three items that used
+to sit *after* it were brought forward on purpose: two of them turned out to be about states a live
 deployment cannot get back out of. P3-6's was permanent by construction — `counselor_id` was writable
 by nothing, so the first counselor to leave took their classes' ownership with them for good. P3-7's
 was permanent by silence. Doing either after launch means doing it to real data.
+
+**And P3-1 itself paid the plan's opening lesson back a fourth time.** Steps 1–7 all reported success
+while the live domain served code from April, because `--env production` publishes
+`careerlinkai-production` and `careerlinkai.online` was attached to `careerlinkai`. Three documents
+asserted otherwise and every one of them was wrong; no test, gate, type-check or green suite could
+have said so, because the claim was about a name in a dashboard. **Step 8 is a `curl` against the real
+domain, and it is the entire reason this was found before a student was ever pointed at the URL.**
 
 **Minimum before the defense: all three done.** They earned their place at the top of this list. P1-2
 found a CSP that stripped the app's typeface on every screen, in production and nowhere else. P2-2
@@ -1011,5 +1091,6 @@ system — and the fourth, the stale walkthrough, was the tool that was supposed
 | 2026-07-29 | P3-2a | **867** BE / **171** FE | The two defects P3-2 exposed, fixed rather than filed as P4 items. **`/admin/canonical-programs/options` had no caller at all** — not the program form its own comment named, not anything else; the endpoint and its hook were both orphans reachable only by `curl`. That is **F1 and F2 together**, the defect class this plan opens by naming, sitting unnoticed in the catalog module. It was also unbounded, under a comment reading "Two dozen rows at thesis scale", while migration 0018 mints a new entry for every unseen programme code an admin types. Separately, **the merge target picker was reading the current page rather than the catalog** — so past one page an entry could not be merged into a target on another, and P3-2's own search made that worse before better: find the target, press Merge, and it is still not among the candidates. One fix for both, since the orphaned endpoint is precisely what the picker needed. An a11y defect fell out of testing it: nine rows presented nine identically-named "Merge" buttons to a screen reader, with nothing to say which entry was about to be retired. |
 | 2026-07-29 | P3-2 | **863** BE / **165** FE | Catalog search, filter, sort and paging (F3 + F4). The item was written about the careers picker; **the Colleges page turned out to be the one already over the edge** — no pager, no search, and a request that sent no `per_page`, so it took the API's default of 20 against a catalog of exactly 20 seeded colleges. It was showing 20 of 20 and looking complete. Adding `sort=created_at` also required making paging *total* first: seed 0004 inserts its 68 careers in one statement and SQLite evaluates `'now'` once per statement, so **every seeded career shares one `created_at` to the millisecond** — an `ORDER BY` over an all-ties column is unspecified per execution, which permits a row on two pages and another on none. Every list now ends its order on the id. Search terms are escaped, so `100%` stops meaning "starts with 100". The picker fetches on open rather than on mount and **says when it is truncating** — the silence was what made F3 invisible. Three private copies of `useDebouncedValue` became one; `SearchInput` and `Pagination` were extracted from `AddressTable` and it now consumes them. Every guard fired red before it was trusted. |
 | 2026-07-29 | P3-3 | **877** BE / **182** FE | Code splitting (audit P2). The item asked for < 350 kB on the student path and the honest answer is **507 KiB**, because **41% of the 936 kB chunk was framework, not pages** — React, React DOM, React Router, TanStack Query and axios are reached by `main.tsx` and `ProtectedRoute` before the app can know which shell to fetch, and that closure is **399 KiB** on its own. 350 kB is below the floor; the two dependency-level ways under it are measured and filed as P4-15/P4-16 rather than guessed at. What the split did buy: **972 → 507 KiB raw, 279 → 159 KiB gzipped**, and a student no longer downloads 262 KiB of admin, counselor and builder pages. Seven groups rather than five — the builder is routed by *both* staff shells and `/join` is not a staff door. **The gate matters more than the split**: one static import of a group barrel folds it back into the entry with a green build, a green type-check and 182 green tests, so `--assets` now reads Vite's manifest and weighs each route's closure. Proven by breaking it — `admin-*.js` ceased to exist, the entry went 209 → 468 kB, **4 gates red, exit 1**. **Two defects found:** `walkthrough.mjs` had been stale since P3-2 (still driving the `<select>` the catalog-search item replaced with a typeahead) and said so only because P3-3 ran it; and **`React.lazy` caches its own rejection**, so `ErrorBoundary`'s "Try again" cannot recover a failed chunk — "Go home" can, because it is a full document navigation. Re-walked in real Chrome: **95/98**, the 3 failures being the same known RAG legs; **csp-check PASS on 15 screens**, with Zod's accepted `eval` probe now firing on 12 of them instead of 15. |
+| 2026-07-30 | P3-1 steps 1–8 | — | **Production cutover — and step 8 found that `careerlinkai.online` was serving a different Worker than the one being deployed.** Wrangler derives an environment’s script name as `<name>-<env>`, so `npm run deploy:production` publishes `careerlinkai-production`; the domains were attached to the bare `careerlinkai` script from the era before environments existed. `DEPLOYMENT.md` (twice), `PRODUCTION_REQUIREMENTS.md` §6 and `wrangler.toml`’s own comment all recorded the two as one script, and **nothing caught it because `--env production` had never been run** — staging is `careerlinkai-staging`, which was the evidence sitting in plain sight. The first cutover therefore published a third Worker that was healthy, correct and reachable by nobody, while the live domain went on serving April’s build. **The obvious fix was refused by Cloudflare**, which is the better finding: pinning `name = "careerlinkai"` resolves fine but the deploy is rejected because the legacy script holds live `NotificationDO` Durable Objects — a class in no committed config and absent from the codebase, so its migration-tag state is not derivable from this repo and the only route through destroys DO data nobody can inspect first. The domains were moved instead, and are now **declared in `wrangler.toml`** rather than living only in a dashboard, which is how the original fact drifted from three documents without going red. Also learned: a queue takes exactly one consumer, and the conflict surfaces at *delete* time (`code: 10064`), not at deploy. Verified live: health `environment=production` on apex and `www`, the served `index.html` matching the local build hash for hash, five route chunks `immutable`, all four security headers, **19 migrations, 20/68/48/309/933 catalog rows, 0 duplicates, 0 NULL canonicals**, and `POST /auth/login` returning **200 with `must_change_password: true` in 3.0 s** — 600,000 PBKDF2 iterations inside AuthGuardDO’s 30 s budget on a Free-plan Worker, which is deviation D14 proven in production. First backup taken before the first deploy: 432.4 KB, 45 tables, 1,516 rows, verified table by table. Steps 9–10 (rotation, Install RIASEC & SCCT, two-profile smoke) still need a browser, so the item stays `[~]`. |
 | 2026-07-30 | P3-4, P3-6, P3-7 | **907** BE / **195** FE | The last three Phase 3 items, and **the first of them found a defect none of the other 877 tests could see**. P3-4's per-user counter charges once per execution of `authenticate()`, which made it the only instrument in the system that can count them — and it counted **six** on `/admin/dashboard`, five on `/admin/counselors`, four on `/counselor/dashboard`. §10 gives every module its own routes file and six of them mount on `/admin`; Hono merges each sub-app's `use('*')` into the parent, so a path whose handler sits in the last-registered router runs the full middleware chain of every router in front of it. **Twelve D1 reads to answer "who is this"** on the admin's landing screen, against a 50-subrequest ceiling, with every response correct throughout. One early return fixed it. The limiter itself is charged inside `authenticate()` rather than as a global middleware (Hono's global `use` runs before the sub-router, so it cannot see the user) and its limit is a var — the only one of six that is, because a test file compresses a day of one user's requests into three seconds. `Retry-After` now lands on every 429 in the system from `app.onError`, so the five pre-existing limiters gained it for free; the WAF half S2 also wants is written up in DEPLOYMENT.md §8.1 rather than claimed here, because dashboard configuration cannot have tests. **P3-6 did both halves of its "or", since either alone is worse than useless**: `counselor_id` was writable by nothing, so a departing counselor's classes were stuck pointing at a removed account *permanently* — an admin could see them and no replacement could ever be given them. The endpoint lives on its own `/admin` router rather than as a field on the counselor's PATCH, because that route admits counselors and the field would have let any of them hand a colleague's class to themselves. Deletion is now refused on exactly the `classes_count` already rendered beside the name, and the refusal links to the screen that fixes it. **P3-7 alerts once per queue per 15 minutes and says that it is doing so** — a broken pipeline dead-letters every message, ten at a time, and "3 jobs failed" when 300 did is a worse lie than silence. Proven un-breakable-by-alerting the honest way: `queue()` takes its env as a parameter, so the binding the alert reaches for first was replaced with one that throws, and every message was still acked. |
 | 2026-07-28 | P2-2 | **811** BE / 112 FE | Staging rehearsal. **`generateFor` 500'd on D1's 100-parameter limit — every student got zero recommendations, caused by P0-1's own catalog expansion.** Fixed via `chunkIds`; 4 regression tests. `walkthrough.mjs` un-rotted (4 stale selectors + a removed auto-advance). Two duplicate careers archived. C1 proven live: **0/10 overlap** between opposite profiles. |

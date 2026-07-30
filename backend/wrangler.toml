@@ -292,6 +292,44 @@ enabled = true
 [env.staging.triggers]
 crons = ["0 3 * * *"]
 
+# --- Production is `careerlinkai-production`, and the domains are declared here ---------
+# Wrangler derives an environment's script name as `<name>-<env>`: `--env staging` publishes
+# `careerlinkai-staging` (which staging has always been) and `--env production` publishes
+# **`careerlinkai-production`**. That derivation is left alone.
+#
+# It did not used to match reality. `careerlinkai.online` and `www` were attached to the bare
+# `careerlinkai` script back when production was a plain `wrangler deploy` with no
+# environments, and three documents in this repo then recorded
+# "careerlinkai.online → careerlinkai (env.production)" as though the two were one script.
+# They never were. Nothing caught it because `--env production` had never been run: the P3-1
+# cutover was the first time, and it published a Worker no domain pointed at while the domain
+# kept serving the April build. Step 8's health check is what found it — the step that exists
+# for exactly that.
+#
+# Overwriting the legacy script in place was tried first and **refused by Cloudflare**: it
+# holds live `NotificationDO` Durable Objects, a class that exists in no committed config and
+# nowhere in the current codebase, so its migration-tag state is not derivable from this
+# repository. Moving the domains to the environment Wrangler already names is the fix that
+# does not require destroying Durable Object data to work around a naming mismatch.
+#
+# `custom_domain = true` puts the attachment **in this file** rather than only in the
+# dashboard, so which script answers careerlinkai.online is now a reviewable fact.
+#
+# The legacy `careerlinkai` script is deliberately left deployed and domain-less as a
+# rollback target. It is dead code on the Free plan's script count and nothing routes to it.
+#
+# ⚠️ Note the footgun this configuration does NOT have, since it is the reason the override
+# was rejected: `wrangler deploy` with no `--env` targets `careerlinkai` using the *top-level*
+# `[vars]` block, which says `APP_ENV = "local"` against production's D1, R2, KV and queues.
+# Because no domain resolves to that script any more, such a deploy cannot reach a student.
+[[env.production.routes]]
+pattern = "careerlinkai.online"
+custom_domain = true
+
+[[env.production.routes]]
+pattern = "www.careerlinkai.online"
+custom_domain = true
+
 [env.production.vars]
 APP_ENV = "production"
 # Unchanged in value, but it now means something different: careerlinkai.online is the origin

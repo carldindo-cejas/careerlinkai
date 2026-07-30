@@ -108,14 +108,26 @@ production is verified. See [`DEPLOYMENT.md`](DEPLOYMENT.md) §6.
 
 ## 🟡 Verify before promoting
 
-### 5. Production Worker is running April code
-Last deploy to `careerlinkai` was 2026-04-25 — all of Phases A–H are absent. Fixed by
-`npm run deploy:production`, but only **after** blockers 1–2 (queues + migrations) are done.
+### 5. ~~Production Worker is running April code~~ — RESOLVED 2026-07-30 (P3-1)
+`careerlinkai.online` now serves `careerlinkai-production`, deployed from the current commit.
+The legacy `careerlinkai` script (last deployed 2026-04-25, Phases A–H absent) is still in the
+account but **no domain routes to it**; it is kept as a rollback target.
 
-### 6. Custom domain wiring
-`careerlinkai.online` is attached to the `careerlinkai` Worker via the dashboard (not
-declared in wrangler.toml). Confirm the prod frontend Pages project (`careerlinkai-frontend`,
-last modified 3 months ago) serves the domain and matches `FRONTEND_URL`.
+### 6. ~~Custom domain wiring~~ — RESOLVED 2026-07-30 (P3-1). This was the cutover's real defect.
+`careerlinkai.online` and `www` are attached to **`careerlinkai-production`** and the attachment is
+now **declared in `wrangler.toml`** (`[[env.production.routes]]`, `custom_domain = true`) instead of
+being dashboard-only.
+
+The claim this section used to make — that the domain was attached to the `careerlinkai` Worker and
+that `--env production` published to it — was **false, and false in a way no test could see**.
+Wrangler derives the script name as `<name>-<env>`, so `npm run deploy:production` publishes
+`careerlinkai-production`. The runbook's step 8 health check is what caught it: the first
+`--env production` deploy in the project's history created a *third* Worker that no domain pointed
+at, while the live domain went on serving the April build. Full account in
+[`DEPLOYMENT.md`](DEPLOYMENT.md) §4 "Attaching the domain".
+
+The Pages projects named in earlier revisions of this section (`careerlinkai-frontend`) are gone from
+the architecture — there is no frontend artifact separate from the Worker. See blocker 4.
 
 ### 7. Vectorize `careerlinkai_main_knowledge` is empty
 The index exists but has no vectors. RAG/AI-explanation grounding needs a separate knowledge

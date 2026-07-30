@@ -5,7 +5,7 @@ API. There is no Cloudflare Pages project, no second deployment, and no cross-or
 frontend and its backend.
 
 ```
-careerlinkai.online          →  Worker script `careerlinkai`  (env.production)
+careerlinkai.online          →  Worker script `careerlinkai-production`  (env.production)
 ├── /api/v1/*                →  Hono          — run_worker_first, always the Worker
 ├── /assets/*                →  static assets — immutable, 1 year (content-hashed names)
 ├── /logo.png, /favicon…     →  static assets — revalidated
@@ -54,7 +54,7 @@ the entire point of having it.
 
 | | local | staging | production |
 |---|---|---|---|
-| Script | `wrangler.local.toml` / `.dev.toml` | `careerlinkai-staging` | `careerlinkai` |
+| Script | `wrangler.local.toml` / `.dev.toml` | `careerlinkai-staging` | `careerlinkai-production` |
 | Origin | `localhost:5173` (Vite) / `:8787` | `careerlinkai-staging.cejascarldindo.workers.dev` | `careerlinkai.online` |
 | D1 | local (Miniflare) | `CareerLinkAI_Staging` | `CareerLinkAI_Main` |
 | R2 | local | `careerlinkai-docs-staging` | `careerlinkai-docs` |
@@ -137,10 +137,30 @@ deployed and never a stale local artifact. It requires `frontend/node_modules`; 
 
 ### Attaching the domain
 
-`careerlinkai.online` and `www.careerlinkai.online` are already attached to the `careerlinkai` script
-as Cloudflare Workers Custom Domains (dashboard-managed). Nothing about the consolidation changes
-that record — the same script name now answers HTML as well as JSON. **The one action item is
-retiring the old Pages project** once production is verified (see §6).
+`careerlinkai.online` and `www.careerlinkai.online` are attached to **`careerlinkai-production`**, and
+the attachment is **declared in `wrangler.toml`** (`[[env.production.routes]]`, `custom_domain = true`)
+rather than living only in the dashboard — so which script answers the live domain is a reviewable
+fact that `wrangler deploy` re-asserts on every release.
+
+**This was wrong in this file until the P3-1 cutover, and the correction is worth reading before the
+next deploy.** Wrangler derives an environment's script name as `<name>-<env>`, so `--env production`
+publishes `careerlinkai-production` — not `careerlinkai`. The domains had been attached to the bare
+`careerlinkai` script back when production was a plain `wrangler deploy` with no environments, and
+this file, `PRODUCTION_REQUIREMENTS.md` and `wrangler.toml` all recorded the two as one script.
+Nothing caught it because `--env production` had never been run; the first run published a Worker no
+domain pointed at while `careerlinkai.online` kept serving the April build. Step 8's health check is
+what found it.
+
+Overwriting the legacy script in place was tried and **refused by Cloudflare** — it holds live
+`NotificationDO` Durable Objects, a class in no committed config and absent from the current
+codebase, so its migration-tag state cannot be derived from this repository. The domains were moved
+instead.
+
+**The legacy `careerlinkai` script is still deployed, domain-less, as a rollback target.** It routes
+nowhere. A `wrangler deploy` with **no** `--env` still targets it, using the top-level `[vars]` block
+that declares `APP_ENV = "local"` against production's D1, R2, KV and queues — so that mistake now
+publishes an unreachable script instead of putting a Worker that believes it is local onto the live
+domain. Always deploy production through `npm run deploy:production`.
 
 ---
 
