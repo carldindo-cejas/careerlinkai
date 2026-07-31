@@ -91,18 +91,40 @@ isolated schema each.
 | **Hermetic suite** | `npm test` | local (per-file isolated) | stubbed / absent | no | the gate on every push · CI |
 | **Offline dev** | `npm run dev` (`wrangler.local.toml`) | local | absent | no | default loop — auth, classes, assessments, recs. **Runs queue consumers**, unlike the test config |
 | **Mixed-mode dev** | `npm run dev:remote` (`wrangler.dev.toml`) | local (disposable) | **real** (`remote = true`) | yes | Phase 5 RAG/generation — real model + real index |
-| **Staging** | `npm run deploy:staging` + `scripts/walkthrough.mjs` | real staging | real | yes | **pre-prod fidelity gate** — the authority for anything Miniflare can't see |
+| **Production** | `npm run deploy:production` | real production | real | yes | **the deploy and test target** — see the standing decision below |
 
-**Staging is the required check before production**, not an optional one. Miniflare enforces neither
-the PBKDF2 100k-iteration ceiling nor the 10 ms Worker CPU limit (that's how D14 shipped 371× green
-and couldn't verify a password on the edge), and it has no AI/Vectorize emulation at all. So a green
-suite proves the contract, but **staging proves the platform** — validate the CPU-sensitive auth path,
-the AI/RAG legs, CORS, and queue delivery there before promoting. `scripts/walkthrough.mjs` is
-environment-agnostic and drives the real browser flow against either local or staging.
+### Standing decision (2026-08-01): deploy and test against `careerlinkai.online`
 
-`dev:remote` points Vectorize at the **staging** index (`careerlinkai_staging_knowledge`), never
-production — dev must not write production data (§45). `remote` is a dev-only flag; `wrangler deploy`
-ignores it, so it can never change what ships.
+**From now on, every deploy and every test of a change goes to `careerlinkai.online` and its
+bindings.** Staging is *not* torn down — it stays deployed — but it is no longer the target, and
+`deploy:staging` is no longer the step before `deploy:production`.
+
+This replaces the previous rule that staging was the required pre-prod gate. That rule was written
+before production existed; production went live on 2026-07-30 (P3-1) and is now the system that
+matters.
+
+**Why the platform still needs a real deployment.** The reasoning that made staging mandatory has
+not gone away, it has only moved: Miniflare enforces neither the PBKDF2 100k-iteration ceiling nor
+the 10 ms Worker CPU limit (that is how D14 shipped 371× green and could not verify a password on
+the edge), and it has no AI/Vectorize emulation at all. A green suite proves the contract; only a
+real deployment proves the platform. That deployment is now production.
+
+**⚠️ Two scripts cannot be pointed at production as they stand:**
+
+* **`scripts/walkthrough.mjs` refuses production by design (P3-8), and the guard must stay until it
+  is fixed.** It **rotates the real staff accounts onto `Walkthrough@Admin1` /
+  `Walkthrough@Counselor1`** — constants committed in this repository, which is **public as of
+  2026-07-31**. Running it against production would set the live administrator's password to a
+  value anyone can read, and report 95 green checks doing it. Fix the script to take a password
+  rather than carry one before removing the guard.
+* **`scripts/contrast-check.mjs` writes real rows** — P3-1 step 10 left a class, 4 students, 7
+  attempts and 60 recommendations on production, all stamped `SMOKE` so they could be found again.
+  Keep that convention.
+
+`dev:remote` still points Vectorize at the **staging** index (`careerlinkai_staging_knowledge`),
+deliberately: a *dev* loop writing production vectors is a different question from where releases
+are verified, and §45 still says dev must not write production data. `remote` is a dev-only flag;
+`wrangler deploy` ignores it, so it can never change what ships.
 
 ## Database Tables (28)
 
