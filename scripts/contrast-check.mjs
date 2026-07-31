@@ -49,17 +49,48 @@ function check(label, ok, detail = '') {
 }
 
 
+/**
+ * **Retries the transport, never the answer.**
+ *
+ * One full run is ~190 requests — two students × (60 + 30) answers, plus the joins, starts and
+ * submits — and against a deployed Worker some of them will not arrive. Running this against
+ * production for the P3-1 cutover, `read ECONNRESET` killed the process twice: once before student
+ * B started, and once mid-instrument. There is no retry to be had by re-running the script either,
+ * because `start` returns 422 on an assignment the student has already submitted (§21) — so a
+ * network blip half way through does not cost a request, it costs the whole run and the two
+ * students, who can never be used again.
+ *
+ * Only *network* failures are retried. A 4xx or 5xx is the application answering and must be
+ * reported exactly as received: this script exists to detect a broken deployment, and a retry loop
+ * around a real error is how a check reports green on a system that is failing.
+ */
 async function api(path, { token, method = 'GET', body } = {}) {
-  const res = await fetch(API + path, {
-    method,
-    headers: {
-      ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
+  let lastError;
 
-  return { status: res.status, json: await res.json().catch(() => null) };
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      const res = await fetch(API + path, {
+        method,
+        headers: {
+          ...(body ? { 'content-type': 'application/json' } : {}),
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+
+      return { status: res.status, json: await res.json().catch(() => null) };
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < 4) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+      }
+    }
+  }
+
+  console.log(`  ..   ${method} ${path} — network failure after 4 attempts`);
+
+  throw lastError;
 }
 
 /**

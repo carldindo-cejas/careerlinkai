@@ -359,12 +359,53 @@ standalone a11y script could audit every screen except the one worth auditing.
 
 ## Phase 3 — Before production launch
 
-### `[~]` **P3-1 — Production cutover** — *steps 1–8 done 2026-07-30. Found the defect step 8 exists to find. Steps 9–10 need a browser.*
+### `[x]` **P3-1 — Production cutover** — *steps 1–8 done 2026-07-30, steps 9–10 done 2026-07-31. Found the defect step 8 exists to find. C1 proven on production: **0/10**.*
 
-`[~]` and not `[x]` for one reason: steps 9 and 10 — the forced rotation, **Install RIASEC & SCCT**,
-and the two-profile end-to-end smoke — require a human in a browser and have not been run. Per this
-document's own rule, the code being deployed is not the item being done. **A production with no
-assessments installed cannot assess anybody**, so step 9 is not paperwork.
+**All ten steps are done and every one of them was verified rather than asserted.**
+
+**Step 9 (done by the operator, verified from the database rather than taken on trust).** Both staff
+accounts are past the rotation gate (`must_change_password = 0`) and the instruments are installed:
+2 templates, 3 versions, **90 questions** (RIASEC 60 + SCCT 30), 450 options, 9 dimensions, with one
+PUBLISHED version each and one DRAFT left behind by the seed. Checked in D1, because "the button was
+pressed" and "the instruments are installed and assignable" are different claims.
+
+**Step 10 — the one that actually proves the deployment, and it passed.** Run through the repo's own
+`contrast-check.mjs` against `https://careerlinkai.online`: two students in one class, deliberately
+opposite RIASEC answers (RIC against ASE) and **identical SCCT answers**, so interest profile is the
+only variable.
+
+| | carla.limsmoke… (RIC) | dino.tansmoke… (ASE) |
+|---|---|---|
+| 1 | Chemical Engineer · 97.0 | Journalist · 97.0 |
+| 2 | Chemist · 97.0 | Marketing Manager · 97.0 |
+| 3 | Civil Engineer · 97.0 | Teacher · 97.0 |
+| top programme | BS Chemical Engineering | AB Communication |
+
+**Career overlap 0/10, programme overlap 0/10.** C1 was closed on staging by P2-2; this is the same
+claim demonstrated on the system students will actually use.
+
+**Three things the run itself found:**
+
+* **`contrast-check.mjs` had no retry and could not survive its own length.** One run is ~190
+  requests, and production reset the TLS connection twice — once before the second student started,
+  once mid-instrument. That is not a cost of one request: `start` returns **422 on an assignment the
+  student has already submitted** (§21), so a blip half way through burns the whole run *and both
+  students*, who can never be reused. Network failures are now retried four times; a 4xx/5xx is
+  never retried, because this script exists to detect a broken deployment and a retry loop around a
+  real error is how a check reports green on a system that is failing.
+* **The list envelope is not uniform.** `/counselor/assessment-templates` returns `data` as an
+  array; `/counselor/classes` returns an object. Neither is wrong, but a caller cannot treat them
+  alike, and this cost a failed run before it was noticed. Worth a look when P4-8 tidies API
+  consistency.
+* **The assignable version id is `assignable_version.id`**, not any of the three names guessed for
+  it. Read off the API rather than assumed — the mistake cost one round trip and is recorded because
+  guessing a field name is exactly how a script goes stale (P2-2, P3-3).
+
+**What it left in the live database, stated plainly rather than quietly:** one class
+`SMOKE 20260731 — P3-1 step 10` (`WKAM-9775`), **4 students**, 7 attempts (6 complete, 1 abandoned
+by the first ECONNRESET), 6 results and **60 recommendations**. Everything is stamped `SMOKE` so it
+is identifiable and removable; it is deliberately not deleted yet, because it is the evidence that
+this step passed.
 
 **What is live and verified:** `https://careerlinkai.online/api/v1/health` →
 `{"status":"ok","environment":"production","version":"v1"}` on both apex and `www`; the served
