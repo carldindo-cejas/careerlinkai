@@ -162,6 +162,31 @@ jobs:
 
           echo "token verify: $VERIFY"
 
+          # ── `"success":true` is not the same as "usable", and this check learned that the hard way ──
+          #
+          # A token with a **start date in the future** verifies as `"success":true` with
+          # `"status":"active"`, and carries the refusal in a *message*:
+          #
+          #   "code":10002,"message":"This API Token can not be used before 2026-08-01 00:00:00+00"
+          #
+          # The first version of this check grepped for `"success":true` and passed it. The run then
+          # spent two more probes and an error telling the operator to fix Account Resources that
+          # were never wrong — the token was 29 minutes too young. `not_before` and `expires_on` are
+          # optional fields set in the dashboard's "Start Date" / "End Date" boxes, and a token
+          # created late in the day with today's date is unusable until midnight **UTC**, which is
+          # not midnight where it was created.
+          #
+          # So the window is now checked explicitly rather than inferred from `success`.
+          if printf '%s' "$VERIFY" | grep -q '"code":10002'; then
+            echo "::error::This token is not usable YET — Cloudflare returned code 10002. It has a start date (not_before) that has not arrived. Nothing is wrong with its permissions or its Account Resources; do not change them. The verify response above gives the exact timestamp, and it is UTC — a token created with today's date becomes usable at 00:00 UTC, which may be hours away in your local timezone. Either wait, or edit the token and clear its Start Date."
+            exit 1
+          fi
+
+          if printf '%s' "$VERIFY" | grep -qE '"code":(10001|10003)|expired'; then
+            echo "::error::This token is expired or revoked (see the response above). Its permissions are not the problem. Issue a new token and update the CLOUDFLARE_API_TOKEN secret."
+            exit 1
+          fi
+
           if ! printf '%s' "$VERIFY" | grep -q '"success":true'; then
             echo "::error::Cloudflare does not recognise this token — /user/tokens/verify rejected it, and that endpoint requires no permissions at all. So this is NOT a missing D1:Edit scope: the token value itself is wrong, revoked, expired, or restricted. Check, in this order: (1) it is an API *Token*, not the Global API Key — the Global Key needs CLOUDFLARE_EMAIL + CLOUDFLARE_API_KEY and will never work in this variable; (2) the value was pasted whole and unmodified; (3) the token has not expired (TTL) and is not IP-restricted, since a token limited to your own address cannot be used from a GitHub runner. The response above says which."
             exit 1
