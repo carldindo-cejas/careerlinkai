@@ -83,6 +83,9 @@ jobs:
       # seconds later. A missing secret is the single most likely reason this job ever goes red.
       - name: Preflight — credentials present
         env:
+          # `secrets.NAME` is a **lookup by name**, never a place to paste the value. The name below
+          # must match what you called the secret in Settings → Secrets and variables → Actions; the
+          # token itself is only ever typed into that page and never appears in this file.
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
