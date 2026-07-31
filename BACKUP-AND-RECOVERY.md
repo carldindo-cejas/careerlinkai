@@ -201,20 +201,38 @@ during which the data is absent), so these files exist for after it closes.
 
 The token is **D1:Edit and Account Settings:Read**.
 
-**It was specified as D1:Read here, in `PRODUCTION_REQUIREMENTS.md` §7 and in the workflow itself,
-and all three were wrong.** The reasoning was that the job never writes to D1 and an unattended
-nightly holding a write-capable production credential is a standing risk for no benefit. That is
-still true and the platform does not permit acting on it: both calls the job makes are POSTs
-Cloudflare gates behind D1:Edit — `d1 execute --command "SELECT …"` hits `/query`, which the API
-cannot statically prove is a read, and `d1 export` hits `/export`. Cloudflare's own import/export
-tutorial says Edit, and their release notes record D1:Read having been able to write as a bug that
-was *fixed*, so a token that worked before may have stopped.
+It was specified as D1:Read here, in `PRODUCTION_REQUIREMENTS.md` §7 and in the workflow itself.
+The reasoning was that the job never writes to D1 and an unattended nightly holding a
+write-capable production credential is a standing risk for no benefit. That is still true and the
+platform does not appear to permit acting on it: both calls the job makes are POSTs — `d1 execute
+--command "SELECT …"` hits `/query`, which the API cannot statically prove is a read, and
+`d1 export` hits `/export`. Cloudflare's own import/export tutorial specifies Edit, and their
+release notes record D1:Read having been able to write as a bug that was *fixed*.
 
-Found by the first real run of the workflow failing (2026-07-31), and worth recording why nothing
-caught it earlier: `d1-backup.mjs` had been proven against production **by hand**, where the
-operator is `wrangler login`-authenticated with full account permissions. The token was the only
-link never exercised. Same shape as P3-1's script-name defect — one fact, three documents, wrong in
-all of them, invisible to every test because it lived in a dashboard.
+`CLOUDFLARE_ACCOUNT_ID` must be the id from `wrangler whoami`. **A wrong value is worse than an
+absent one** — unset, a single-account token resolves its own account; wrong, it is pasted
+faithfully into the request URL.
+
+### The first four runs, and why the order matters
+
+Two faults were stacked, and the first masked the second:
+
+1. **`CLOUDFLARE_ACCOUNT_ID` was wrong.** Every request failed at the router with `Could not route
+   to /client/v4/accounts/***/d1/database/…/query, perhaps your object identifier is invalid?
+   [code: 7003]`. That is not an auth error and never reached a permission check.
+2. **With the account id corrected, the same call returned `Authentication error [code: 10000]`.**
+   Only then was the token the live problem.
+
+The first failure was diagnosed as a permission problem — because a permission problem was the
+plausible story. The header said D1:Read, Cloudflare's docs say Edit, the run was red, and the
+pieces fit. The log had said 7003 all along; nobody had opened the collapsed group. **A diagnosis
+that fits the theory you arrived with is the one to distrust**, which is what P3-1 recorded when
+three documents agreed with each other and every one of them was wrong.
+
+Neither fault was caught earlier because `d1-backup.mjs` had only ever been run **by hand**, where
+the operator is `wrangler login`-authenticated against their own account — so neither the token nor
+the account id had ever been exercised. That is exactly the gap `IMPLEMENTATION-PLAN.md` named as
+the last one open.
 
 **Failures are loud, retried three times — but only when retrying can help.** `wrangler d1 export` is an asynchronous
 create-poll-download job against the Cloudflare API: while this workflow was being written, the

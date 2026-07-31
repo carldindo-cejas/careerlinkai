@@ -194,10 +194,13 @@ above rather than leave for later:
   until that exists — a scheduled backup that skips itself when unconfigured is the failure it
   exists to prevent. Until this landed the RPO was "everything since the last time someone
   remembered".
-  **This said D1:Read until 2026-07-31, as did `BACKUP-AND-RECOVERY.md` §4 and the workflow's own
-  header.** All three were wrong: `d1 export` and `d1 execute` are both POSTs Cloudflare gates
-  behind D1:Edit, so the first real run failed on its first remote query. See
-  [`BACKUP-AND-RECOVERY.md`](BACKUP-AND-RECOVERY.md) §4 for why read-only is not available here.
+  Also needs `CLOUDFLARE_ACCOUNT_ID`, set to the id from `wrangler whoami` — **a wrong value is
+  worse than an absent one**, since an unset secret lets a single-account token resolve its own.
+  This said D1:Read until 2026-07-31, as did `BACKUP-AND-RECOVERY.md` §4 and the workflow header.
+  The first four runs failed on **two stacked faults** — a wrong account id (`code: 7003`, a
+  routing failure that never reached a permission check) masking a rejected token (`code: 10000`).
+  See [`BACKUP-AND-RECOVERY.md`](BACKUP-AND-RECOVERY.md) §4; the order in which they surfaced is
+  the part worth reading.
 
 Time Travel covers the first 30 days in place with nothing to configure, which is most of what
 actually goes wrong; the exports cover the database being deleted and the account being lost, which
