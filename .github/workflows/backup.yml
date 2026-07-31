@@ -1,0 +1,150 @@
+# Nightly verified backup of the production D1 database (IMPLEMENTATION-PLAN P3-5 follow-up).
+#
+# `BACKUP-AND-RECOVERY.md` and PRODUCTION_REQUIREMENTS.md both say to put the daily job on a
+# schedule "the same day" production goes live. Production went live on 2026-07-30 and this is that
+# job. Until it existed the RPO was "everything since the last time someone remembered", and the
+# only backup in existence was the one taken by hand during the cutover.
+#
+# ── What this covers that Time Travel does not ────────────────────────────────────────────────
+#
+# D1's Time Travel gives 30 days of point-in-time restore on every plan with nothing to configure,
+# and it covers the common disasters — a bad migration, a DELETE without a WHERE. It cannot cover
+# the two that are final, because it lives *inside* the database it protects: the database being
+# deleted, and the Cloudflare account being lost.
+#
+# So the artifact is deliberately stored on **GitHub, not Cloudflare**. A backup of a Cloudflare
+# database held in a Cloudflare bucket shares a blast radius with the thing it is insuring, and R2
+# would also be reachable by the same API token this workflow already holds.
+#
+# Retention is 90 days, deliberately **longer** than Time Travel's 30: inside 30 days Time Travel is
+# the better tool (in-place, no window where the data is absent, per `d1-restore.mjs`'s own guard),
+# so the only job these files have is to exist after that window closes.
+#
+# ── Why it runs the repo's script and not `wrangler d1 export` ────────────────────────────────
+#
+# `wrangler d1 export` exits 0 on an empty database. `scripts/d1-backup.mjs` reads the live table
+# list and per-table COUNT(*), parses the dump it just wrote, and asserts they agree table by table
+# and row by row — writing `.REJECTED` and failing rather than keeping a dump it could not verify.
+# A backup nobody verified is a hypothesis, and the failure mode is silent until the restore.
+#
+# ── Setup required before this can run ────────────────────────────────────────────────────────
+#
+# One repository secret: `CLOUDFLARE_API_TOKEN`, a token with **D1:Read** and **Account:Read** on
+# the account that owns `CareerLinkAI_Main`. Create it at
+# dash.cloudflare.com → My Profile → API Tokens → Create Token → Custom token.
+#
+# Read-only on purpose: this job never needs to write to D1, and a nightly unattended job holding a
+# write-capable production token is a standing risk for no benefit. `CLOUDFLARE_ACCOUNT_ID` is a
+# second secret only because wrangler asks for it when a token maps to more than one account.
+#
+# **Until that secret exists this workflow fails on its first run, loudly and by design** — a
+# scheduled backup that skips itself when unconfigured is the exact failure this file exists to
+# prevent. See the `preflight` step.
+
+name: Backup — production D1
+
+on:
+  schedule:
+    # 17:37 UTC = 01:37 Manila. Off-peak for the users, and offset from the Worker's own 03:00 UTC
+    # housekeeping cron so the two never contend. The odd minute is deliberate: GitHub delays
+    # scheduled runs that land on the top of the hour, when everyone else's crons fire.
+    - cron: '37 17 * * *'
+  # So a backup can be taken before anything risky — a migration, a seed, a cutover — without
+  # waiting for the schedule or running it from someone's laptop.
+  workflow_dispatch:
+
+# Never let two backups of the same database overlap. `cancel-in-progress` is false: a run already
+# writing a dump should finish, not be killed halfway by a manual trigger.
+concurrency:
+  group: backup-production
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Export · verify · retain
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+
+      # Fail with a sentence a human can act on, rather than with wrangler's auth error thirty
+      # seconds later. A missing secret is the single most likely reason this job ever goes red.
+      - name: Preflight — credentials present
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set. Add it under Settings → Secrets and variables → Actions. It needs D1:Read and Account:Read on the account owning CareerLinkAI_Main."
+            exit 1
+          fi
+
+      - name: Back up and verify CareerLinkAI_Main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # `--no-prune`, not `--keep-days 0`: this runner is thrown away after every run, so the
+        # retention policy is the artifact's (below) and there is never a second file here to
+        # sweep. `--keep-days 0` would also work — the `--keep-min` floor of 7 saves the only file
+        # present — but it reads as "keep nothing" and would become wrong the moment that floor
+        # moved. The flag that means "keep everything" should be the one that says so.
+        #
+        # **Three attempts, because `wrangler d1 export` is genuinely flaky.** Observed while
+        # building this workflow: the identical command failed once, hung once, then succeeded
+        # twice in a row against the same unchanged database. The export is an asynchronous
+        # Cloudflare job (create → poll → download from R2), so a transient API failure is a normal
+        # outcome, not a signal about the data.
+        #
+        # A nightly job that pages on that is a job whose red ticks get ignored — which costs more
+        # than the backup it was protecting. The retry is deliberately *not* unbounded and the
+        # attempts are spaced: a genuine verification failure (a dump missing rows, which is what
+        # this whole script exists to catch) still fails all three times and still goes red, having
+        # taken about two minutes to say so.
+        run: |
+          for attempt in 1 2 3; do
+            echo "::group::Backup attempt $attempt of 3"
+            if node scripts/d1-backup.mjs --env production --out ./.backups --no-prune; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::Backup attempt $attempt failed."
+            [ "$attempt" -lt 3 ] && sleep 30
+          done
+          echo "::error::All 3 backup attempts failed. This is not a transient export error — check the verification output above for which table disagreed."
+          exit 1
+
+      # `if: always()` so a *failed* verification still uploads what it produced. A `.REJECTED` dump
+      # is the most diagnostic artifact this job can emit and throwing it away leaves only a red
+      # tick and no evidence of which table disagreed.
+      - name: Upload dump
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-production-${{ github.run_id }}
+          path: backend/.backups/*
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Production D1 backup"
+            echo ""
+            for f in ./.backups/*; do
+              [ -e "$f" ] || continue
+              printf -- "- \`%s\` — %s\n" "$(basename "$f")" "$(du -h "$f" | cut -f1)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

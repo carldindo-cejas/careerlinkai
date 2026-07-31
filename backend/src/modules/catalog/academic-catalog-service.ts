@@ -24,7 +24,7 @@ import type { CatalogStatus } from '@/db/enums';
 import { uuid } from '@/lib/crypto';
 import { chunkIds } from '@/lib/d1-batching';
 import { now } from '@/lib/datetime';
-import { isUniqueViolation } from '@/lib/db-errors';
+import { isUniqueViolation, translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
 import { contains } from '@/lib/search';
 import type {
@@ -198,11 +198,22 @@ export class AcademicCatalogService {
       deletedAt: null,
     };
 
-    // NB: `colleges.name` carries a plain index, not a UNIQUE one (migration 0004), so the
-    // `assertCollegeNameFree` pre-check is the *only* uniqueness guard — a genuinely concurrent
-    // create would produce a duplicate row rather than a constraint 500. Nothing to translate
-    // here (H4 applies only where the DB enforces the invariant); see the audit note.
-    await this.db.insert(colleges).values(college);
+    // Migration 0020 gave `colleges.name` a case-insensitive UNIQUE index over active, non-deleted
+    // rows, so the pre-check above is no longer the *only* guard and this insert can now genuinely
+    // fail. Two concurrent creates both pass `assertCollegeNameFree` and exactly one loses at the
+    // index; the loser gets the same field-level 422 the pre-check would have given, not the raw 500
+    // an uncaught SQLite error becomes (H4). Before 0020 this comment recorded the opposite, and the
+    // race silently produced the duplicate row instead.
+    await this.db
+      .insert(colleges)
+      .values(college)
+      .catch((error: unknown) =>
+        translateUniqueViolation(
+          error,
+          'name',
+          'A college with this name is already in the catalog.',
+        ),
+      );
 
     await this.audit.write({
       action: 'COLLEGE_CREATED',
@@ -257,7 +268,19 @@ export class AcademicCatalogService {
       updatedAt: now(),
     };
 
-    await this.db.update(colleges).set(changes).where(eq(colleges.id, existing.id));
+    // Renaming can lose the same race a create can (migration 0020), and an archived college being
+    // reactivated moves it *into* the unique set — so the update path needs the H4 translation too.
+    await this.db
+      .update(colleges)
+      .set(changes)
+      .where(eq(colleges.id, existing.id))
+      .catch((error: unknown) =>
+        translateUniqueViolation(
+          error,
+          'name',
+          'A college with this name is already in the catalog.',
+        ),
+      );
 
     await this.audit.write({
       action: 'COLLEGE_UPDATED',
@@ -924,7 +947,20 @@ export class AcademicCatalogService {
       deletedAt: null,
     };
 
-    await this.db.insert(careers).values(career);
+    // Same as `createCollege`: migration 0020 made `careers.title` genuinely unique among active
+    // rows, so the pre-check is the friendly path and this is the floor under it (H4). A duplicate
+    // career is the one that reaches a student — §27 ranks every active career into a top ten, so
+    // two "Software Engineer" rows put the same card on the screen twice.
+    await this.db
+      .insert(careers)
+      .values(career)
+      .catch((error: unknown) =>
+        translateUniqueViolation(
+          error,
+          'title',
+          'A career with this title is already in the catalog.',
+        ),
+      );
 
     await this.audit.write({
       action: 'CAREER_CREATED',
@@ -970,7 +1006,21 @@ export class AcademicCatalogService {
       updatedAt: now(),
     };
 
-    await this.db.update(careers).set(changes).where(eq(careers.id, existing.id));
+    // This path can lose the race on a rename **and** on a status change: `status` is writable here
+    // (above), so reactivating an archived career moves it *into* migration 0020's unique set — which
+    // is exactly the P2-2 remediation run backwards. Un-archiving the old "TEACHER" while "Teacher"
+    // is active is now refused with a field-level 422 instead of quietly restoring the duplicate.
+    await this.db
+      .update(careers)
+      .set(changes)
+      .where(eq(careers.id, existing.id))
+      .catch((error: unknown) =>
+        translateUniqueViolation(
+          error,
+          'title',
+          'A career with this title is already in the catalog.',
+        ),
+      );
 
     // Archiving a career shifts the score of every program linked to it (§27 drops it from
     // the RIASEC average). That is intended, not a side effect — and it is why the change is

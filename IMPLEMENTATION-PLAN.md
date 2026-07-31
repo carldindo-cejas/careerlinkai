@@ -1001,6 +1001,95 @@ which carries the error and the correlation id.
   too" is the one outcome this must never produce.
 * **Effort:** 2 h (as estimated).
 
+### `[x]` **P3-8 — Catalog name uniqueness (P4-12), the nightly backup, and a live hazard in `walkthrough.mjs`** — *done 2026-07-31. 907 → 915 BE.*
+
+Three items pulled together because production went live on 2026-07-30 and each of them is
+**cheaper now than later** — the first two on the plan's own reasoning, the third because it was
+found while doing them.
+
+**P4-12 — the duplicate class is now unreachable, not merely unlikely.** `careers.title` and
+`colleges.name` carried plain indexes, so nothing in the database prevented two rows spelling the
+same thing. This defect has shipped three times (P1-0's seed chain, and twice in P2-2) and was
+remediated by hand every time. Migration 0020 adds case-insensitive UNIQUE indexes.
+
+**The obvious predicate does not apply, and the real databases are what say so.** The natural
+choice is `WHERE deleted_at IS NULL`, because that is exactly what the two `assert…Free` pre-checks
+scope to. Checked before the file was written: staging still holds both pairs P2-2 archived —
+
+| title | status | deleted_at |
+|---|---|---|
+| Data Scientist | active | NULL |
+| Data Scientist | archived | NULL |
+| Teacher | active | NULL |
+| TEACHER | archived | NULL |
+
+P2-2 **archived** those rows; it did not soft-delete them, so a `deleted_at`-only index collides on
+two pairs the moment it is created. The predicate is `status = 'active' AND deleted_at IS NULL`,
+which is also the correct boundary rather than merely the one that applies:
+`scorableCareersForMany` — the query feeding the ranking — filters on exactly that, so it is
+precisely the set in which a duplicate reaches a student. It also keeps archiving usable as the
+remedy, which is what P2-2 actually did.
+
+**The one reachable path to the index, found by reading rather than guessing.** `updateCareer` runs
+its pre-check only `if (input.title !== undefined)`, so `PATCH { status: 'active' }` on the archived
+half of a seed-created pair **skips the pre-check entirely** and goes straight to the constraint.
+That is not a hypothetical race — it is pressing "Restore" in the UI. Before 0020 it silently
+restored the duplicate; without the H4 translation beside it, it would now be a raw 500. All four
+catalog write paths carry `translateUniqueViolation`.
+
+**Both guards fired red before they were trusted** (P1-3's rule), and they are two guards, so they
+were fired separately: migration removed → the 3 database-level assertions and the reactivation test
+go red (4 of 8); migration restored and the `.catch()` removed → the reactivation test alone goes
+red with `expected 500 to be 422`. The `TRIM` in the index is recorded honestly as belt-and-braces:
+`z.string().trim()` means the API can never submit a whitespace variant, so it guards the paths that
+skip the schema — seeds, migrations and direct SQL, which is where all three historical duplicates
+actually came from.
+
+**The nightly backup exists now.** P3-5 shipped `d1-backup.mjs` and both it and
+PRODUCTION_REQUIREMENTS said to put the daily job on a schedule "the same day" production went live.
+Until this, the only backup in existence was the one taken by hand during the cutover and the RPO
+was "everything since the last time someone remembered". `.github/workflows/backup.yml` runs it at
+17:37 UTC (01:37 Manila, offset from the Worker's own 03:00 cron), and stores the dump as a
+**GitHub** artifact for 90 days — deliberately not R2, because a backup of a Cloudflare database
+held in a Cloudflare bucket shares a blast radius with the thing it insures, and 90 days is
+deliberately longer than Time Travel's 30, since inside that window Time Travel is the better tool.
+
+**It retries three times, and that is evidence-based rather than defensive.** While building it the
+identical export command failed once, hung once, then succeeded twice against an unchanged database
+— `wrangler d1 export` is an asynchronous create-poll-download job and a transient failure says
+nothing about the data. A nightly job that pages on that is one whose red ticks get ignored. A
+genuine verification failure still fails all three attempts and still goes red.
+
+**`walkthrough.mjs` could have published the production admin password.** Found while checking
+whether it could drive step 10: it rotates *both* staff accounts to `Walkthrough@Admin1` and
+`Walkthrough@Counselor1` — constants committed in this repository — and it takes the target as a
+`--app` URL with no guard whatsoever. Pointed at production it would have set the live
+administrator's credential to a published string and reported 95 green checks doing it. Same class
+as the `db:seed:catalog:staging` hazard P1-3 found, and `d1-restore.mjs` has guarded against its own
+version of this since P3-5. It now refuses, identifying production from `[[env.production.routes]]`
+and `FRONTEND_URL` in wrangler.toml rather than by matching the word "production" — this project's
+production Worker answers `careerlinkai.online` and its database is called `CareerLinkAI_Main`, so a
+substring check catches neither. **There is deliberately no override flag**: restoring production is
+a real if last-resort operation, so `d1-restore.mjs` offers one; rotating production credentials to
+a committed constant is never the intended action.
+
+* **Files:** `backend/migrations/0020_catalog_name_uniqueness.sql` (new),
+  `modules/catalog/academic-catalog-service.ts`, `backend/test/catalog/name-uniqueness.test.ts`
+  (new), `backend/scripts/lib/d1.mjs`, `scripts/walkthrough.mjs`,
+  `.github/workflows/backup.yml` (new)
+* **Verify:** ✅ 8 new backend tests, **fired red in two separate passes** as above. Migration
+  applied to local and to **staging — the database with the archived duplicates**, which is the
+  assertion that matters, since it is the one a `deleted_at`-only predicate cannot survive.
+  ✅ The guard proved on 7 URLs: apex, `www`, an upper-case host and an explicit-port form all
+  refuse; staging, `localhost:8787` and `localhost:5173` all pass through (verified on the refusal
+  *message*, not the exit code — staging exits 1 anyway for the documented reason that it needs a
+  fresh bootstrap, which is exactly the false pass a lazier check would have recorded).
+  ✅ Backup run end to end against production: **595.6 KB, 45 tables, 2,180 rows**, verified table by
+  table, PASS.
+  ⚠️ **Migration 0020 is applied to local and staging but NOT yet to production** — the production
+  apply is a live-database write and is left to be run deliberately. Until it runs, production is
+  protected by the pre-checks only, exactly as it was before this item.
+
 ---
 
 ## Phase 4 — After launch
@@ -1018,7 +1107,7 @@ which carries the error and the correlation id.
 | `[ ]` P4-9 | Move `ForgotPasswordPage`/`ResetPasswordPage` off direct `httpClient` into `authApi` (§36) | Code quality | 1 h |
 | `[ ]` P4-10 | Admin **Recommendations** overview for QA/reporting | Missing (Medium) | 1 d |
 | `[ ]` P4-11 | **Self-host Barlow** (fontsource) and drop the two Google Font hosts from the CSP | P1-2 follow-up | 2 h |
-| `[ ]` P4-12 | **Case-insensitive unique indexes** on `careers.title` / `colleges.name`, so P1-0's duplicate class cannot recur in data | P1-0 / P2-2 follow-up | 3–4 h |
+| `[x]` P4-12 | **Case-insensitive unique indexes** on `careers.title` / `colleges.name`, so P1-0's duplicate class cannot recur in data | P1-0 / P2-2 follow-up | ✅ done 2026-07-31 — see P3-8 |
 | `[ ]` P4-13 | Audit the remaining ~59 `inArray` call sites for unbounded lists (the ones fixed were the catalog-scale three; most others are bounded by construction) | P2-2 follow-up | 3–4 h |
 | `[ ]` P4-14 | Reformat the 78 backend files that drifted while `.prettierrc.json` was unparseable, then put `format:check` in CI so it cannot drift again | P1-3 follow-up | 1 h |
 | `[ ]` P4-15 | **Drop Framer Motion from `FadeIn`** (CSS keyframes). It is `proxy-*.js` = **118 KiB** for a fade, and it sits on `/join` — the student's *first* screen — via `StudentAccessLayout`. Three consumers total. Takes `/join` 612 → 494 KiB and the student journey 717 → 599 KiB | P3-3 follow-up | 2–3 h |

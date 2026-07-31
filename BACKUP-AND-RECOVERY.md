@@ -177,21 +177,42 @@ laptop. Copy each verified pair — the `.sql` **and** its `.manifest.json`, whi
 dump checkable — to storage under a different failure domain and a different account than the one
 holding the database.
 
-Automate it if you can. The honest statement today is that the taking and verifying is automated and
-**the offsite copy is not** — recorded here as a gap rather than implied to be covered.
+### Scheduling it — done, 2026-07-31 (plan P3-8)
 
-### Scheduling it
+**This gap is closed.** Until production went live on 2026-07-30 the taking and verifying were
+automated and the *running* was not, so the only backup in existence was whichever one somebody
+last remembered to take. `.github/workflows/backup.yml` now runs it nightly.
 
-The Worker's own `[triggers] crons = ["0 3 * * *"]` cannot do this: a Worker has no filesystem and
-cannot run `wrangler`. Schedule it wherever the repo already lives.
+The Worker's own `[triggers] crons = ["0 3 * * *"]` cannot do this — a Worker has no filesystem and
+cannot run `wrangler` — so the job lives in GitHub Actions, where the repo already is.
 
-```cron
-# Daily 03:00 — the same hour as the Worker's housekeeping trigger.
-0 3 * * *  cd /path/to/careerlinkai_v1/backend && npm run db:backup:production >> /var/log/careerlinkai-backup.log 2>&1
-```
+| | |
+|---|---|
+| **When** | `37 17 * * *` UTC — 01:37 Manila. Off-peak, and offset from the Worker's 03:00 UTC housekeeping so the two never contend. The odd minute avoids GitHub's top-of-hour scheduling queue. |
+| **Where the dump goes** | A GitHub artifact, retained **90 days**. |
+| **Also** | `workflow_dispatch`, so a backup can be taken before a migration or a cutover without waiting for the schedule. |
 
-A non-zero exit means the backup was rejected and the previous one is still the newest. Alert on it —
-a backup job whose failures nobody sees is the same shape as the DLQ gap in plan item P3-7.
+**The offsite copy is now genuinely offsite, and the provider is the point.** A backup of a
+Cloudflare database stored in R2 shares a blast radius with the thing it insures — and R2 would be
+reachable by the very API token the job already holds. GitHub is a different vendor with different
+credentials, which is what makes it cover "the account was lost". 90 days is deliberately longer
+than Time Travel's 30: inside that window Time Travel is the better tool (in place, with no interval
+during which the data is absent), so these files exist for after it closes.
+
+The token is **D1:Read and Account:Read only**. The job never writes to D1, and an unattended
+nightly holding a write-capable production credential is a standing risk for no benefit.
+
+**Failures are loud, and retried three times first.** `wrangler d1 export` is an asynchronous
+create-poll-download job against the Cloudflare API: while this workflow was being written, the
+identical command failed once, hung once, then succeeded twice against an unchanged database. A
+transient export error says nothing about the data, and a nightly job that pages on one is a job
+whose red ticks stop being read. Three spaced attempts absorb that; a genuine verification failure —
+a dump missing a table or missing rows, which is the whole reason `d1-backup.mjs` does not trust an
+exit code — fails all three and goes red having taken about two minutes to say so. The `.REJECTED`
+dump is uploaded too, because it is the most diagnostic thing the run can produce.
+
+A missing `CLOUDFLARE_API_TOKEN` fails the job on its **first** run, by design: a scheduled backup
+that quietly skips itself when unconfigured is precisely the failure this file exists to prevent.
 
 ---
 

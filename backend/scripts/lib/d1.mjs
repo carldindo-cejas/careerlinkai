@@ -71,6 +71,83 @@ export function d1Databases(tomlPath = join(backendDir, 'wrangler.toml')) {
   return found;
 }
 
+/**
+ * Every hostname that resolves to the **production** Worker, read from wrangler.toml.
+ *
+ * Two sources, because either alone misses a real way to reach production:
+ *   · `[[env.production.routes]]` — the custom domains (`careerlinkai.online`, `www.…`), declared
+ *     in config since the P3-1 cutover.
+ *   · `[env.production.vars].FRONTEND_URL` — the origin the Worker believes it serves.
+ *
+ * **Derived, never hardcoded, and never matched on the word "production"** — the same reasoning
+ * `d1-restore.mjs` uses for its own guard. This project's production *database* is called
+ * `CareerLinkAI_Main`, and its production Worker answers `careerlinkai.online`; neither string
+ * contains "production", so a substring check is exactly the guard that would wave it through.
+ *
+ * Used by scripts that mutate state a deployment cannot get back — see `walkthrough.mjs`, which
+ * rotates both staff passwords to constants committed in this repository.
+ */
+export function productionHosts(tomlPath = join(backendDir, 'wrangler.toml')) {
+  const hosts = new Set();
+  let inRoutes = false;
+  let inVars = false;
+
+  for (const line of readFileSync(tomlPath, 'utf8').split(/\r?\n/)) {
+    if (/^\s*\[\[env\.production\.routes\]\]/.test(line)) {
+      inRoutes = true;
+      inVars = false;
+      continue;
+    }
+
+    if (/^\s*\[env\.production\.vars\]/.test(line)) {
+      inVars = true;
+      inRoutes = false;
+      continue;
+    }
+
+    if (/^\s*\[/.test(line)) {
+      inRoutes = false;
+      inVars = false;
+      continue;
+    }
+
+    if (inRoutes) {
+      const pattern = /^\s*pattern\s*=\s*"([^"]+)"/.exec(line);
+
+      // A route pattern may carry a path (`example.com/api/*`); only the host identifies the target.
+      if (pattern) hosts.add(pattern[1].split('/')[0].toLowerCase());
+    }
+
+    if (inVars) {
+      const url = /^\s*FRONTEND_URL\s*=\s*"([^"]+)"/.exec(line);
+
+      if (url) {
+        try {
+          hosts.add(new URL(url[1]).host.toLowerCase());
+        } catch {
+          // A malformed FRONTEND_URL is not this helper's problem to report.
+        }
+      }
+    }
+  }
+
+  return hosts;
+}
+
+/**
+ * True if `url` points at the production Worker. Compared on **host**, so a path, a port, a
+ * trailing slash or `http` vs `https` cannot smuggle the same origin past the check.
+ */
+export function isProductionUrl(url, hosts = productionHosts()) {
+  if (!url) return false;
+
+  try {
+    return hosts.has(new URL(url).host.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 /** The database bound as `DB` in `env`, or a thrown error naming what is actually configured. */
 export function databaseFor(env) {
   const all = d1Databases();

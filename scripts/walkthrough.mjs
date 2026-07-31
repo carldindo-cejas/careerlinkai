@@ -67,6 +67,8 @@
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
+import { isProductionUrl } from '../backend/scripts/lib/d1.mjs';
+
 const args = process.argv.slice(2);
 const flag = (name, fallback) => {
   const i = args.indexOf(`--${name}`);
@@ -82,6 +84,42 @@ const HEADED = args.includes('--headed');
 // The passwords the two staff accounts are rotated *to*. They only have to survive this run.
 const ADMIN_PASSWORD = 'Walkthrough@Admin1';
 const COUNSELOR_PASSWORD = 'Walkthrough@Counselor1';
+
+/**
+ * **This script must never be pointed at production, and until the P3-1 cutover nothing said so.**
+ *
+ * The two constants directly above are rotated *onto* the real staff accounts of whatever
+ * deployment `--app` names, and they are committed in this repository. Running this against
+ * production would therefore set the live administrator's password to a value published in the
+ * source tree — and it would do it silently, reporting 95 green checks on the way.
+ *
+ * That is the defect class P1-3 found in `db:seed:catalog:staging` (a seed runner aimed at a
+ * deployed database) and the one `d1-restore.mjs` already guards against. This script writes far
+ * more than a seed does: a class, a roster, an assignment, a full 60-item attempt, and both staff
+ * credentials.
+ *
+ * The production hosts are read from `wrangler.toml` — `[[env.production.routes]]` and
+ * `FRONTEND_URL` — rather than matched on the word "production", for the reason `d1-restore.mjs`
+ * records: this project's production Worker answers `careerlinkai.online` and its database is
+ * called `CareerLinkAI_Main`, so a substring check catches neither. Both `--app` and `--api` are
+ * checked, because they are separate flags and only one of them has to be wrong.
+ *
+ * There is deliberately **no override flag.** `d1-restore.mjs` offers
+ * `--i-know-this-is-production` because restoring production is a real, if last-resort, operation.
+ * Rotating production credentials to a committed constant is never the intended action, so the
+ * honest interface is a refusal with no way past it.
+ */
+const productionTarget = [APP, API].find((url) => isProductionUrl(url));
+
+if (productionTarget) {
+  console.error(`\n  ✗ ${productionTarget} is the production deployment (backend/wrangler.toml).`);
+  console.error('\n  walkthrough.mjs rotates both staff passwords to constants committed in this');
+  console.error(`  repository (${ADMIN_PASSWORD} / ${COUNSELOR_PASSWORD}) and writes a class, a`);
+  console.error('  roster and a completed attempt. Against production that publishes the live');
+  console.error('  administrator credential and leaves test data in real records.');
+  console.error('\n  Point --app and --api at staging or a local Worker. There is no override.\n');
+  process.exit(1);
+}
 
 // Everything this run creates is stamped, so a second run against the same database does not
 // collide with the first on a uniqueness rule (college name, career title — both case-insensitive

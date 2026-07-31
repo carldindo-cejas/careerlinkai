@@ -185,11 +185,14 @@ migration is not recoverable this way. None of 0001–0019 drop data.
 [`BACKUP-AND-RECOVERY.md`](BACKUP-AND-RECOVERY.md) (plan P3-5). Two things to fold into the cutover
 above rather than leave for later:
 
-* Run `npm run db:backup:production` **immediately after step 6**, before the first deploy — the
-  first backup of a system is the one it is easiest to postpone, and steps 4–6 are exactly the state
-  that is expensive to recreate by hand.
-* Put the daily job on a schedule the same day. Until it exists the RPO is "everything since the
-  last time someone remembered".
+* ✅ **Done in the 2026-07-30 cutover.** `npm run db:backup:production` was run immediately after
+  step 6, before the first deploy — the first backup of a system is the one it is easiest to
+  postpone, and steps 4–6 are exactly the state that is expensive to recreate by hand.
+* ✅ **Done 2026-07-31** (plan P3-8). `.github/workflows/backup.yml` runs the verified backup nightly
+  at 17:37 UTC and keeps the dump as a GitHub artifact for 90 days. It needs one repository secret,
+  `CLOUDFLARE_API_TOKEN` (**D1:Read + Account:Read**), and fails loudly on its first run until that
+  exists — a scheduled backup that skips itself when unconfigured is the failure it exists to
+  prevent. Until this landed the RPO was "everything since the last time someone remembered".
 
 Time Travel covers the first 30 days in place with nothing to configure, which is most of what
 actually goes wrong; the exports cover the database being deleted and the account being lost, which
