@@ -240,23 +240,60 @@ try {
 const verifyUrl = flag('verify-url');
 
 if (verifyUrl) {
-  const base = verifyUrl.replace(/\/$/, '');
-  const response = await fetch(`${base}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: ADMIN_EMAIL, password }),
-  });
-  const body = await response.json().catch(() => ({}));
+  /**
+   * `--verify-url` takes an origin *or* an API base, because both were passed on 2026-08-01 and
+   * only one of them worked.
+   *
+   * Given the bare origin, this posted to `<origin>/auth/login` — which is not the API. §17 mounts
+   * the whole thing under `/api/v1`, so that path fell through to the SPA asset routing and came
+   * back **405**, and the check below reported it as *"the Worker's PBKDF2 and this script's PBKDF2
+   * disagree"*: a specific, alarming and entirely invented diagnosis of a request that never
+   * reached an authentication code path. The account was fine. The URL was wrong.
+   */
+  const origin = verifyUrl.replace(/\/+$/, '');
+  const base = /\/api\/v\d+$/.test(origin) ? origin : `${origin}/api/v1`;
+  const endpoint = `${base}/auth/login`;
 
-  if (response.ok && body?.success && body?.data?.user?.must_change_password === true) {
-    console.log(`\n✓ verified against ${base}: the admin account opens with this password,`);
-    console.log('  and lands on the forced-rotation gate.');
-  } else {
-    console.error(`\n✗ VERIFICATION FAILED against ${base}`);
-    console.error(`  HTTP ${response.status}: ${JSON.stringify(body)}`);
-    console.error('  The accounts were written, but the deployed Worker cannot verify this');
-    console.error("  password. The Worker's PBKDF2 and this script's PBKDF2 disagree.");
+  let response;
+  let body = {};
+
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: ADMIN_EMAIL, password }),
+    });
+    body = await response.json().catch(() => ({}));
+  } catch (error) {
+    console.error(`\n✗ VERIFICATION COULD NOT RUN — ${endpoint} was unreachable.`);
+    console.error(`  ${error.message}`);
+    console.error('  The accounts were written. Nothing is known about whether they verify.');
     process.exitCode = 1;
+  }
+
+  if (response) {
+    if (response.ok && body?.success && body?.data?.user?.must_change_password === true) {
+      console.log(`\n✓ verified against ${base}: the admin account opens with this password,`);
+      console.log('  and lands on the forced-rotation gate.');
+    } else if (response.status === 401 || response.status === 422) {
+      // The only shape that actually implicates the hash: the endpoint was reached, it read the
+      // credential, and it said no.
+      console.error(`\n✗ VERIFICATION FAILED against ${base}`);
+      console.error(`  HTTP ${response.status}: ${JSON.stringify(body)}`);
+      console.error('  The accounts were written, but the deployed Worker cannot verify this');
+      console.error("  password. The Worker's PBKDF2 and this script's PBKDF2 disagree.");
+      process.exitCode = 1;
+    } else {
+      // 404/405/5xx and anything else: the request did not reach an auth decision, so the
+      // credential is not what this result is about. Saying otherwise is how a URL typo gets
+      // diagnosed as a cryptography bug.
+      console.error(`\n✗ VERIFICATION INCONCLUSIVE — ${endpoint} answered HTTP ${response.status}.`);
+      console.error(`  ${JSON.stringify(body)}`);
+      console.error('  That is not an authentication failure: the request never reached one.');
+      console.error('  Check the URL (the API is mounted under /api/v1) before suspecting the hash.');
+      console.error('  The accounts were written and are almost certainly fine.');
+      process.exitCode = 1;
+    }
   }
 }
 

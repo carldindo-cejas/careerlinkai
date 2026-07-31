@@ -11,13 +11,45 @@
  * single-origin preview Worker — the same shape that deploys, `_headers` and all — and collects
  * every `securitypolicyviolation` event plus every console error, per page.
  */
+import { randomUUID } from 'node:crypto';
+
 import { chromium } from 'playwright';
+
+import { isProductionUrl } from '../backend/scripts/lib/d1.mjs';
 
 const APP = process.argv.includes('--app')
   ? process.argv[process.argv.indexOf('--app') + 1]
   : 'http://127.0.0.1:8787';
-const TEMP_PASSWORD = 'CspProbe123!';
-const NEW_PASSWORD = 'CspProbe456!';
+
+/**
+ * Generated per run rather than committed, for the reason `walkthrough.mjs` records at length:
+ * these are rotated *onto* a real staff account, and two string literals in a public repository is
+ * a disclosed credential rather than a test fixture. Nothing outside this run needs them.
+ */
+const TEMP_PASSWORD = process.argv.includes('--password')
+  ? process.argv[process.argv.indexOf('--password') + 1]
+  : 'CspProbe123!';
+const NEW_PASSWORD = `Csp!${randomUUID().replaceAll('-', '').slice(0, 16)}A9`;
+
+/**
+ * **Not production**, and this guard did not exist before 2026-08-01.
+ *
+ * This script drives the same §13.1 activation flow `walkthrough.mjs` does — sign in on a temporary
+ * password, complete the forced rotation — so it writes a staff credential on whatever `--app`
+ * names. It would also simply fail against production, which cleared `must_change_password` in P3-1
+ * step 9, but "fails confusingly" is not the same protection as "refuses", and the default target
+ * being local is not a guarantee when the flag exists.
+ *
+ * The CSP is a property of `_headers`, which is served identically by the local preview Worker and
+ * every deployment, so there is nothing this needs production for.
+ */
+if (isProductionUrl(APP)) {
+  console.error(`\n  ✗ ${APP} is the production deployment (backend/wrangler.toml).`);
+  console.error('\n  csp-check.mjs rotates a real staff password to complete the activation gate.');
+  console.error('  Run it against the local preview (npm run preview), which serves the same');
+  console.error('  _headers file that deploys — the CSP is a property of that file, not of a host.\n');
+  process.exit(1);
+}
 
 const findings = [];
 let failures = 0;

@@ -20,6 +20,13 @@ wrangler.drill.toml
 .env.local
 .env.*.local
 
+# Vitest browser mode (the `browser` project in frontend/vite.config.ts). A failing test in real
+# Chrome writes a screenshot of the page at the moment it failed; both directories are diagnostic
+# output from a run, not fixtures. `__screenshots__` lands beside the test file rather than in a
+# build directory, so without this a red run leaves untracked PNGs inside `src/`.
+frontend/.vitest-attachments/
+**/__screenshots__/
+
 # Editor / OS
 .DS_Store
 Thumbs.db

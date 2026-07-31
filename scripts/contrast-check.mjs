@@ -16,11 +16,24 @@
  * (§25), so a student's client genuinely cannot know which item measures what — the property that
  * makes the instrument honest, and the reason this script needs a second, authorised identity.
  *
- *   node scripts/contrast-check.mjs --app https://careerlinkai-staging.cejascarldindo.workers.dev \
+ *   node scripts/contrast-check.mjs \
  *     --class-code GZUY-2673 --a juan.delacruz2 --b jose.pena.edited \
- *     --counselor-password 'Walkthrough@Counselor1'
+ *     --counselor-password '…' --admin-password '…'
  *
  * The two students must be on the class roster and must not have attempted anything yet.
+ *
+ * **`--app` defaults to production** (`careerlinkai.online`), per the standing decision recorded in
+ * `.claude/QUICKREF.md`: deploys and their verification target production, not staging. This is the
+ * script that can do that — it signs in to accounts that already exist and rotates nothing, which
+ * is why it is the one that ran green against production in P3-1 step 10 while `walkthrough.mjs`
+ * cannot run there at all.
+ *
+ * **Both passwords are required and have no defaults.** They were
+ * `'Walkthrough@Counselor1'` / `'Walkthrough@Admin1'` — `walkthrough.mjs`'s committed constants,
+ * inherited as defaults here — until 2026-08-01. That was already a published credential and became
+ * a disclosed one when this repository went public; pairing it with a default target of *production*
+ * would have been worse than either half. A script that writes real rows should not be runnable
+ * without its operator naming the identity it writes them as.
  */
 
 const args = process.argv.slice(2);
@@ -29,13 +42,21 @@ const flag = (name, fallback) => {
   return i === -1 ? fallback : args[i + 1];
 };
 
-const APP = (flag('app', 'https://careerlinkai-staging.cejascarldindo.workers.dev') ?? '').replace(/\/$/, '');
+const APP = (flag('app', 'https://careerlinkai.online') ?? '').replace(/\/$/, '');
 const API = `${APP}/api/v1`;
 const CLASS_CODE = flag('class-code');
 const STUDENT_A = flag('a');
 const STUDENT_B = flag('b');
-const COUNSELOR_PASSWORD = flag('counselor-password', 'Walkthrough@Counselor1');
-const ADMIN_PASSWORD = flag('admin-password', 'Walkthrough@Admin1');
+const COUNSELOR_PASSWORD = flag('counselor-password');
+const ADMIN_PASSWORD = flag('admin-password');
+
+if (!COUNSELOR_PASSWORD || !ADMIN_PASSWORD) {
+  console.error('\n  ✗ --counselor-password and --admin-password are both required.');
+  console.error(`\n  This run writes a class, two students and two full attempts into ${APP}.`);
+  console.error('  There is deliberately no default: the previous ones were walkthrough.mjs\'s');
+  console.error('  committed constants, and --app now defaults to production.\n');
+  process.exit(1);
+}
 
 /** The two contrasting interest profiles. Disjoint by construction — no dimension is in both. */
 const PROFILE_A = ['R', 'I', 'C']; // things, ideas, order

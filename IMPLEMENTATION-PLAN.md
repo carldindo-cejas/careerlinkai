@@ -1131,6 +1131,86 @@ a committed constant is never the intended action.
   apply is a live-database write and is left to be run deliberately. Until it runs, production is
   protected by the pre-checks only, exactly as it was before this item.
 
+### `[x]` **P3-9 — CI had never once passed** — *done 2026-07-31. Green on the 12th run, after eleven red.*
+
+**Eleven CI runs since the first on 2026-07-15. Eleven failures.** The backend job was green in all
+of them; the frontend `Test` step was red in all of them. This document records "195 frontend,
+type-check · lint · gates · build clean" at nearly every phase from P1-3 to P3-8, and **every one of
+those numbers came from a local run.** The suite genuinely is green locally. It had simply never been
+green in the place that was supposed to prove it, across sixteen days and six phases.
+
+That is this plan's own opening rule turned on the plan: *the code existing is not the thing
+working*, and a gate nobody has seen pass is not known to be a gate. P1-3 fired all six of its
+thresholds red before trusting them. Nobody applied that to the workflow that runs them.
+
+**What was failing: the two PDF cases in `extractText.test.ts` hung** — and the timeout had already
+been raised once without helping. They timed out at Vitest's default 5,000 ms on 2026-07-29; P3-3
+raised `testTimeout` to 15,000 ms for unrelated reasons; they then timed out at 15,000 ms. Tripling
+the budget changed nothing, which is what separates a hang from a slow machine, and also rules out
+the two-core starvation `vite.config.ts` documents for other tests — that costs the *first* test,
+not both identically.
+
+**The cause was structural, and it meant the test had never tested the right thing anyway.**
+`pdfjs-dist` disables the real `Worker` whenever `isNodeJS` is true (a static block in
+`build/pdf.mjs`), and under Vitest it always is. So the jsdom run never exercised pdf.js's worker
+path at all — it took the *fake worker* fallback, which does a raw `@vite-ignore` `import()` of a
+`file://` URL at the 1.25 MB `pdf.worker.min.mjs`, outside Vitest's module pipeline. pdf.js printed
+the diagnosis into every red log for sixteen days: *"Please use the `legacy` build in Node.js
+environments."*
+
+**The exact failure inside CI's Linux/Node 22 was never reproduced, and is not claimed here.** It
+does not reproduce locally. The fix deletes the code path rather than theorising about it:
+`extractText.test.ts` now runs in **real Chrome** as its own Vitest project, where `Worker` exists
+and pdf.js runs what the app ships. The other 22 files stay in jsdom.
+
+**Four patches existed only to fake a browser for a browser library, and all four are gone** — the
+`vi.mock` re-pointing the worker `?url` at a filesystem path, a hand-written `DOMMatrix`, the
+`Uint8Array.toHex`/`fromHex` polyfills, and the `mammoth` browser-build alias. Nothing else in `src/`
+referenced any of them. `setupTests.ts` had already written the exit in its own comment: *"If a test
+ever needs real geometry, that test needs a real browser."*
+
+* **Files:** `frontend/vite.config.ts`, `frontend/src/setupTests.ts`,
+  `frontend/src/features/admin/utils/extractText.test.ts`, `frontend/package.json`,
+  `.github/workflows/ci.yml`, `.gitignore`
+* **Verify:** ✅ **CI green — run `30641319855`, the first success in the repository's history.**
+  Frontend **23 files / 195 tests**, matching local exactly (the count is the assertion: a
+  misconfigured project that silently runs 188 also reports success). `browser (chromium)
+  extractText.test.ts (7 tests) 5002ms` in the CI log proves the browser project really ran rather
+  than being skipped. Backend 70 files.
+  ✅ **Proven to still bite** (P1-3's rule): `extractPdf` stubbed to return a constant → exactly the
+  two PDF tests fail, in **196 ms and 130 ms with real assertion messages** rather than by timing
+  out. Reverted, green again.
+* **The gate is now enforced — and the way it was enabled created a live credential exposure.**
+  Branch protection and rulesets are both refused on private repositories on GitHub Free (`PUT
+  /branches/main/protection` and `GET /rulesets` each returned *"Upgrade to GitHub Pro or make this
+  repository public"*, HTTP 403). **The repository was made public on 2026-07-31 to unblock it**,
+  and protection is now applied: both CI jobs required, `strict: false`, `enforce_admins: false`
+  (the sole admin can still push deliberately), force-pushes and deletions blocked.
+
+  **Public means the whole history, not just `HEAD`, and one thing in it is a working credential.**
+  Scanned: no token, key or `.dev.vars` was ever committed, and `frontend/.env.staging` (deleted
+  from `HEAD`, still in history) holds only a public URL. But two things are genuinely exposed:
+
+  * **`scripts/walkthrough.mjs:85-86` publishes staging's staff passwords.** They are not test
+    fixtures — the script *rotates the real staff accounts onto them* for whatever `--app` names,
+    and it has been run against staging by P2-2, P2-3 and P3-3. So `admin@careerlinkai.online` on
+    `https://careerlinkai-staging.cejascarldindo.workers.dev` (**confirmed live, HTTP 200**) very
+    likely has a password anyone on the internet can now read. **Rotate them.** The file's own
+    comment already said these were "published in the source tree" — that sentence meant something
+    survivable while the repository was private and means something else now.
+  * **`backend/seeds/0001_staff_accounts.sql` ships real PBKDF2 hashes**, which its header already
+    calls public and accepts *"because the first login forces a rotation"*. That reasoning no longer
+    holds where `walkthrough.mjs` has run, because rotating to a known constant clears
+    `must_change_password`.
+
+  **Production appears unaffected and this is reasoning, not a test** — a login attempt against it
+  would risk the P3-4 lockout. P3-1 step 4 bootstrapped production's staff via
+  `bootstrap-staff.mjs` with a temp password captured at the console, never from the seed, and P3-8
+  added the guard that stops `walkthrough.mjs` pointing at production at all. Worth confirming
+  deliberately rather than assuming.
+* **Left open:** the earliest run (2026-07-15) failed differently — seven test files failing to load
+  — so more may surface now that the job can go green. That is what a gate is for.
+
 ---
 
 ## Phase 4 — After launch
@@ -1179,15 +1259,26 @@ a committed constant is never the intended action.
         P3-1  production cutover, steps 9–10      ✅ done — C1 proven on production, 0/10
         ────────────────────────────────────────────────── launched 2026-07-30
         P3-8  uniqueness + nightly backup + guard ✅ done — the obvious index predicate does not apply
-NOW ──► verify the nightly backup actually runs   (~10 m)   ← Actions → Run workflow, once, by hand
+        P3-9  CI had never once passed          ✅ done — 11 of 11 red since 2026-07-15; green on the 12th
+NOW ──► verify the nightly backup actually runs   (~10 m)   ← needs a token Cloudflare accepts for D1
         Phase 4  (+ two dashboard-side steps: DEPLOYMENT.md §8.1 WAF rule, §8.2 Workers Logs alert)
 ```
 
 **The one open thread is that the backup schedule has never been observed to run.** The workflow is on
-`main`, the script is proven against production by hand, and the secret is the only unverified link —
-which is exactly the shape of gap this document keeps finding. An unverified backup schedule is
-indistinguishable from a working one until the day it is needed; `workflow_dispatch` exists so that
-day is not the first test.
+`main`, the script is proven against production by hand, and the credentials were the only unverified
+link — which is exactly the shape of gap this document keeps finding, and both halves of it turned
+out to be broken. A wrong `CLOUDFLARE_ACCOUNT_ID` failed at Cloudflare's router (`code: 7003`, never
+reaching a permission check) and masked a rejected token behind it (`code: 10000`). The account id is
+fixed; the token is not, and until it is the schedule has still never produced a backup.
+
+**And this document was wrong about something larger.** Every phase above records "all green" — 907
+backend, 195 frontend, type-check · lint · gates · build clean — and **every one of those was a local
+run.** CI itself had never passed: eleven runs from 2026-07-15 to 2026-07-31, eleven failures, the
+backend job green throughout and the frontend job red throughout. Nobody opened it. P1-3 established
+that a threshold which has never been seen red is not a gate, and fired all six before trusting them;
+the same reasoning applied to the workflow *running* those gates would have caught this on day one.
+Closed as **P3-9** below. The lesson is not "check CI" — it is that this plan's rule about verifying
+gates was applied to everything except the thing doing the verifying.
 
 **The three items that used to sit *after* P3-1 were brought forward on purpose**, and two of them
 turned out to be about states a live deployment cannot get back out of. P3-6's was permanent by
@@ -1234,3 +1325,4 @@ system — and the fourth, the stale walkthrough, was the tool that was supposed
 | 2026-07-30 | P3-1 steps 1–8 | — | **Production cutover — and step 8 found that `careerlinkai.online` was serving a different Worker than the one being deployed.** Wrangler derives an environment’s script name as `<name>-<env>`, so `npm run deploy:production` publishes `careerlinkai-production`; the domains were attached to the bare `careerlinkai` script from the era before environments existed. `DEPLOYMENT.md` (twice), `PRODUCTION_REQUIREMENTS.md` §6 and `wrangler.toml`’s own comment all recorded the two as one script, and **nothing caught it because `--env production` had never been run** — staging is `careerlinkai-staging`, which was the evidence sitting in plain sight. The first cutover therefore published a third Worker that was healthy, correct and reachable by nobody, while the live domain went on serving April’s build. **The obvious fix was refused by Cloudflare**, which is the better finding: pinning `name = "careerlinkai"` resolves fine but the deploy is rejected because the legacy script holds live `NotificationDO` Durable Objects — a class in no committed config and absent from the codebase, so its migration-tag state is not derivable from this repo and the only route through destroys DO data nobody can inspect first. The domains were moved instead, and are now **declared in `wrangler.toml`** rather than living only in a dashboard, which is how the original fact drifted from three documents without going red. Also learned: a queue takes exactly one consumer, and the conflict surfaces at *delete* time (`code: 10064`), not at deploy. Verified live: health `environment=production` on apex and `www`, the served `index.html` matching the local build hash for hash, five route chunks `immutable`, all four security headers, **19 migrations, 20/68/48/309/933 catalog rows, 0 duplicates, 0 NULL canonicals**, and `POST /auth/login` returning **200 with `must_change_password: true` in 3.0 s** — 600,000 PBKDF2 iterations inside AuthGuardDO’s 30 s budget on a Free-plan Worker, which is deviation D14 proven in production. First backup taken before the first deploy: 432.4 KB, 45 tables, 1,516 rows, verified table by table. Steps 9–10 (rotation, Install RIASEC & SCCT, two-profile smoke) still need a browser, so the item stays `[~]`. |
 | 2026-07-30 | P3-4, P3-6, P3-7 | **907** BE / **195** FE | The last three Phase 3 items, and **the first of them found a defect none of the other 877 tests could see**. P3-4's per-user counter charges once per execution of `authenticate()`, which made it the only instrument in the system that can count them — and it counted **six** on `/admin/dashboard`, five on `/admin/counselors`, four on `/counselor/dashboard`. §10 gives every module its own routes file and six of them mount on `/admin`; Hono merges each sub-app's `use('*')` into the parent, so a path whose handler sits in the last-registered router runs the full middleware chain of every router in front of it. **Twelve D1 reads to answer "who is this"** on the admin's landing screen, against a 50-subrequest ceiling, with every response correct throughout. One early return fixed it. The limiter itself is charged inside `authenticate()` rather than as a global middleware (Hono's global `use` runs before the sub-router, so it cannot see the user) and its limit is a var — the only one of six that is, because a test file compresses a day of one user's requests into three seconds. `Retry-After` now lands on every 429 in the system from `app.onError`, so the five pre-existing limiters gained it for free; the WAF half S2 also wants is written up in DEPLOYMENT.md §8.1 rather than claimed here, because dashboard configuration cannot have tests. **P3-6 did both halves of its "or", since either alone is worse than useless**: `counselor_id` was writable by nothing, so a departing counselor's classes were stuck pointing at a removed account *permanently* — an admin could see them and no replacement could ever be given them. The endpoint lives on its own `/admin` router rather than as a field on the counselor's PATCH, because that route admits counselors and the field would have let any of them hand a colleague's class to themselves. Deletion is now refused on exactly the `classes_count` already rendered beside the name, and the refusal links to the screen that fixes it. **P3-7 alerts once per queue per 15 minutes and says that it is doing so** — a broken pipeline dead-letters every message, ten at a time, and "3 jobs failed" when 300 did is a worse lie than silence. Proven un-breakable-by-alerting the honest way: `queue()` takes its env as a parameter, so the binding the alert reaches for first was replaced with one that throws, and every message was still acked. |
 | 2026-07-28 | P2-2 | **811** BE / 112 FE | Staging rehearsal. **`generateFor` 500'd on D1's 100-parameter limit — every student got zero recommendations, caused by P0-1's own catalog expansion.** Fixed via `chunkIds`; 4 regression tests. `walkthrough.mjs` un-rotted (4 stale selectors + a removed auto-advance). Two duplicate careers archived. C1 proven live: **0/10 overlap** between opposite profiles. |
+| 2026-07-31 | P3-9 | **915** BE / **195** FE | **CI had never once passed — eleven runs, eleven failures, from the first on 2026-07-15 to this one.** The backend job was green throughout and the frontend job red throughout, and this document's "all green" line at nearly every phase from P1-3 to P3-8 was a *local* run every time. The suite really is green locally; it had simply never been green in the place that was supposed to prove it, for sixteen days across six phases. **The two PDF cases in `extractText.test.ts` hung, and raising the timeout had already failed to fix it once** — 5,000 ms on 2026-07-29, then 15,000 ms after P3-3 raised it, timing out identically at both, which is what separates a hang from a slow runner. The cause also meant the test had never tested the shipped path: **`pdfjs-dist` disables the real `Worker` whenever `isNodeJS` is true**, so under Vitest it always took the *fake worker* fallback — a raw `@vite-ignore` `import()` of a `file://` URL at the 1.25 MB worker, outside Vitest's module pipeline. pdf.js printed the diagnosis into every red log for sixteen days: "Please use the `legacy` build in Node.js environments." The exact Linux/Node 22 failure was never reproduced and is not claimed; the fix **deletes the path** instead — that one file now runs in **real Chrome**, where `Worker` exists. Four patches that existed only to fake a browser for a browser library went with it: the worker `vi.mock`, a hand-written `DOMMatrix`, the `Uint8Array.toHex`/`fromHex` polyfills, and the `mammoth` alias. `setupTests.ts` had already named the exit in its own comment. Proven red first (P1-3's rule): `extractPdf` stubbed to a constant → exactly those two tests fail, in 196 ms and 130 ms with real assertion messages rather than by timing out. **Green on run `30641319855` — 23 files, 195 tests, matching local exactly.** |

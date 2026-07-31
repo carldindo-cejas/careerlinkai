@@ -199,16 +199,57 @@ credentials, which is what makes it cover "the account was lost". 90 days is del
 than Time Travel's 30: inside that window Time Travel is the better tool (in place, with no interval
 during which the data is absent), so these files exist for after it closes.
 
-The token is **D1:Read and Account:Read only**. The job never writes to D1, and an unattended
-nightly holding a write-capable production credential is a standing risk for no benefit.
+The token is **D1:Edit and Account Settings:Read**.
 
-**Failures are loud, and retried three times first.** `wrangler d1 export` is an asynchronous
+It was specified as D1:Read here, in `PRODUCTION_REQUIREMENTS.md` §7 and in the workflow itself.
+The reasoning was that the job never writes to D1 and an unattended nightly holding a
+write-capable production credential is a standing risk for no benefit. That is still true and the
+platform does not appear to permit acting on it: both calls the job makes are POSTs — `d1 execute
+--command "SELECT …"` hits `/query`, which the API cannot statically prove is a read, and
+`d1 export` hits `/export`. Cloudflare's own import/export tutorial specifies Edit, and their
+release notes record D1:Read having been able to write as a bug that was *fixed*.
+
+`CLOUDFLARE_ACCOUNT_ID` must be the id from `wrangler whoami`. **A wrong value is worse than an
+absent one** — unset, a single-account token resolves its own account; wrong, it is pasted
+faithfully into the request URL.
+
+### The first four runs, and why the order matters
+
+Two faults were stacked, and the first masked the second:
+
+1. **`CLOUDFLARE_ACCOUNT_ID` was wrong.** Every request failed at the router with `Could not route
+   to /client/v4/accounts/***/d1/database/…/query, perhaps your object identifier is invalid?
+   [code: 7003]`. That is not an auth error and never reached a permission check.
+2. **With the account id corrected, the same call returned `Authentication error [code: 10000]`.**
+   Only then was the token the live problem.
+
+The first failure was diagnosed as a permission problem — because a permission problem was the
+plausible story. The header said D1:Read, Cloudflare's docs say Edit, the run was red, and the
+pieces fit. The log had said 7003 all along; nobody had opened the collapsed group. **A diagnosis
+that fits the theory you arrived with is the one to distrust**, which is what P3-1 recorded when
+three documents agreed with each other and every one of them was wrong.
+
+Neither fault was caught earlier because `d1-backup.mjs` had only ever been run **by hand**, where
+the operator is `wrangler login`-authenticated against their own account — so neither the token nor
+the account id had ever been exercised. That is exactly the gap `IMPLEMENTATION-PLAN.md` named as
+the last one open.
+
+**Failures are loud, retried three times — but only when retrying can help.** `wrangler d1 export` is an asynchronous
 create-poll-download job against the Cloudflare API: while this workflow was being written, the
 identical command failed once, hung once, then succeeded twice against an unchanged database. A
 transient export error says nothing about the data, and a nightly job that pages on one is a job
-whose red ticks stop being read. Three spaced attempts absorb that; a genuine verification failure —
-a dump missing a table or missing rows, which is the whole reason `d1-backup.mjs` does not trust an
-exit code — fails all three and goes red having taken about two minutes to say so. The `.REJECTED`
+whose red ticks stop being read. Three spaced attempts absorb that.
+
+**Two failures are permanent by construction and bail on the first attempt** rather than sleeping
+through two more: a `.REJECTED` dump (the export worked, the row-by-row comparison did not, and it
+will disagree identically three times) and a credential rejection. Both report *what actually
+happened*. The original loop retried everything and then announced "check the verification output
+above for which table disagreed" regardless — which on the credential failure was a diagnosis of a
+step the run had never reached. A retry loop that asserts a cause it did not check is the same
+defect as a backup nobody verified.
+
+Every attempt tees its output to `attempt-N.log` inside the artifact. Before that existed, a failure
+occurring *before* an export uploaded nothing at all — a red tick with no evidence. The `.REJECTED`
 dump is uploaded too, because it is the most diagnostic thing the run can produce.
 
 A missing `CLOUDFLARE_API_TOKEN` fails the job on its **first** run, by design: a scheduled backup

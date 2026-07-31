@@ -190,9 +190,17 @@ above rather than leave for later:
   postpone, and steps 4–6 are exactly the state that is expensive to recreate by hand.
 * ✅ **Done 2026-07-31** (plan P3-8). `.github/workflows/backup.yml` runs the verified backup nightly
   at 17:37 UTC and keeps the dump as a GitHub artifact for 90 days. It needs one repository secret,
-  `CLOUDFLARE_API_TOKEN` (**D1:Read + Account:Read**), and fails loudly on its first run until that
-  exists — a scheduled backup that skips itself when unconfigured is the failure it exists to
-  prevent. Until this landed the RPO was "everything since the last time someone remembered".
+  `CLOUDFLARE_API_TOKEN` (**D1:Edit + Account Settings:Read**), and fails loudly on its first run
+  until that exists — a scheduled backup that skips itself when unconfigured is the failure it
+  exists to prevent. Until this landed the RPO was "everything since the last time someone
+  remembered".
+  Also needs `CLOUDFLARE_ACCOUNT_ID`, set to the id from `wrangler whoami` — **a wrong value is
+  worse than an absent one**, since an unset secret lets a single-account token resolve its own.
+  This said D1:Read until 2026-07-31, as did `BACKUP-AND-RECOVERY.md` §4 and the workflow header.
+  The first four runs failed on **two stacked faults** — a wrong account id (`code: 7003`, a
+  routing failure that never reached a permission check) masking a rejected token (`code: 10000`).
+  See [`BACKUP-AND-RECOVERY.md`](BACKUP-AND-RECOVERY.md) §4; the order in which they surfaced is
+  the part worth reading.
 
 Time Travel covers the first 30 days in place with nothing to configure, which is most of what
 actually goes wrong; the exports cover the database being deleted and the account being lost, which
