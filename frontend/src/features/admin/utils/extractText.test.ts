@@ -1,31 +1,23 @@
 import JSZip from 'jszip';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { extractText, ExtractionError, MAX_EXTRACTED_TEXT_CHARS } from './extractText';
 
 /**
- * `extractText` gets its worker URL from Vite's `?url` import, which in a real build is an HTTP
- * path the browser fetches. Under Vitest that same string reaches pdf.js in Node, which tries to
- * `import()` it as a module specifier and resolves it against the filesystem root — "Cannot find
- * module 'C:\node_modules\…'".
+ * **This file runs in real Chrome, not jsdom** — see the `browser` project in `vite.config.ts`.
  *
- * So the URL is re-pointed at the worker's actual location on disk. This is not stubbing out the
- * thing under test: pdf.js still runs its real worker code (as a same-thread "fake worker", since
- * jsdom has no `Worker`), and the assertions below still go through the genuine parser. Only the
- * *locator* is corrected for the runner.
+ * It used to carry a `vi.mock` re-pointing the worker's `?url` at a path on disk, because in Node
+ * that string reached pdf.js as a module specifier and resolved against the filesystem root. That
+ * mock is gone, along with the `DOMMatrix` and `Uint8Array.toHex` polyfills in `setupTests.ts` and
+ * the `mammoth` browser-build alias: every one of them existed to fake a browser for two browser
+ * libraries, and none of it survived contact with CI, where the PDF cases hung on every run the
+ * repository has ever had.
+ *
+ * What that buys is not tidiness. `pdfjs-dist` disables the real `Worker` whenever `isNodeJS` is
+ * true, so the jsdom version never tested the worker path the app ships — it tested a same-thread
+ * fallback that only exists in Node. Here `Worker` is real, `?url` is a real URL, and the parser
+ * is the one an admin's browser runs.
  */
-vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', async () => {
-  // Imported inside the factory, not at module scope: `vi.mock` is hoisted above the imports, so
-  // a top-level binding referenced here is still in its temporal dead zone.
-  const { pathToFileURL } = await import('node:url');
-  const { resolve } = await import('node:path');
-
-  return {
-    default: pathToFileURL(
-      resolve(process.cwd(), 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs'),
-    ).href,
-  };
-});
 
 /**
  * Browser-side PDF/DOCX extraction (FULLPLAN §33) — the leg the AI generation flow depends on and

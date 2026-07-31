@@ -99,6 +99,18 @@ jobs:
       - name: Type-check
         run: npm run type-check
 
+      # `extractText.test.ts` runs in real Chrome (the `browser` project in vite.config.ts), so the
+      # runner needs one. `ubuntu-latest` ships Google Chrome, which is what `channel: 'chrome'`
+      # asks for — the same choice scripts/csp-check.mjs makes, and the reason nothing is
+      # downloaded here. Playwright still needs its own shared libraries, and `--only-shell` is
+      # deliberately not used: it installs headless shell *instead of* a browser, and this project
+      # drives the real one.
+      #
+      # This step is the reason the CI file changed at all. Everything else about `npm test` is
+      # unchanged; it now runs two projects instead of one.
+      - name: Install Playwright system dependencies
+        run: npx playwright install-deps chromium
+
       - name: Test
         run: npm test
 
