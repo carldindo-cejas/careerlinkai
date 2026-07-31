@@ -1180,16 +1180,34 @@ ever needs real geometry, that test needs a real browser."*
   ✅ **Proven to still bite** (P1-3's rule): `extractPdf` stubbed to return a constant → exactly the
   two PDF tests fail, in **196 ms and 130 ms with real assertion messages** rather than by timing
   out. Reverted, green again.
-* **Left open — nothing stops this recurring, and that is a platform limit rather than a decision.**
-  A required status check was the point of fixing this: CI going red unnoticed for sixteen days is
-  the actual defect, and a green run today does not prevent a red one tomorrow going unread the same
-  way. **Both mechanisms are refused on this account** — `PUT /branches/main/protection` and
-  `GET /rulesets` each return *"Upgrade to GitHub Pro or make this repository public"* (HTTP 403),
-  because branch protection and rulesets are unavailable on private repositories on GitHub Free.
-  The three ways to close it, none of them free-and-server-side: make the repository public, take
-  GitHub Pro, or accept a **local `pre-push` hook** — which is not the same thing, since it lives on
-  one machine and `--no-verify` walks past it. Recorded as a real open gap rather than quietly
-  dropped, because an unenforced gate is exactly what this item was about.
+* **The gate is now enforced — and the way it was enabled created a live credential exposure.**
+  Branch protection and rulesets are both refused on private repositories on GitHub Free (`PUT
+  /branches/main/protection` and `GET /rulesets` each returned *"Upgrade to GitHub Pro or make this
+  repository public"*, HTTP 403). **The repository was made public on 2026-07-31 to unblock it**,
+  and protection is now applied: both CI jobs required, `strict: false`, `enforce_admins: false`
+  (the sole admin can still push deliberately), force-pushes and deletions blocked.
+
+  **Public means the whole history, not just `HEAD`, and one thing in it is a working credential.**
+  Scanned: no token, key or `.dev.vars` was ever committed, and `frontend/.env.staging` (deleted
+  from `HEAD`, still in history) holds only a public URL. But two things are genuinely exposed:
+
+  * **`scripts/walkthrough.mjs:85-86` publishes staging's staff passwords.** They are not test
+    fixtures — the script *rotates the real staff accounts onto them* for whatever `--app` names,
+    and it has been run against staging by P2-2, P2-3 and P3-3. So `admin@careerlinkai.online` on
+    `https://careerlinkai-staging.cejascarldindo.workers.dev` (**confirmed live, HTTP 200**) very
+    likely has a password anyone on the internet can now read. **Rotate them.** The file's own
+    comment already said these were "published in the source tree" — that sentence meant something
+    survivable while the repository was private and means something else now.
+  * **`backend/seeds/0001_staff_accounts.sql` ships real PBKDF2 hashes**, which its header already
+    calls public and accepts *"because the first login forces a rotation"*. That reasoning no longer
+    holds where `walkthrough.mjs` has run, because rotating to a known constant clears
+    `must_change_password`.
+
+  **Production appears unaffected and this is reasoning, not a test** — a login attempt against it
+  would risk the P3-4 lockout. P3-1 step 4 bootstrapped production's staff via
+  `bootstrap-staff.mjs` with a temp password captured at the console, never from the seed, and P3-8
+  added the guard that stops `walkthrough.mjs` pointing at production at all. Worth confirming
+  deliberately rather than assuming.
 * **Left open:** the earliest run (2026-07-15) failed differently — seven test files failing to load
   — so more may surface now that the job can go green. That is what a gate is for.
 
