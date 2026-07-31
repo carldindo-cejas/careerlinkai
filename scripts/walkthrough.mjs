@@ -65,6 +65,7 @@
  * of this app would actually use.
  */
 import { chromium } from 'playwright';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { isProductionUrl } from '../backend/scripts/lib/d1.mjs';
@@ -81,22 +82,50 @@ const TEMP_PASSWORD = flag('password', 'ChangeMe123');
 const CHROME = flag('chrome', 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
 const HEADED = args.includes('--headed');
 
-// The passwords the two staff accounts are rotated *to*. They only have to survive this run.
-const ADMIN_PASSWORD = 'Walkthrough@Admin1';
-const COUNSELOR_PASSWORD = 'Walkthrough@Counselor1';
+/**
+ * The passwords the two staff accounts are rotated *to*. They only have to survive this run.
+ *
+ * **Generated per run, not committed.** These were two string literals in this file
+ * (`Walkthrough@Admin1` / `Walkthrough@Counselor1`) until 2026-08-01, and the header below already
+ * described them as "published in the source tree" — a sentence that was survivable while this
+ * repository was private and became a live credential disclosure the day it went public. They were
+ * rotated *onto* real staff accounts on every staging run, and `must_change_password` is cleared by
+ * that rotation, so there was no first-login gate left behind them either.
+ *
+ * A fresh random value costs nothing here: the accounts are disposable on the deployments this
+ * script is allowed to touch, and the run needs the password only to log back in a few lines later.
+ * `--admin-password` / `--counselor-password` remain for a run that must be reproducible.
+ */
+function generatedPassword(role) {
+  // Upper, lower, digit and symbol, comfortably over the §38 length floor — assembled rather than
+  // sampled so the policy is satisfied by construction rather than by luck on a short random string.
+  return `Wt${role}!${randomUUID().replaceAll('-', '').slice(0, 16)}A9`;
+}
+
+const ADMIN_PASSWORD = flag('admin-password') ?? generatedPassword('Adm');
+const COUNSELOR_PASSWORD = flag('counselor-password') ?? generatedPassword('Cns');
 
 /**
- * **This script must never be pointed at production, and until the P3-1 cutover nothing said so.**
+ * **This script must never be pointed at production.**
  *
- * The two constants directly above are rotated *onto* the real staff accounts of whatever
- * deployment `--app` names, and they are committed in this repository. Running this against
- * production would therefore set the live administrator's password to a value published in the
- * source tree — and it would do it silently, reporting 95 green checks on the way.
+ * Two independent reasons, and the second one is the reason the guard survives the fix above.
  *
- * That is the defect class P1-3 found in `db:seed:catalog:staging` (a seed runner aimed at a
- * deployed database) and the one `d1-restore.mjs` already guards against. This script writes far
- * more than a seed does: a class, a roster, an assignment, a full 60-item attempt, and both staff
- * credentials.
+ * 1. **It writes, heavily.** A class, a roster, an assignment, a full 60-item attempt, and both
+ *    staff credentials — into real records. That is the defect class P1-3 found in
+ *    `db:seed:catalog:staging` (a seed runner aimed at a deployed database) and the one
+ *    `d1-restore.mjs` already guards against; this writes far more than a seed does.
+ *
+ * 2. **It models the §13.1 *activation* flow, which production has already completed.**
+ *    `activateStaff` signs in on a temporary password and asserts it lands on `/change-password` —
+ *    it requires `must_change_password = 1`. P3-1 step 9 confirmed both production staff accounts
+ *    are past that gate at `0`. So this script cannot pass against production even in principle;
+ *    it would fail at the first staff login having already been given the credentials to try.
+ *
+ * The passwords are no longer committed, so reason 1 is now "writes test data into real records"
+ * rather than "publishes the live administrator credential". Reason 2 is structural and no flag
+ * fixes it. **For verifying a production deploy, use `contrast-check.mjs`** — it authenticates with
+ * `--admin-password` / `--counselor-password` against accounts that already exist and rotates
+ * nothing, which is why it is the script that ran green against production in P3-1 step 10.
  *
  * The production hosts are read from `wrangler.toml` — `[[env.production.routes]]` and
  * `FRONTEND_URL` — rather than matched on the word "production", for the reason `d1-restore.mjs`
@@ -106,17 +135,19 @@ const COUNSELOR_PASSWORD = 'Walkthrough@Counselor1';
  *
  * There is deliberately **no override flag.** `d1-restore.mjs` offers
  * `--i-know-this-is-production` because restoring production is a real, if last-resort, operation.
- * Rotating production credentials to a committed constant is never the intended action, so the
- * honest interface is a refusal with no way past it.
+ * There is no version of this run that is the intended action against production, so the honest
+ * interface is a refusal with no way past it.
  */
 const productionTarget = [APP, API].find((url) => isProductionUrl(url));
 
 if (productionTarget) {
   console.error(`\n  ✗ ${productionTarget} is the production deployment (backend/wrangler.toml).`);
-  console.error('\n  walkthrough.mjs rotates both staff passwords to constants committed in this');
-  console.error(`  repository (${ADMIN_PASSWORD} / ${COUNSELOR_PASSWORD}) and writes a class, a`);
-  console.error('  roster and a completed attempt. Against production that publishes the live');
-  console.error('  administrator credential and leaves test data in real records.');
+  console.error('\n  walkthrough.mjs writes a class, a roster and a completed attempt into real');
+  console.error('  records, and it rotates both staff passwords. It also cannot pass here: it');
+  console.error('  drives the §13.1 activation flow, which needs must_change_password = 1, and');
+  console.error('  production cleared that gate in P3-1 step 9.');
+  console.error('\n  To verify a production deploy use contrast-check.mjs, which signs in to the');
+  console.error('  accounts that already exist and rotates nothing.');
   console.error('\n  Point --app and --api at staging or a local Worker. There is no override.\n');
   process.exit(1);
 }
