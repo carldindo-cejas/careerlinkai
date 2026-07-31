@@ -1176,16 +1176,26 @@ a committed constant is never the intended action.
         P3-7  DLQ alerting                         ✅ done — one alert per queue per 15 min, and it says so
         ────────────────────────────────────────────────── hardened
         P3-1  production cutover, steps 1–8       ✅ done — the domain pointed at a different script
-NOW ──► P3-1  production cutover, steps 9–10      (~30 m)   ← browser: rotate, install RIASEC & SCCT, smoke
-        ────────────────────────────────────────────────── launched
+        P3-1  production cutover, steps 9–10      ✅ done — C1 proven on production, 0/10
+        ────────────────────────────────────────────────── launched 2026-07-30
+        P3-8  uniqueness + nightly backup + guard ✅ done — the obvious index predicate does not apply
+NOW ──► verify the nightly backup actually runs   (~10 m)   ← Actions → Run workflow, once, by hand
         Phase 4  (+ two dashboard-side steps: DEPLOYMENT.md §8.1 WAF rule, §8.2 Workers Logs alert)
 ```
 
-**P3-1's remaining half is the only thing between here and production**, and the three items that used
-to sit *after* it were brought forward on purpose: two of them turned out to be about states a live
-deployment cannot get back out of. P3-6's was permanent by construction — `counselor_id` was writable
-by nothing, so the first counselor to leave took their classes' ownership with them for good. P3-7's
-was permanent by silence. Doing either after launch means doing it to real data.
+**The one open thread is that the backup schedule has never been observed to run.** The workflow is on
+`main`, the script is proven against production by hand, and the secret is the only unverified link —
+which is exactly the shape of gap this document keeps finding. An unverified backup schedule is
+indistinguishable from a working one until the day it is needed; `workflow_dispatch` exists so that
+day is not the first test.
+
+**The three items that used to sit *after* P3-1 were brought forward on purpose**, and two of them
+turned out to be about states a live deployment cannot get back out of. P3-6's was permanent by
+construction — `counselor_id` was writable by nothing, so the first counselor to leave took their
+classes' ownership with them for good. P3-7's was permanent by silence. Doing either after launch
+means doing it to real data. P4-12 was pulled forward from Phase 4 for the same reason and the
+reasoning held: production was measurably clean when the constraint went on, and staging — which was
+not — is what proved the predicate.
 
 **And P3-1 itself paid the plan's opening lesson back a fourth time.** Steps 1–7 all reported success
 while the live domain served code from April, because `--env production` publishes
