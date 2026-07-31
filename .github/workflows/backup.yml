@@ -118,6 +118,9 @@ jobs:
           # must match what you called the secret in Settings → Secrets and variables → Actions; the
           # token itself is only ever typed into that page and never appears in this file.
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Needed here, not just in the backup step: the D1 reachability probe below asks about
+          # this specific account, and that is the question the probe exists to answer.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
             echo "::error::CLOUDFLARE_API_TOKEN is not set. Add it under Settings → Secrets and variables → Actions. It needs D1:Edit and Account Settings:Read on the account owning CareerLinkAI_Main — Edit, not Read: d1 export and d1 execute are both POSTs that Cloudflare gates behind D1:Edit."
@@ -143,7 +146,11 @@ jobs:
           LEN=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | wc -c)
           TRIMMED=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | tr -d '[:space:]' | wc -c)
 
-          echo "token length: $LEN (a Cloudflare API token is 40 characters)"
+          # Length is reported, never asserted. The first token to pass this check was **53**
+          # characters and verified as valid and active, so the familiar "40" is not a rule and a
+          # hard check on it would have rejected a working credential. Only the whitespace
+          # comparison below is a real test.
+          echo "token length: $LEN"
           if [ "$LEN" -ne "$TRIMMED" ]; then
             echo "::error::CLOUDFLARE_API_TOKEN contains whitespace ($LEN characters, $TRIMMED without). A trailing newline or space is invisible in the GitHub secrets UI and is the most common cause of 'Authentication error [code: 10000]' on a token whose permissions are correct. Re-paste the secret with no trailing newline."
             exit 1
@@ -160,7 +167,42 @@ jobs:
             exit 1
           fi
 
-          echo "✓ Cloudflare recognises the token. Any failure after this is scope or routing, not the token's validity."
+          echo "✓ Cloudflare recognises the token."
+
+          # ── Now the question that actually decides this: can the token reach THIS account's D1? ──
+          #
+          # A valid token is not the same as an authorised one, and the first run to get this far
+          # proved the distinction: /user/tokens/verify said "valid and active" while D1 /query
+          # answered `Authentication error [code: 10000]` on the same token, in the same second.
+          # So "the token works" and "the token works here" are separate facts and both need asking.
+          #
+          # Listing databases needs only D1:Read on the account, so it separates the two remaining
+          # causes cleanly:
+          #   · fails  → the token cannot see this account's D1 at all. Almost always **Account
+          #              Resources** on the token, not the permission: a token can carry D1:Edit and
+          #              still be scoped to include no account, or the wrong one. That is invisible
+          #              in the permission list everyone re-reads.
+          #   · passes → D1 is reachable for reads and the export is the first thing refused, which
+          #              is the D1:Edit-vs-Read distinction the header describes.
+          #
+          # Note the codes: 10000 means "valid and active" in the *verify* response and
+          # "Authentication error" in the D1 one. The number is not a diagnosis on its own.
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::warning::CLOUDFLARE_ACCOUNT_ID is not set, so the D1 reachability probe is skipped. wrangler may still resolve a single-account token on its own."
+          else
+            D1=$(curl -s -o /dev/null -w '%{http_code}' -X GET \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+
+            echo "D1 list-databases on this account: HTTP $D1"
+
+            if [ "$D1" != "200" ]; then
+              echo "::error::The token is valid but cannot read D1 on this account (HTTP $D1). This is NOT the D1:Edit-vs-Read distinction — listing databases only needs D1:Read, and it was refused. Check the token's **Account Resources**, not its permission list: on dash.cloudflare.com → My Profile → API Tokens → edit the token, the 'Account Resources' box must Include the account that owns CareerLinkAI_Main. A token can carry Account · D1 · Edit and still be scoped to no account at all, which reads as correct every time you check the permissions and fails exactly like this."
+              exit 1
+            fi
+
+            echo "✓ The token can read D1 on this account. Any failure after this is the export itself — see the header on D1:Edit."
+          fi
 
       - name: Back up and verify CareerLinkAI_Main
         env:
