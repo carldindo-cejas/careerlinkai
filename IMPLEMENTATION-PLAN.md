@@ -1180,6 +1180,16 @@ ever needs real geometry, that test needs a real browser."*
   ✅ **Proven to still bite** (P1-3's rule): `extractPdf` stubbed to return a constant → exactly the
   two PDF tests fail, in **196 ms and 130 ms with real assertion messages** rather than by timing
   out. Reverted, green again.
+* **Left open — nothing stops this recurring, and that is a platform limit rather than a decision.**
+  A required status check was the point of fixing this: CI going red unnoticed for sixteen days is
+  the actual defect, and a green run today does not prevent a red one tomorrow going unread the same
+  way. **Both mechanisms are refused on this account** — `PUT /branches/main/protection` and
+  `GET /rulesets` each return *"Upgrade to GitHub Pro or make this repository public"* (HTTP 403),
+  because branch protection and rulesets are unavailable on private repositories on GitHub Free.
+  The three ways to close it, none of them free-and-server-side: make the repository public, take
+  GitHub Pro, or accept a **local `pre-push` hook** — which is not the same thing, since it lives on
+  one machine and `--no-verify` walks past it. Recorded as a real open gap rather than quietly
+  dropped, because an unenforced gate is exactly what this item was about.
 * **Left open:** the earliest run (2026-07-15) failed differently — seven test files failing to load
   — so more may surface now that the job can go green. That is what a gate is for.
 
