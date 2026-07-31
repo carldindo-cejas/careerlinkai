@@ -190,14 +190,35 @@ jobs:
           if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "::warning::CLOUDFLARE_ACCOUNT_ID is not set, so the D1 reachability probe is skipped. wrangler may still resolve a single-account token on its own."
           else
-            D1=$(curl -s -o /dev/null -w '%{http_code}' -X GET \
-              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database" \
+            # **The body, not just the status.** The first version of this probe captured
+            # `%{http_code}` and discarded the response — repeating, inside the diagnostic written
+            # to stop it, the exact mistake the diagnostic exists to stop: reporting that something
+            # failed while throwing away the sentence saying why. Cloudflare's body distinguishes
+            # "Invalid API Token" from "Unauthorized" from "Actor does not have permission", and
+            # those are three different fixes.
+            D1_BODY=$(curl -s -w '\n%{http_code}' -X GET \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database?per_page=1" \
               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+            D1=$(printf '%s' "$D1_BODY" | tail -n1)
 
             echo "D1 list-databases on this account: HTTP $D1"
+            echo "response: $(printf '%s' "$D1_BODY" | sed '$d')"
 
             if [ "$D1" != "200" ]; then
-              echo "::error::The token is valid but cannot read D1 on this account (HTTP $D1). This is NOT the D1:Edit-vs-Read distinction — listing databases only needs D1:Read, and it was refused. Check the token's **Account Resources**, not its permission list: on dash.cloudflare.com → My Profile → API Tokens → edit the token, the 'Account Resources' box must Include the account that owns CareerLinkAI_Main. A token can carry Account · D1 · Edit and still be scoped to no account at all, which reads as correct every time you check the permissions and fails exactly like this."
+              # Which accounts can this token actually see? This is the question that separates
+              # "the token lacks D1" from "the token is fine but CLOUDFLARE_ACCOUNT_ID names an
+              # account it was never scoped to" — and no amount of editing permissions fixes the
+              # second one. Account ids are identifiers, not credentials; the configured one is a
+              # secret only because it was stored as one, so it prints masked and a mismatch shows
+              # up as a visible id next to a `***`.
+              echo "--- accounts this token can reach ---"
+              curl -s -X GET "https://api.cloudflare.com/client/v4/accounts?per_page=50" \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                | tr ',' '\n' | grep -iE '"id"|"name"|"success"|"message"' | head -20
+              echo "--- configured CLOUDFLARE_ACCOUNT_ID (masked if it is the secret) ---"
+              echo "$CLOUDFLARE_ACCOUNT_ID"
+
+              echo "::error::The token is valid but cannot read D1 on this account (HTTP $D1). Listing databases needs only D1:Read, so this is NOT the D1:Edit-vs-Read distinction. Read the response and the account list above before changing any permission: if the account list is empty or does not contain the configured id, the token is scoped to a different account (or the id is wrong) and no permission edit will help; if the list DOES contain it, the D1 permission is not attached the way it looks — it must be an **Account** permission (Account · D1 · Edit), not a User or Zone one. Note that Cloudflare can take a minute to propagate a token edit."
               exit 1
             fi
 
