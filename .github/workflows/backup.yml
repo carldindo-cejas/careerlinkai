@@ -124,6 +124,44 @@ jobs:
             exit 1
           fi
 
+          # ── Ask Cloudflare whether the token is even valid, before wrangler does ──────────────
+          #
+          # Added after a run failed with `Authentication error [code: 10000]` against a token whose
+          # permissions were, by inspection, correct. **10000 is not a permission error** — a
+          # permission shortfall is 9109 / "Unauthorized to access requested resource". 10000 means
+          # the token was not accepted at all, which is a different problem with a different fix,
+          # and no amount of re-reading the permission list in the dashboard can distinguish them.
+          #
+          # `/user/tokens/verify` answers exactly that question and nothing else: valid/active, or
+          # not. It needs no permissions of its own. So the run can now say "the token is invalid"
+          # or "the token is valid, so this is scope" instead of asserting one and hoping.
+          #
+          # Nothing here prints the token. Its length and a whitespace check are reported because
+          # **the single most common cause of a 10000 on a correct token is a copy-paste artefact**
+          # — a trailing newline or space inside the secret value, which is invisible in the GitHub
+          # UI and changes the bearer string. A Cloudflare API token is 40 characters.
+          LEN=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | wc -c)
+          TRIMMED=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | tr -d '[:space:]' | wc -c)
+
+          echo "token length: $LEN (a Cloudflare API token is 40 characters)"
+          if [ "$LEN" -ne "$TRIMMED" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN contains whitespace ($LEN characters, $TRIMMED without). A trailing newline or space is invisible in the GitHub secrets UI and is the most common cause of 'Authentication error [code: 10000]' on a token whose permissions are correct. Re-paste the secret with no trailing newline."
+            exit 1
+          fi
+
+          VERIFY=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json")
+
+          echo "token verify: $VERIFY"
+
+          if ! printf '%s' "$VERIFY" | grep -q '"success":true'; then
+            echo "::error::Cloudflare does not recognise this token — /user/tokens/verify rejected it, and that endpoint requires no permissions at all. So this is NOT a missing D1:Edit scope: the token value itself is wrong, revoked, expired, or restricted. Check, in this order: (1) it is an API *Token*, not the Global API Key — the Global Key needs CLOUDFLARE_EMAIL + CLOUDFLARE_API_KEY and will never work in this variable; (2) the value was pasted whole and unmodified; (3) the token has not expired (TTL) and is not IP-restricted, since a token limited to your own address cannot be used from a GitHub runner. The response above says which."
+            exit 1
+          fi
+
+          echo "✓ Cloudflare recognises the token. Any failure after this is scope or routing, not the token's validity."
+
       - name: Back up and verify CareerLinkAI_Main
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
