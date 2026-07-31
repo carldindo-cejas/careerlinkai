@@ -190,9 +190,14 @@ above rather than leave for later:
   postpone, and steps 4–6 are exactly the state that is expensive to recreate by hand.
 * ✅ **Done 2026-07-31** (plan P3-8). `.github/workflows/backup.yml` runs the verified backup nightly
   at 17:37 UTC and keeps the dump as a GitHub artifact for 90 days. It needs one repository secret,
-  `CLOUDFLARE_API_TOKEN` (**D1:Read + Account:Read**), and fails loudly on its first run until that
-  exists — a scheduled backup that skips itself when unconfigured is the failure it exists to
-  prevent. Until this landed the RPO was "everything since the last time someone remembered".
+  `CLOUDFLARE_API_TOKEN` (**D1:Edit + Account Settings:Read**), and fails loudly on its first run
+  until that exists — a scheduled backup that skips itself when unconfigured is the failure it
+  exists to prevent. Until this landed the RPO was "everything since the last time someone
+  remembered".
+  **This said D1:Read until 2026-07-31, as did `BACKUP-AND-RECOVERY.md` §4 and the workflow's own
+  header.** All three were wrong: `d1 export` and `d1 execute` are both POSTs Cloudflare gates
+  behind D1:Edit, so the first real run failed on its first remote query. See
+  [`BACKUP-AND-RECOVERY.md`](BACKUP-AND-RECOVERY.md) §4 for why read-only is not available here.
 
 Time Travel covers the first 30 days in place with nothing to configure, which is most of what
 actually goes wrong; the exports cover the database being deleted and the account being lost, which

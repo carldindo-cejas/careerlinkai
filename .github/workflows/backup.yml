@@ -29,13 +29,28 @@
 #
 # ── Setup required before this can run ────────────────────────────────────────────────────────
 #
-# One repository secret: `CLOUDFLARE_API_TOKEN`, a token with **D1:Read** and **Account:Read** on
-# the account that owns `CareerLinkAI_Main`. Create it at
+# One repository secret: `CLOUDFLARE_API_TOKEN`, a token with **D1:Edit** and **Account
+# Settings:Read** on the account that owns `CareerLinkAI_Main`. Create it at
 # dash.cloudflare.com → My Profile → API Tokens → Create Token → Custom token.
 #
-# Read-only on purpose: this job never needs to write to D1, and a nightly unattended job holding a
-# write-capable production token is a standing risk for no benefit. `CLOUDFLARE_ACCOUNT_ID` is a
-# second secret only because wrangler asks for it when a token maps to more than one account.
+# **It says Edit, and that is not what this file said first.** The original instruction was
+# D1:Read, on the reasoning that this job never writes to D1 and an unattended nightly holding a
+# write-capable production credential is a standing risk for no benefit. The reasoning was sound
+# and the platform does not permit it: both calls this job makes are POSTs that Cloudflare gates
+# behind D1:Edit — `d1 execute --command "SELECT …"` hits `/query`, which the API cannot statically
+# prove is a read, and `d1 export` hits `/export`. Cloudflare's own import/export tutorial says
+# Edit, and their release notes record D1:Read having been able to write as a *bug that was fixed*,
+# so a token that once worked may have stopped.
+#
+# This cost the first real run of this workflow (2026-07-31), and it is worth naming why nothing
+# caught it: the script was proven against production **by hand**, where the operator is
+# `wrangler login`-authenticated and carries full account permissions. The token was the one link
+# in the chain that had never been exercised — which is exactly what IMPLEMENTATION-PLAN said the
+# remaining gap was, and exactly the shape of P3-1's script-name defect: a fact asserted in three
+# documents, true in none of them, and invisible to every test because it lived in a dashboard.
+#
+# `CLOUDFLARE_ACCOUNT_ID` is a second secret only because wrangler asks for it when a token maps to
+# more than one account. Set it regardless; it costs nothing and removes a variable.
 #
 # **Until that secret exists this workflow fails on its first run, loudly and by design** — a
 # scheduled backup that skips itself when unconfigured is the exact failure this file exists to
@@ -89,7 +104,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "::error::CLOUDFLARE_API_TOKEN is not set. Add it under Settings → Secrets and variables → Actions. It needs D1:Read and Account:Read on the account owning CareerLinkAI_Main."
+            echo "::error::CLOUDFLARE_API_TOKEN is not set. Add it under Settings → Secrets and variables → Actions. It needs D1:Edit and Account Settings:Read on the account owning CareerLinkAI_Main — Edit, not Read: d1 export and d1 execute are both POSTs that Cloudflare gates behind D1:Edit."
             exit 1
           fi
 
@@ -111,26 +126,74 @@ jobs:
         #
         # A nightly job that pages on that is a job whose red ticks get ignored — which costs more
         # than the backup it was protecting. The retry is deliberately *not* unbounded and the
-        # attempts are spaced: a genuine verification failure (a dump missing rows, which is what
-        # this whole script exists to catch) still fails all three times and still goes red, having
-        # taken about two minutes to say so.
+        # attempts are spaced.
+        #
+        # ── But it only retries what is actually worth retrying ──────────────────────────────────
+        #
+        # The first version retried everything three times and then reported "check the verification
+        # output above for which table disagreed" whatever had happened. On the first real run that
+        # sentence was simply false: the token lacked D1:Edit, the script died on its *first* remote
+        # query, no dump was ever written, and the run spent 60 s of sleep to print a diagnosis of a
+        # step it had never reached. A retry loop that reports a cause it did not check is the same
+        # defect class as a backup nobody verified — which is the thing this whole job exists to
+        # prevent, so it should not be committing it.
+        #
+        # Two permanent failures are now identified and bail immediately:
+        #
+        #   · **A rejected dump.** `d1-backup.mjs` writes `<name>.sql.REJECTED` only after the
+        #     export succeeded and the row-by-row comparison failed. That is a real disagreement
+        #     with the live database and it will disagree identically three times.
+        #   · **A credential rejection.** Matched on Cloudflare's own error text, which is a
+        #     heuristic and is treated as one: a missed pattern degrades to today's behaviour (three
+        #     attempts, still red), so the failure mode of this check is the status quo rather than
+        #     a lost backup.
+        #
+        # Everything else is still assumed transient and still retried — that is the export flake
+        # the loop was built for, and it stays.
         run: |
+          set -o pipefail
+          mkdir -p ./.backups
+
           for attempt in 1 2 3; do
             echo "::group::Backup attempt $attempt of 3"
-            if node scripts/d1-backup.mjs --env production --out ./.backups --no-prune; then
+            # Tee'd into the artifact directory, not just the console: when the script dies before
+            # writing a dump, `if-no-files-found: error` used to upload *nothing at all*, leaving a
+            # red tick and no evidence — which is how the first failure took a log-diving session to
+            # explain. A failed run must always leave something behind. Pruning cannot touch these:
+            # the script only sweeps files matching its own `<db>-<env>-` prefix.
+            if node scripts/d1-backup.mjs --env production --out ./.backups --no-prune 2>&1 \
+                | tee "./.backups/attempt-$attempt.log"; then
               echo "::endgroup::"
               exit 0
             fi
             echo "::endgroup::"
-            echo "::warning::Backup attempt $attempt failed."
+
+            if ls ./.backups/*.REJECTED >/dev/null 2>&1; then
+              echo "::error::Verification failed — the dump did not match the live database, so it was rejected rather than kept. This is not transient and retrying cannot change it. The .REJECTED dump and the log are in the artifact; the FAIL lines above name which table disagreed. The last good backup is still the last good backup."
+              exit 1
+            fi
+
+            if grep -qiE 'code: (10000|10001|9109|9106)|authentication error|unable to authenticate|you do not have permission|not authorized|unauthorized' "./.backups/attempt-$attempt.log"; then
+              echo "::error::Cloudflare rejected the credentials — this is the token, not the data, and retrying cannot change it. CLOUDFLARE_API_TOKEN needs D1:Edit (not D1:Read) and Account Settings:Read on the account owning CareerLinkAI_Main. See the header of this workflow for why Edit is required for an export."
+              exit 1
+            fi
+
+            echo "::warning::Backup attempt $attempt failed, with no dump produced and no permanent cause identified — treating it as a transient export error and retrying."
             [ "$attempt" -lt 3 ] && sleep 30
           done
-          echo "::error::All 3 backup attempts failed. This is not a transient export error — check the verification output above for which table disagreed."
+
+          echo "::error::All 3 backup attempts failed and none looked permanent, so all three were genuinely retried. The export is an asynchronous Cloudflare job and three spaced failures is beyond normal flakiness — check the per-attempt logs in the artifact for what the script was doing when it died."
           exit 1
 
       # `if: always()` so a *failed* verification still uploads what it produced. A `.REJECTED` dump
       # is the most diagnostic artifact this job can emit and throwing it away leaves only a red
       # tick and no evidence of which table disagreed.
+      #
+      # `if-no-files-found: error` was, until the per-attempt logs above existed, a second red step
+      # on every failure that happened *before* an export — reporting "no files were found", which
+      # is true and useless, on top of a backup error that had already misdiagnosed itself. It is
+      # kept rather than softened, because it is now a real assertion: a run that reaches this step
+      # having written neither a dump nor a log did something this file does not model.
       - name: Upload dump
         if: always()
         uses: actions/upload-artifact@v4
