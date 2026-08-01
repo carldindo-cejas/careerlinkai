@@ -1211,6 +1211,60 @@ ever needs real geometry, that test needs a real browser."*
 * **Left open:** the earliest run (2026-07-15) failed differently — seven test files failing to load
   — so more may surface now that the job can go green. That is what a gate is for.
 
+### `[x]` **P3-10 — The nightly backup, actually observed** — *done 2026-08-01. Six wrong diagnoses first.*
+
+**PASS on production: 618.3 KB, 45 tables, 2,238 rows, 2,421 statements**, verified table by table
+and row by row, artifact `d1-production-30675360481` (96,535 bytes gzipped) retained to 2026-10-30,
+Time Travel bookmark `0000002b-…acf7` recorded. Run `30675360481`. This closes the last thread the
+plan was holding open, and the RPO stops being "everything since the last time someone remembered".
+
+**Nothing was wrong with the backup script.** Every defect was in the credentials and the plumbing —
+exactly the link this document had named as the only unverified one, which is the part worth keeping.
+
+**Two real faults, stacked, each masking the next:**
+
+1. **`CLOUDFLARE_ACCOUNT_ID` had a trailing newline**, from `"…" | gh secret set` in PowerShell,
+   whose pipeline appends one that `gh` reads from stdin as part of the value. Every request asked
+   for `/accounts/<id>%0A/d1/database` and got `Authentication error [code: 10000]` — which reads
+   precisely like a token permission problem. Fixed with `gh secret set --body`.
+2. **`upload-artifact@v4` skips dot-directories.** `include-hidden-files` defaults to false and
+   `.backups` is hidden, so the glob matched nothing. "No files were found" is *also* what a script
+   that dies before writing produces, so for five runs it read as a symptom of fault 1 and was
+   re-checked after every fix to it. It would have kept every future dump from being retained even
+   after the backup started passing — this workflow's own failure mode arriving by a different door.
+
+**And a token start date, which was nobody's bug.** `not_before: 2026-08-01T00:00:00Z` — the token
+was 29 minutes too young, and the dashboard's Start Date is **UTC**, not local midnight.
+
+**Six diagnoses were wrong before one was right, and three were written by the diagnostics added to
+prevent the others:**
+
+| # | Claimed | Actually |
+|---|---|---|
+| 1 | "check which table disagreed" | the run never reached the export |
+| 2 | token needs D1:Edit (mine) | `7003` — a routing failure, wrong account id |
+| 3 | "PBKDF2 disagrees" (`bootstrap-staff`) | HTTP 405 — the verify URL missed `/api/v1` |
+| 4 | D1 probe reported a bare status code | it discarded the response body saying why |
+| 5 | `"success":true` ⇒ token usable | the refusal was in a *message* field (`10002`) |
+| 6 | "fix Account Resources" | they were correct; the account id had a newline |
+
+**The through-line is not "read the logs".** Every one of these was a confident claim about a thing
+nobody had measured, and the evidence was in the output each time. The sharpest instance: the
+account id printed **unmasked** in an API response while the configured secret printed as `***` —
+GitHub masks a secret wherever it appears, so two renderings of "the same" id proved they were not
+the same id. That comparison cost nothing and was available five runs earlier.
+
+**Fault 2 also indicts the fix for fault 1**: a whitespace check was written for the token four
+commits before the account id — the actual culprit — was ever checked for the identical defect.
+
+* **Files:** `.github/workflows/backup.yml`, `scripts/bootstrap-staff.mjs`
+* **Verify:** ✅ run `30675360481` green, artifact present and sized. Preflight now measures rather
+  than asserts, in order: token whitespace · account-id whitespace · validity (`/user/tokens/verify`,
+  incl. `not_before`/expiry) · **can this token reach *this* account's D1** (`list-databases`, which
+  needs only D1:Read) — so each failure points at one box. Every branch fired before it was trusted:
+  the real `10002` payload caught, a usable payload still passing, an invalid one caught, trailing
+  LF / CRLF / interior space all caught, and the D1 probe returning 401 rather than a silent pass.
+
 ---
 
 ## Phase 4 — After launch
@@ -1260,16 +1314,13 @@ ever needs real geometry, that test needs a real browser."*
         ────────────────────────────────────────────────── launched 2026-07-30
         P3-8  uniqueness + nightly backup + guard ✅ done — the obvious index predicate does not apply
         P3-9  CI had never once passed          ✅ done — 11 of 11 red since 2026-07-15; green on the 12th
-NOW ──► verify the nightly backup actually runs   (~10 m)   ← needs a token Cloudflare accepts for D1
-        Phase 4  (+ two dashboard-side steps: DEPLOYMENT.md §8.1 WAF rule, §8.2 Workers Logs alert)
+        P3-10 the nightly backup, observed      ✅ done 2026-08-01 — 618.3 KB / 45 tables / 2,238 rows, artifact retained
+NOW ──► Phase 4  (+ two dashboard-side steps: DEPLOYMENT.md §8.1 WAF rule, §8.2 Workers Logs alert)
 ```
 
-**The one open thread is that the backup schedule has never been observed to run.** The workflow is on
-`main`, the script is proven against production by hand, and the credentials were the only unverified
-link — which is exactly the shape of gap this document keeps finding, and both halves of it turned
-out to be broken. A wrong `CLOUDFLARE_ACCOUNT_ID` failed at Cloudflare's router (`code: 7003`, never
-reaching a permission check) and masked a rejected token behind it (`code: 10000`). The account id is
-fixed; the token is not, and until it is the schedule has still never produced a backup.
+**The backup schedule has now been observed to run — see P3-10.** It took six wrong diagnoses to get
+there, and the gap this document kept naming was real: the workflow was on `main`, the script was
+proven by hand, and *every* remaining defect was in the link nobody had exercised.
 
 **And this document was wrong about something larger.** Every phase above records "all green" — 907
 backend, 195 frontend, type-check · lint · gates · build clean — and **every one of those was a local
@@ -1326,3 +1377,4 @@ system — and the fourth, the stale walkthrough, was the tool that was supposed
 | 2026-07-30 | P3-4, P3-6, P3-7 | **907** BE / **195** FE | The last three Phase 3 items, and **the first of them found a defect none of the other 877 tests could see**. P3-4's per-user counter charges once per execution of `authenticate()`, which made it the only instrument in the system that can count them — and it counted **six** on `/admin/dashboard`, five on `/admin/counselors`, four on `/counselor/dashboard`. §10 gives every module its own routes file and six of them mount on `/admin`; Hono merges each sub-app's `use('*')` into the parent, so a path whose handler sits in the last-registered router runs the full middleware chain of every router in front of it. **Twelve D1 reads to answer "who is this"** on the admin's landing screen, against a 50-subrequest ceiling, with every response correct throughout. One early return fixed it. The limiter itself is charged inside `authenticate()` rather than as a global middleware (Hono's global `use` runs before the sub-router, so it cannot see the user) and its limit is a var — the only one of six that is, because a test file compresses a day of one user's requests into three seconds. `Retry-After` now lands on every 429 in the system from `app.onError`, so the five pre-existing limiters gained it for free; the WAF half S2 also wants is written up in DEPLOYMENT.md §8.1 rather than claimed here, because dashboard configuration cannot have tests. **P3-6 did both halves of its "or", since either alone is worse than useless**: `counselor_id` was writable by nothing, so a departing counselor's classes were stuck pointing at a removed account *permanently* — an admin could see them and no replacement could ever be given them. The endpoint lives on its own `/admin` router rather than as a field on the counselor's PATCH, because that route admits counselors and the field would have let any of them hand a colleague's class to themselves. Deletion is now refused on exactly the `classes_count` already rendered beside the name, and the refusal links to the screen that fixes it. **P3-7 alerts once per queue per 15 minutes and says that it is doing so** — a broken pipeline dead-letters every message, ten at a time, and "3 jobs failed" when 300 did is a worse lie than silence. Proven un-breakable-by-alerting the honest way: `queue()` takes its env as a parameter, so the binding the alert reaches for first was replaced with one that throws, and every message was still acked. |
 | 2026-07-28 | P2-2 | **811** BE / 112 FE | Staging rehearsal. **`generateFor` 500'd on D1's 100-parameter limit — every student got zero recommendations, caused by P0-1's own catalog expansion.** Fixed via `chunkIds`; 4 regression tests. `walkthrough.mjs` un-rotted (4 stale selectors + a removed auto-advance). Two duplicate careers archived. C1 proven live: **0/10 overlap** between opposite profiles. |
 | 2026-07-31 | P3-9 | **915** BE / **195** FE | **CI had never once passed — eleven runs, eleven failures, from the first on 2026-07-15 to this one.** The backend job was green throughout and the frontend job red throughout, and this document's "all green" line at nearly every phase from P1-3 to P3-8 was a *local* run every time. The suite really is green locally; it had simply never been green in the place that was supposed to prove it, for sixteen days across six phases. **The two PDF cases in `extractText.test.ts` hung, and raising the timeout had already failed to fix it once** — 5,000 ms on 2026-07-29, then 15,000 ms after P3-3 raised it, timing out identically at both, which is what separates a hang from a slow runner. The cause also meant the test had never tested the shipped path: **`pdfjs-dist` disables the real `Worker` whenever `isNodeJS` is true**, so under Vitest it always took the *fake worker* fallback — a raw `@vite-ignore` `import()` of a `file://` URL at the 1.25 MB worker, outside Vitest's module pipeline. pdf.js printed the diagnosis into every red log for sixteen days: "Please use the `legacy` build in Node.js environments." The exact Linux/Node 22 failure was never reproduced and is not claimed; the fix **deletes the path** instead — that one file now runs in **real Chrome**, where `Worker` exists. Four patches that existed only to fake a browser for a browser library went with it: the worker `vi.mock`, a hand-written `DOMMatrix`, the `Uint8Array.toHex`/`fromHex` polyfills, and the `mammoth` alias. `setupTests.ts` had already named the exit in its own comment. Proven red first (P1-3's rule): `extractPdf` stubbed to a constant → exactly those two tests fail, in 196 ms and 130 ms with real assertion messages rather than by timing out. **Green on run `30641319855` — 23 files, 195 tests, matching local exactly.** |
+| 2026-08-01 | P3-10 | — | **The nightly backup finally ran and was watched doing it: PASS on production — 618.3 KB, 45 tables, 2,238 rows, artifact retained to 2026-10-30.** Nothing was wrong with `d1-backup.mjs`. Every defect was in the credentials and the plumbing — the exact link this document had spent two entries naming as the only unverified one. **Two faults, stacked, the second hiding behind the first.** `CLOUDFLARE_ACCOUNT_ID` carried a trailing newline (from `"…" \| gh secret set` in PowerShell, whose pipeline appends one that `gh` reads as part of the value), so every request asked for `/accounts/<id>%0A/d1/database` and got `Authentication error [code: 10000]` — indistinguishable, by eye, from a token permission problem. Behind it, **`upload-artifact@v4` skips dot-directories** (`include-hidden-files` defaults false, `.backups` is hidden), so "No files were found" fired on *every* run including the one where the backup passed end to end — and because that is also exactly what a script dying before it writes produces, it was attributed to the first fault and re-checked after every fix to it. It would have kept every future dump from being retained even after the backup started working. Plus a token `not_before` of `2026-08-01T00:00:00Z` that was nobody's bug: 29 minutes too young, and the dashboard's Start Date is **UTC**. **Six diagnoses were wrong before one was right, and three of them were written by the diagnostics added to prevent the others** — a retry loop reporting "which table disagreed" about a run that never exported; a D1:Edit theory for a `7003` routing failure; `bootstrap-staff` calling an HTTP 405 a PBKDF2 mismatch; a probe that printed a status code and discarded the body explaining it; a validity check that read `"success":true` while the refusal sat in a *message* field; and an error that sent the operator to change Account Resources that were already correct. The through-line is not "read the logs" — it is that each was a confident claim about something nobody had measured, with the evidence sitting in the output. Sharpest instance: the account id printed **unmasked** in an API response while the configured secret printed `***`, and GitHub masks a secret wherever it appears — two renderings of "the same" id proved they were not the same id, five runs before anyone compared them. The preflight now measures in order (token whitespace · account-id whitespace · validity incl. `not_before` · can this token reach *this* account's D1) so each failure points at one box, and every branch was fired red before it was trusted. |
