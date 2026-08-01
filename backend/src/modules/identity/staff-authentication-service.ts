@@ -29,6 +29,7 @@ import type {
   ResetPasswordInput,
 } from '@/modules/identity/schemas';
 import { AuditService } from '@/modules/platform/audit-service';
+import { sendPasswordResetEmail } from '@/modules/platform/email-service';
 
 /**
  * Staff authentication — email + password (FULLPLAN §38).
@@ -212,12 +213,21 @@ export class StaffAuthenticationService {
   /**
    * Begin a password reset.
    *
-   * Returns the plaintext token so the caller can decide whether it may ever be shown —
-   * v1 has no email channel at all (§5 defers email/SMS/push), so there is nothing to
-   * deliver a link *with*. The route exposes the token only when `APP_ENV === 'local'`;
-   * everywhere else the response is the same generic acknowledgement whether or not the
-   * email exists, and the reset is completed out of band by an admin. This is the honest
-   * shape of the feature until a mail provider exists (deviation D7).
+   * Returns the plaintext token so the caller can decide whether it may ever be shown. The route
+   * exposes it only when `APP_ENV === 'local'`; everywhere else the response is the same generic
+   * acknowledgement whether or not the email exists.
+   *
+   * **P4-2 gave this flow a delivery channel, and deliberately did not give it a guarantee.** The
+   * reset link is now emailed where the platform can deliver it — but the Free plan (a ratified
+   * requirement, FULLPLAN §45) reaches only *verified destination addresses*, so for any staff
+   * mailbox that has not been through that one-time step the send is refused and the admin-relay
+   * path (C2) remains the route. Both states are normal; see `sendPasswordResetEmail`.
+   *
+   * What must not change is the **response**. This method's return value is identical whether the
+   * mail was delivered, refused, or never attempted, because `/auth/forgot-password` answers a
+   * registered and an unregistered address identically by design (§38) — and a delivery failure
+   * that altered the response would rebuild the enumeration oracle that design exists to prevent.
+   * That is why the outcome below is logged and then dropped on the floor.
    */
   async forgotPassword(email: string, ipAddress: string | null): Promise<string | null> {
     const normalized = email.trim().toLowerCase();
@@ -263,6 +273,17 @@ export class StaffAuthenticationService {
       targetType: 'user',
       targetId: user.id,
       ipAddress,
+    });
+
+    // Awaited, not fired into `waitUntil`: the outcome is worth a log line in the same invocation
+    // that minted the token, and this call cannot reject (see the function's contract). The
+    // returned value is intentionally unused — see this method's doc comment for why branching on
+    // it would be a security defect rather than a feature.
+    await sendPasswordResetEmail(this.env, {
+      to: normalized,
+      token: plaintext,
+      userId: user.id,
+      expiresInMinutes: RESET_TOKEN_TTL_MINUTES,
     });
 
     return plaintext;

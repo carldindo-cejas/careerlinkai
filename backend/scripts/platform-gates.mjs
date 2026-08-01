@@ -126,6 +126,45 @@ gate(
   'Add the [[durable_objects.bindings]] block to wrangler.test.toml.',
 );
 
+/**
+ * P4-2 — **the most important gate in this file, because it is the only one guarding a secret.**
+ *
+ * `RESEND_API_KEY` is the one credential in the system (see wrangler.toml's [vars] note). A `[vars]`
+ * block is committed to git and printed in full by `wrangler deploy`, so a key that lands there is
+ * disclosed the moment it is pushed — and it would *work*, which is what makes it survivable long
+ * enough to reach a public repository. Nothing else in the build would object.
+ *
+ * Matched across every wrangler config, not just the deployed ones: a key pasted into the test or
+ * dev config leaks exactly as hard.
+ */
+const EVERY_WRANGLER_CONFIG = ['wrangler.toml', 'wrangler.test.toml', 'wrangler.local.toml', 'wrangler.dev.toml'].map(
+  (file) => [file, readFileSync(join(backendDir, file), 'utf8')],
+);
+
+for (const [file, content] of EVERY_WRANGLER_CONFIG) {
+  gate(
+    `${file}: RESEND_API_KEY is not committed as a var`,
+    !/^\s*RESEND_API_KEY\s*=/m.test(content),
+    'It is a secret: `wrangler secret put RESEND_API_KEY --env <env>`, never a [vars] entry.',
+  );
+}
+
+// Note there is deliberately no *second* gate spelling "and the test config must not mention it at
+// all". One was written, and it failed on the comment in wrangler.test.toml that documents this
+// rule — an unanchored substring match cannot tell a committed secret from a sentence about
+// committed secrets. The anchored assignment check above already covers every config including the
+// test one, which is the property that actually matters.
+
+// EMAIL_FROM is a string var, so it sits outside REQUIRED_NUMERIC_VARS below — but it fails the
+// same way a missing numeric one does: the send would go out `from: undefined`, be refused by
+// Resend, and do it in an environment that deployed cleanly.
+const emailFromCount = (wranglerToml.match(/^EMAIL_FROM = "[^"]+"/gm) ?? []).length;
+gate(
+  'wrangler.toml: EMAIL_FROM set in all three scopes',
+  emailFromCount >= 3,
+  `Found ${emailFromCount} EMAIL_FROM var(s); expected 3 (top level, staging, production).`,
+);
+
 for (const [file, content] of [
   ['wrangler.toml', wranglerToml],
   ['wrangler.test.toml', wranglerTestToml],

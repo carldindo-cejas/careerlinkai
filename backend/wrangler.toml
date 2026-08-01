@@ -72,11 +72,28 @@ command = "node scripts/build-frontend.mjs"
 # (dashboard-managed, not declared here).
 
 # --- Vars (FULLPLAN §48 — committed, non-secret) -------------------------------------
-# v1 has no secrets in steady state: every Cloudflare service is reached through a
-# binding, not a credential.
+# Every *Cloudflare* service is reached through a binding, not a credential — that is still true of
+# D1, R2, KV, Vectorize, Workers AI, Queues and the Durable Object, and it is why nothing below is
+# sensitive.
+#
+# **It is no longer true that the system has no secrets at all** (P4-2). Transactional email goes
+# through Resend, which is external to Cloudflare and authenticates with an API key, so
+# `RESEND_API_KEY` exists as a Worker secret — set with `wrangler secret put`, never written here.
+# Cloudflare's own Email Sending would have avoided the credential and was rejected for it: sending
+# to arbitrary recipients requires Workers Paid, and the Free plan is ratified (§45). The exact
+# trade was one secret against one paid plan, and the secret won.
+#
+# This paragraph is maintained rather than deleted because the previous version of it stated the
+# stronger claim as a flat fact, and P3-1 is the record of what happens when a document keeps
+# asserting something that has quietly stopped being true.
 [vars]
 APP_ENV = "local"
 FRONTEND_URL = "http://localhost:5173"
+# P4-2. The sending domain is not the serving domain: staging is served from a workers.dev
+# subdomain, which Resend cannot verify, so every scope sends from the one verified domain —
+# and Resend's free tier allows exactly one, which makes that a constraint rather than a choice.
+# Local sets no RESEND_API_KEY, so this value is inert there.
+EMAIL_FROM = "no-reply@careerlinkai.online"
 # -fp8, not the base model: `@cf/meta/llama-3.1-8b-instruct` was deprecated by Cloudflare on
 # 2026-05-30 and every call to it fails with error 5028 — found live on the Phase 5a staging
 # exit demo (a model retirement happens server-side, with no deploy on our end; the gateway
@@ -122,6 +139,11 @@ binding = "AI"
 [[kv_namespaces]]
 binding = "KV"
 id = "2c31fc74fb2b40c59e7c0dda8884a848"
+
+# There is deliberately **no [[send_email]] binding** here (P4-2). Transactional email goes to
+# Resend over HTTPS with `RESEND_API_KEY`, not through Cloudflare Email Sending — see the [vars]
+# note above for why the credential was preferred to the paid plan that binding would have needed.
+# Adding one later would create a second delivery path that nothing exercises.
 
 # AuthGuardDO (§38 v1.5, Phase 4.5): password derivation at the full 600,000 iterations —
 # the DO gets a 30 s CPU budget per invocation on every plan, vs the free Worker's 10 ms —
@@ -208,6 +230,10 @@ APP_ENV = "staging"
 # than becoming a wildcard, so that if anything ever *does* call this API cross-origin, the
 # answer is a deliberate one origin rather than "anyone".
 FRONTEND_URL = "https://careerlinkai-staging.cejascarldindo.workers.dev"
+# P4-2 — see the top-level [vars] note. Staging mails from the production domain because it is the
+# only verified one; the link inside still points at FRONTEND_URL above, so a staging reset cannot
+# walk a user onto production.
+EMAIL_FROM = "no-reply@careerlinkai.online"
 WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
@@ -335,6 +361,8 @@ APP_ENV = "production"
 # Unchanged in value, but it now means something different: careerlinkai.online is the origin
 # of *this Worker*, not of a separate Pages site that talked to it. See the staging note above.
 FRONTEND_URL = "https://careerlinkai.online"
+# P4-2 — see the top-level [vars] note.
+EMAIL_FROM = "no-reply@careerlinkai.online"
 WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
