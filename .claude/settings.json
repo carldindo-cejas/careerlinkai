@@ -111,7 +111,8 @@
       "Bash(bash \"/c/Users/user/AppData/Local/Temp/claude/c--careerlinkai-v1/5dae467e-0fe9-41dd-9793-ee0cbdc0376c/scratchpad/flake-hunt.sh\")",
       "Bash(cat \"/c/Users/user/AppData/Local/Temp/claude/c--careerlinkai-v1/5dae467e-0fe9-41dd-9793-ee0cbdc0376c/scratchpad/fe-flake/RESULT.txt\")",
       "Read(//c/Users/user/AppData/Local/Temp/claude/c--careerlinkai-v1/5dae467e-0fe9-41dd-9793-ee0cbdc0376c/scratchpad/fe-flake/**)",
-      "Bash(SP=\"/c/Users/user/AppData/Local/Temp/claude/c--careerlinkai-v1/5dae467e-0fe9-41dd-9793-ee0cbdc0376c/scratchpad/fe-flake\" *)"
+      "Bash(SP=\"/c/Users/user/AppData/Local/Temp/claude/c--careerlinkai-v1/5dae467e-0fe9-41dd-9793-ee0cbdc0376c/scratchpad/fe-flake\" *)",
+      "Bash(cat \"/c/Users/user/AppData/Local/Temp/claude/c--careerlinkai-v1/5dae467e-0fe9-41dd-9793-ee0cbdc0376c/scratchpad/fe-flake/RESULT.txt\" 2>/dev/null | tail -25)"
     ],
     "additionalDirectories": [
       "\\tmp",
