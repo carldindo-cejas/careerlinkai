@@ -10,6 +10,7 @@
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:capture": "vitest run --reporter=default --reporter=json --outputFile.json=test-results/frontend.json",
     "gate:assets": "node ../backend/scripts/platform-gates.mjs --assets"
   },
   "dependencies": {
