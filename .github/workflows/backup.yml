@@ -156,6 +156,32 @@ jobs:
             exit 1
           fi
 
+          # ── The same check on the account id, because that is the one it actually caught ────────
+          #
+          # The whitespace check above was written for the token and, for two days, was not applied
+          # to the account id — which is where the bug was. `CLOUDFLARE_ACCOUNT_ID` had been set with
+          # `"…" | gh secret set` from PowerShell, whose pipeline appends a newline that `gh` reads
+          # from stdin as part of the value. Every request then asked for
+          # `/accounts/<id>%0A/d1/database` and came back `Authentication error [code: 10000]`,
+          # which reads exactly like a permissions problem and is not one. Use `gh secret set
+          # --body '…'`, which never touches stdin.
+          #
+          # It is invisible in the UI, and it survived four rounds of looking at the token instead.
+          # The tell was in the log all along: the account id printed **unmasked** in an API
+          # response while the configured value printed as `***` — GitHub masks a secret wherever it
+          # appears, so two different renderings of "the same" id meant they were not the same id.
+          if [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            ID_LEN=$(printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | wc -c)
+            ID_TRIMMED=$(printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]' | wc -c)
+
+            echo "account id length: $ID_LEN (a Cloudflare account id is 32 hex characters)"
+
+            if [ "$ID_LEN" -ne "$ID_TRIMMED" ]; then
+              echo "::error::CLOUDFLARE_ACCOUNT_ID contains whitespace ($ID_LEN characters, $ID_TRIMMED without). This produces 'Authentication error [code: 10000]' on D1, which looks exactly like a token permission problem and is not one — the URL simply names an account that does not exist. Re-set it with: gh secret set CLOUDFLARE_ACCOUNT_ID --body '<id>'  (piping into gh from PowerShell appends a newline)."
+              exit 1
+            fi
+          fi
+
           VERIFY=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             -H "Content-Type: application/json")
