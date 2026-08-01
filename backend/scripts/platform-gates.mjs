@@ -699,6 +699,21 @@ function weighRoutes(distDir, kib) {
   const ROUTE_COLD_BUDGET = 700 * 1024;
   const STUDENT_SCREEN_BUDGET = 530 * 1024;
 
+  /**
+   * **`/join` is the only screen with a budget of its own, because it is the only screen a
+   * student reaches before they have signed in to anything** — the link a counselor pastes into
+   * a group chat, opened on a phone on school wifi, with nothing cached.
+   *
+   * 460 KiB against 433 KiB today. That is ~27 KiB of headroom on a two-field sign-in form: room
+   * for the form to grow, and nowhere near enough to re-admit either of the two libraries P4-15
+   * and P4-16 took off it (Framer Motion 121 KiB, Zod 61 KiB). One `import { z } from 'zod'` in
+   * `StudentAccessPage.tsx` is a one-line change that builds, type-checks and passes all 195 tests
+   * while putting 61 KiB back on the student's first screen — `heaviest route cold load` cannot
+   * see it, since `/join` is nowhere near the heaviest route and never will be. That gap is
+   * exactly the shape of P3-3's "the split dies quietly", and this is the instrument for it.
+   */
+  const JOIN_SCREEN_BUDGET = 460 * 1024;
+
   const rows = [
     ['entry (framework floor)', report.entry, transfer.entry],
     ...report.groups.map((group, index) => [
@@ -737,6 +752,18 @@ function weighRoutes(distDir, kib) {
     `student screen cold load ${kib(report.studentScreen.total)} ≤ ${kib(STUDENT_SCREEN_BUDGET)} (audit P2)`,
     report.studentScreen.total <= STUDENT_SCREEN_BUDGET,
     `A student now pays ${kib(report.studentScreen.total)} to open a student screen. This is the number audit P2 is about — check what the student group has started importing.`,
+  );
+
+  // Not `join` — that is `node:path`'s, imported at the top of this file, and shadowing it here
+  // puts the manifest read above into its temporal dead zone. Caught by running the gate.
+  const joinScreen = report.groups.find((group) => group.name === 'access');
+
+  gate(
+    `join screen cold load ${kib(joinScreen?.cold.total ?? 0)} ≤ ${kib(JOIN_SCREEN_BUDGET)} (the student's first screen)`,
+    joinScreen !== undefined && joinScreen.cold.total <= JOIN_SCREEN_BUDGET,
+    joinScreen === undefined
+      ? 'The "access" route group is gone from the manifest, so the join screen cannot be weighed at all.'
+      : `/join now costs ${kib(joinScreen.cold.total)} cold. It is a class code and a username: check what StudentAccessPage or StudentAccessLayout has started importing. P4-15 and P4-16 took Framer Motion and Zod off this screen precisely because a library that is cheap on an admin page is not cheap here.`,
   );
 }
 

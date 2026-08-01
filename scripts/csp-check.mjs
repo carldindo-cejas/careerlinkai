@@ -22,33 +22,62 @@ const APP = process.argv.includes('--app')
   : 'http://127.0.0.1:8787';
 
 /**
- * Generated per run rather than committed, for the reason `walkthrough.mjs` records at length:
- * these are rotated *onto* a real staff account, and two string literals in a public repository is
- * a disclosed credential rather than a test fixture. Nothing outside this run needs them.
+ * The password this run signs in with. It may be a bootstrap temporary password (in which case the
+ * §13.1 rotation gate is still armed and Leg 2 walks through it) or the current password of an
+ * account already past that gate — Leg 2 handles both, which is P4-19.
+ *
+ * `NEW_PASSWORD` is generated per run rather than committed, for the reason `walkthrough.mjs`
+ * records at length: it is rotated *onto* a real staff account, and a string literal in a public
+ * repository is a disclosed credential rather than a test fixture. It is now **printed** when a
+ * rotation actually happens, because a rotation nobody records is what made this script single-use.
  */
-const TEMP_PASSWORD = process.argv.includes('--password')
+const SIGN_IN_PASSWORD = process.argv.includes('--password')
   ? process.argv[process.argv.indexOf('--password') + 1]
   : 'CspProbe123!';
 const NEW_PASSWORD = `Csp!${randomUUID().replaceAll('-', '').slice(0, 16)}A9`;
 
 /**
- * **Not production**, and this guard did not exist before 2026-08-01.
+ * **Production is allowed behind an explicit flag, and can never be written to. Revised 2026-08-02.**
  *
- * This script drives the same §13.1 activation flow `walkthrough.mjs` does — sign in on a temporary
- * password, complete the forced rotation — so it writes a staff credential on whatever `--app`
- * names. It would also simply fail against production, which cleared `must_change_password` in P3-1
- * step 9, but "fails confusingly" is not the same protection as "refuses", and the default target
- * being local is not a guarantee when the flag exists.
+ * The original guard (2026-08-01) refused production outright, and its stated reason was that the
+ * CSP is a property of `_headers`, served identically everywhere, so there is nothing the check
+ * needs production for. That reasoning was sound about the *policy* and wrong about the *system*:
+ * P3-1 is this plan's own record of seven deploy steps reporting success while the live domain
+ * served a build from April, and step 8 — a request against the real domain — is the only
+ * instrument that saw it. A header can also be stripped or rewritten by anything between the
+ * Worker and the browser, which is exactly the class of defect a local preview cannot show.
  *
- * The CSP is a property of `_headers`, which is served identically by the local preview Worker and
- * every deployment, so there is nothing this needs production for.
+ * What the old guard was really protecting was the **write**: the leg used to *require* the §13.1
+ * rotation, so pointing it at production meant rotating a live staff password. That is no longer
+ * how the leg works (P4-19) — it now signs in and only rotates if the gate is still armed, and
+ * production cleared `must_change_password` in P3-1 step 9.
+ *
+ * So the guard is inverted rather than removed, which keeps the property it existed for:
+ *
+ *   • `--allow-production` must be passed deliberately, so a mistyped `--app` still refuses.
+ *   • Against production the rotation is **hard-refused** at the point of use, not merely
+ *     unreachable. Everything this script does there is a read: navigate, observe headers,
+ *     collect violations. It signs in, which writes an audit row and moves a rate-limit counter,
+ *     and it changes nothing else.
+ *
+ * The refusal lives at the branch as well as here because two checks are not redundant when the
+ * expensive one is "we assumed the gate was already cleared".
  */
-if (isProductionUrl(APP)) {
+const ALLOW_PRODUCTION = process.argv.includes('--allow-production');
+const TARGET_IS_PRODUCTION = isProductionUrl(APP);
+
+if (TARGET_IS_PRODUCTION && !ALLOW_PRODUCTION) {
   console.error(`\n  ✗ ${APP} is the production deployment (backend/wrangler.toml).`);
-  console.error('\n  csp-check.mjs rotates a real staff password to complete the activation gate.');
-  console.error('  Run it against the local preview (npm run preview), which serves the same');
-  console.error('  _headers file that deploys — the CSP is a property of that file, not of a host.\n');
+  console.error('\n  csp-check.mjs signs in as a real staff account. Against production it will');
+  console.error('  never rotate a password — but it will create a session and an audit row, so');
+  console.error('  pointing at the live domain has to be deliberate rather than a typo.');
+  console.error('\n  Re-run with --allow-production if that is what you meant, or against the');
+  console.error('  local preview (npm run preview), which serves the same _headers file.\n');
   process.exit(1);
+}
+
+if (TARGET_IS_PRODUCTION) {
+  console.log(`\n  ⚠  Running against PRODUCTION (${APP}). Reads only — rotation is refused.\n`);
 }
 
 const findings = [];
@@ -277,22 +306,85 @@ page.__consoleErrors.length = 0;
 // ── Leg 2: the authenticated admin screens, incl. the pdf.js pages ───────────────────────────
 await page.goto(`${APP}/admin-login`, { waitUntil: 'networkidle' });
 await page.locator('#email').fill('admin@careerlinkai.online');
-await page.locator('#password').fill(TEMP_PASSWORD);
+await page.locator('#password').fill(SIGN_IN_PASSWORD);
 await page.getByRole('button', { name: 'Sign in' }).click();
 
-let signedIn = true;
+/**
+ * **The rotation gate is optional, and that is P4-19.**
+ *
+ * This leg used to *require* the §13.1 forced rotation: it waited for `/change-password`, and
+ * treated anything else as a failed sign-in. That made the script **single-use per database**. It
+ * completes the rotation, which clears the `must_change_password = 1` it was waiting for, and
+ * rotates onto a random password it then discarded — so the second run against the same database
+ * could not sign in at all, timed out after 15 s, and skipped the **nine authenticated screens**
+ * behind this check. Nine of the fifteen screens this script exists to cover were unreachable on
+ * every run after the first, and the report said "6 screens checked" rather than saying why.
+ *
+ * That is the same family as the gates P1-3 insisted on firing red — except inverted. A gate that
+ * can only ever pass once is not a gate either, and this one degraded silently the moment it
+ * succeeded. P4-18 asks for this script to be re-run whenever a UI item lands, which is precisely
+ * the usage the old shape could not support.
+ *
+ * So: sign in, then branch on what the app actually did. An armed account is walked through the
+ * rotation exactly as before — the flow is still covered, because `/change-password` is a real
+ * screen with a real CSP — and an account already past the gate proceeds straight through. The two
+ * are distinguished by observing the URL rather than by assuming either.
+ */
+let signedIn = false;
+let rotated = false;
+
 try {
-  await page.waitForURL('**/change-password', { timeout: 15_000 });
-  await page.locator('#current_password').fill(TEMP_PASSWORD);
-  await page.locator('#password').fill(NEW_PASSWORD);
-  await page.locator('#password_confirmation').fill(NEW_PASSWORD);
-  await page.getByRole('button', { name: 'Update password' }).click();
-  await page.waitForURL((u) => !u.pathname.includes('change-password'), { timeout: 15_000 });
+  await page.waitForURL(
+    (u) => u.pathname.includes('/change-password') || !u.pathname.includes('login'),
+    { timeout: 15_000 },
+  );
+
+  if (page.url().includes('/change-password') && TARGET_IS_PRODUCTION) {
+    // The one write this script can perform, refused where it would land on a live staff account.
+    // Reaching here means production's rotation gate is armed again — which is a real finding
+    // about the deployment, not a reason to clear it from a CSP script.
+    console.error('\n  ✗ production sent this account to /change-password — its §13.1 gate is armed.');
+    console.error('    Refusing to rotate a live staff password. Sign in through the UI and');
+    console.error('    complete the activation there, then re-run with the new password.\n');
+    await browser.close();
+    process.exit(1);
+  }
+
+  if (page.url().includes('/change-password')) {
+    await page.locator('#current_password').fill(SIGN_IN_PASSWORD);
+    await page.locator('#password').fill(NEW_PASSWORD);
+    await page.locator('#password_confirmation').fill(NEW_PASSWORD);
+    await page.getByRole('button', { name: 'Update password' }).click();
+    await page.waitForURL((u) => !u.pathname.includes('change-password'), { timeout: 15_000 });
+    rotated = true;
+  }
+
+  signedIn = true;
 } catch {
   signedIn = false;
 }
 
-check('admin signs in and rotates the temporary password', signedIn, page.url());
+check(
+  rotated
+    ? 'admin signs in and completes the §13.1 rotation gate'
+    : 'admin signs in (rotation gate already cleared)',
+  signedIn,
+  signedIn ? page.url() : `${page.url()} — wrong password, or the account is not active`,
+);
+
+/**
+ * **Printed, not discarded** — the other half of P4-19.
+ *
+ * The password is still generated per run and still never committed (see the note on
+ * SIGN_IN_PASSWORD). But a rotation whose result nobody records is what locked the account out of
+ * this script in the first place: the credential was changed on a real staff row and the only copy
+ * of it went out of scope. Emitting it is what makes the *next* run possible.
+ */
+if (rotated) {
+  console.log(`\n  ⚠  The admin password was rotated to complete the activation gate.`);
+  console.log(`     Re-run this script with:  --password '${NEW_PASSWORD}'`);
+  console.log(`     (generated per run and never committed — this is the only copy)\n`);
+}
 
 if (signedIn) {
   await violationsOn(page, 'admin dashboard');
@@ -311,6 +403,23 @@ if (signedIn) {
     await violationsOn(page, label);
   }
 }
+
+/**
+ * **Coverage is itself an assertion (P4-19).**
+ *
+ * Every screen behind the sign-in is skipped by an `if`, so a failed Leg 2 does not merely fail —
+ * it *narrows the run*, and the old report announced that as "6 screens checked" in the same tone
+ * it would have used for fifteen. A reader looking at a passing tail could not tell a full sweep
+ * from a third of one. Nine screens quietly not being examined is the more expensive half of the
+ * defect, because it is the half that survives a green line.
+ */
+const EXPECTED_SCREENS = 15;
+
+check(
+  `all ${EXPECTED_SCREENS} screens were reachable and examined`,
+  findings.length === EXPECTED_SCREENS,
+  `${findings.length} of ${EXPECTED_SCREENS}${signedIn ? '' : ' — the 9 authenticated screens were skipped, because Leg 2 could not sign in'}`,
+);
 
 await browser.close();
 
