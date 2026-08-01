@@ -383,6 +383,17 @@ jobs:
           path: backend/.backups/*
           retention-days: 90
           if-no-files-found: error
+          # **Required, because `.backups` is a dot-directory.** `upload-artifact@v4` skips hidden
+          # files by default, and it treats everything under a leading-dot path as hidden — so
+          # `backend/.backups/*` matched nothing and the step reported "No files were found" on
+          # every run this workflow has ever had, including the one where the backup itself passed
+          # end to end. It looked like a symptom of the failing backup and was an independent
+          # second bug sitting behind it, which is why it survived every fix to the first.
+          #
+          # The directory keeps its name: `.backups` is what `d1-backup.mjs` defaults to, what
+          # `.gitignore` excludes, and what BACKUP-AND-RECOVERY.md documents. Renaming it to dodge
+          # an uploader flag would move the problem into three other files.
+          include-hidden-files: true
 
       - name: Summary
         if: always()
