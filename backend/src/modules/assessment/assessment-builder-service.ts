@@ -95,11 +95,19 @@ export interface CreateVersionInput {
   scoringConfig: ScoringConfig;
 }
 
+/**
+ * One question to write. **There is no `orderNumber` here, and that is the point**
+ * (ASSESSMENT-FIX §4): every caller used to compute the position itself, and they did not agree —
+ * the bulk-add route used `COUNT + 1`, `duplicateQuestion` used `MAX + 1`, and the §31 generation
+ * job numbered from 1 regardless of what the version already held, which silently gave two
+ * questions the same position whenever an author drafted with AI into a version they had started by
+ * hand. `addQuestions` appends, in array order, from `MAX + 1`; there is now one rule and no way for
+ * a caller to hold it wrong.
+ */
 export interface CreateQuestionInput {
   questionText: string;
   questionType: QuestionType;
   sectionLabel?: string | null;
-  orderNumber: number;
   required?: boolean;
   source?: QuestionSource;
   /** §13.4 provenance — set only by the §31 generation job, back-pointing into `ai_requests`. */
@@ -147,6 +155,22 @@ const DELETABLE: Deletability = {
   attemptCount: 0,
   activeAssignmentCount: 0,
 };
+
+/**
+ * "Question 3", "Questions 3 and 7", "Questions 3, 7 and 9" — the offending items, **named**.
+ *
+ * The publish gate's refusals are read by someone who now has to go and fix them, and a count alone
+ * ("2 questions are incomplete") sends them scrolling through sixty items to find which two.
+ */
+function questionList(orderNumbers: number[]): string {
+  const label = orderNumbers.length === 1 ? 'Question' : 'Questions';
+  const numbers =
+    orderNumbers.length <= 1
+      ? orderNumbers.join('')
+      : `${orderNumbers.slice(0, -1).join(', ')} and ${orderNumbers.at(-1)}`;
+
+  return `${label} ${numbers}`;
+}
 
 export class AssessmentBuilderService {
   private readonly audit: AuditService;
@@ -902,12 +926,20 @@ export class AssessmentBuilderService {
     const dimensionByCode = new Map(dimensions.map((d) => [d.code, d]));
 
     const timestamp = now();
+    /**
+     * The positions, resolved **once for the batch** rather than per caller (see
+     * `CreateQuestionInput`). Read before the insert and written by it, so two concurrent adds can
+     * still read the same base — which is why migration 0021 puts a unique index underneath: the
+     * loser of that race gets a 422 telling it to try again instead of a second question quietly
+     * claiming position 7.
+     */
+    const firstOrderNumber = await this.nextOrderNumber(versionId);
 
     const questionRows: (typeof assessmentQuestions.$inferInsert)[] = [];
     const optionRows: (typeof questionOptions.$inferInsert)[] = [];
     const mappingRows: (typeof questionDimensions.$inferInsert)[] = [];
 
-    for (const input of inputs) {
+    for (const [index, input] of inputs.entries()) {
       const questionId = uuid();
       const source: QuestionSource = input.source ?? 'MANUAL';
 
@@ -925,7 +957,7 @@ export class AssessmentBuilderService {
         questionText: input.questionText,
         questionType: input.questionType,
         sectionLabel: input.sectionLabel ?? null,
-        orderNumber: input.orderNumber,
+        orderNumber: firstOrderNumber + index,
         required: input.required ?? true,
         source,
         sourceAiRequestId: input.sourceAiRequestId ?? null,
@@ -985,7 +1017,22 @@ export class AssessmentBuilderService {
       ),
     ];
 
-    await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+    try {
+      await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+    } catch (error) {
+      /**
+       * The only unique index these inserts can lose at is `(assessment_version_id, order_number)`
+       * — the option rows all belong to question ids minted a few lines above, so nothing else in
+       * the database can be holding one of their keys. Losing it means another add landed between
+       * this batch's `nextOrderNumber` read and its write, which is ordinary concurrency (two tabs,
+       * a double-click) rather than a server fault, so it gets the 422 H4 asks for.
+       */
+      translateUniqueViolation(
+        error,
+        'questions',
+        'Another question was added to this version a moment ago. Reload and try again.',
+      );
+    }
 
     return questionRows.map((row) => row.id);
   }
@@ -1042,12 +1089,17 @@ export class AssessmentBuilderService {
 
     this.assertVersionEditable(version);
 
-    const [questions] = await this.db
-      .select({ total: count() })
+    const questions = await this.db
+      .select({
+        id: assessmentQuestions.id,
+        orderNumber: assessmentQuestions.orderNumber,
+        questionText: assessmentQuestions.questionText,
+      })
       .from(assessmentQuestions)
-      .where(eq(assessmentQuestions.assessmentVersionId, versionId));
+      .where(eq(assessmentQuestions.assessmentVersionId, versionId))
+      .orderBy(asc(assessmentQuestions.orderNumber));
 
-    if ((questions?.total ?? 0) === 0) {
+    if (questions.length === 0) {
       throw ApiError.validation(
         {
           questions: ['A version must have at least one question before it can be published.'],
@@ -1055,6 +1107,8 @@ export class AssessmentBuilderService {
         'This version has no questions.',
       );
     }
+
+    await this.assertEveryQuestionIsFinished(version, questions);
 
     const readiness = await this.publishReadiness(versionId);
 
@@ -1105,6 +1159,72 @@ export class AssessmentBuilderService {
     });
 
     return { ...version, status: 'PUBLISHED', publishedAt };
+  }
+
+  /**
+   * The two states a **draft** may legitimately be in and a published instrument may not: an item
+   * with no text, and an item that measures nothing (ASSESSMENT-FIX §1, §3).
+   *
+   * Both are deliberate while authoring. The builder creates a question blank and unmapped on
+   * purpose — guessing text, or guessing which dimension an item loads onto, would be worse than
+   * asking — and nothing downstream ever revisited that decision before publish. Neither state is
+   * survivable afterwards, because publishing is irreversible (invariant 1) and *nothing reports the
+   * damage*: a version that goes out with an unmapped item scores it into nothing forever, and the
+   * student sees a normal question and a normal-looking result that quietly did not count it.
+   *
+   * The mapping check is skipped when the template has **no dimensions at all**, and that is not a
+   * loophole — it is the distinction the old gate could not make. An assessment with no dimensions
+   * is an ungraded survey, which the builder offers in as many words ("This assessment has no
+   * dimensions, so it will publish as an ungraded survey"). The defect is an author who *has*
+   * dimensions and forgot to map an item to one; before this, a reflection instrument and a
+   * forgotten mapping produced the identical empty result and were indistinguishable from outside.
+   */
+  private async assertEveryQuestionIsFinished(
+    version: AssessmentVersion,
+    questions: { id: string; orderNumber: number; questionText: string }[],
+  ): Promise<void> {
+    const blank = questions
+      .filter((question) => question.questionText.trim() === '')
+      .map((question) => question.orderNumber);
+
+    if (blank.length > 0) {
+      throw ApiError.validation(
+        {
+          questions: [
+            `${questionList(blank)} ${blank.length === 1 ? 'has' : 'have'} no text yet.`,
+          ],
+        },
+        'Every question must have text before this version can be published.',
+      );
+    }
+
+    const dimensions = await this.dimensionsFor(version.assessmentTemplateId);
+
+    if (dimensions.length === 0) {
+      return;
+    }
+
+    const mapped = await this.db
+      .select({ questionId: questionDimensions.questionId })
+      .from(questionDimensions)
+      .innerJoin(assessmentQuestions, eq(questionDimensions.questionId, assessmentQuestions.id))
+      .where(eq(assessmentQuestions.assessmentVersionId, version.id));
+
+    const mappedIds = new Set(mapped.map((row) => row.questionId));
+    const unmapped = questions
+      .filter((question) => !mappedIds.has(question.id))
+      .map((question) => question.orderNumber);
+
+    if (unmapped.length > 0) {
+      throw ApiError.validation(
+        {
+          question_dimensions: [
+            `${questionList(unmapped)} ${unmapped.length === 1 ? 'measures' : 'measure'} nothing — every question must map to at least one dimension.`,
+          ],
+        },
+        'Some questions are not mapped to a dimension, so nothing they measure would be scored.',
+      );
+    }
   }
 
   /** How many questions a version has — the counselor's template list shows it. */
@@ -1335,12 +1455,8 @@ export class AssessmentBuilderService {
         questionText: question.questionText,
         questionType: question.questionType,
         sectionLabel: question.sectionLabel,
-        /**
-         * Appended, not inserted beside the original. `addQuestions` writes whatever
-         * `orderNumber` it is handed — the *routes* are what compute "next" for the bulk editor —
-         * so the position has to be resolved here rather than assumed.
-         */
-        orderNumber: await this.nextOrderNumber(version.id),
+        // Appended, not inserted beside the original — an author who wants it elsewhere drags it.
+        // `addQuestions` is what positions it; this method no longer has an opinion.
         required: question.required,
         source: 'MANUAL',
         options: options.map((option, index) => ({
@@ -1367,22 +1483,56 @@ export class AssessmentBuilderService {
    * so leaving a hole would work until someone inserted a question and found two items claiming
    * position 7. The renumber is folded into the same batch as the delete: the two must not be
    * separately observable. Options and mappings go with the row through their FK cascades.
+   *
+   * **The shift is two statements rather than one, because of migration 0021.** SQLite enforces a
+   * unique index *per row as it is written*, and a single `order_number = order_number - 1` over
+   * the tail collides with itself the moment the engine happens to update a row before the one
+   * below it — an order this file does not get to choose, since `UPDATE` has no defined row order.
+   * Parking the tail on negative numbers first vacates the whole positive range, so the second pass
+   * lands every row on a position nothing can be holding. Both are inside the batch, so the
+   * negative interlude is never observable.
+   *
+   * It takes a `user` for the audit row (ASSESSMENT-FIX §7). Removing an item from a draft is a
+   * real authoring act by an identifiable person, and it was the one mutator here leaving no trace.
    */
-  async deleteQuestion(questionId: string): Promise<void> {
+  async deleteQuestion(user: User, questionId: string): Promise<void> {
     const { question, version } = await this.editableQuestion(questionId);
 
     await this.db.batch([
       this.db.delete(assessmentQuestions).where(eq(assessmentQuestions.id, questionId)),
       this.db
         .update(assessmentQuestions)
-        .set({ orderNumber: sql`${assessmentQuestions.orderNumber} - 1` })
+        .set({ orderNumber: sql`-(${assessmentQuestions.orderNumber} - 1)` })
         .where(
           and(
             eq(assessmentQuestions.assessmentVersionId, version.id),
             sql`${assessmentQuestions.orderNumber} > ${question.orderNumber}`,
           ),
         ),
+      this.db
+        .update(assessmentQuestions)
+        .set({ orderNumber: sql`-${assessmentQuestions.orderNumber}` })
+        .where(
+          and(
+            eq(assessmentQuestions.assessmentVersionId, version.id),
+            sql`${assessmentQuestions.orderNumber} < 0`,
+          ),
+        ),
     ]);
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_QUESTION_DELETED',
+      module: MODULE,
+      targetType: 'assessment_question',
+      targetId: questionId,
+      oldValues: {
+        assessment_version_id: version.id,
+        order_number: question.orderNumber,
+        question_text: question.questionText,
+        source: question.source,
+      },
+    });
   }
 
   /**
@@ -1432,12 +1582,34 @@ export class AssessmentBuilderService {
       return;
     }
 
-    const statements: BatchItem<'sqlite'>[] = questionIds.map((id, index) =>
+    /**
+     * **Two passes, and the negative interlude is the load-bearing part.**
+     *
+     * Migration 0021 makes `(assessment_version_id, order_number)` unique, and SQLite has no
+     * deferred mode for a unique index — it is enforced as each row is written. Every real
+     * reordering passes through a state where two rows would claim the same position (the simplest
+     * possible drag, swapping two items, does it on the first statement), so writing the final
+     * numbers directly would fail on every drag that actually changed something. Parking each row
+     * at `-(position)` vacates the entire positive range first; the flip back is then a single
+     * statement whose targets are all free. One batch, so nothing observes the negatives.
+     */
+    const statements: BatchItem<'sqlite'>[] = [
+      ...questionIds.map((id, index) =>
+        this.db
+          .update(assessmentQuestions)
+          .set({ orderNumber: -(index + 1) })
+          .where(eq(assessmentQuestions.id, id)),
+      ),
       this.db
         .update(assessmentQuestions)
-        .set({ orderNumber: index + 1 })
-        .where(eq(assessmentQuestions.id, id)),
-    );
+        .set({ orderNumber: sql`-${assessmentQuestions.orderNumber}` })
+        .where(
+          and(
+            eq(assessmentQuestions.assessmentVersionId, versionId),
+            sql`${assessmentQuestions.orderNumber} < 0`,
+          ),
+        ),
+    ];
 
     await this.db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
   }
@@ -1448,7 +1620,9 @@ export class AssessmentBuilderService {
    * `MAX + 1` rather than `COUNT + 1`, which are the same number only while the numbering is
    * gapless. `deleteQuestion` keeps it gapless today, so the two agree — but a count would produce
    * a *collision* the day anything did leave a hole, and two items claiming the same position is a
-   * bug that surfaces as an arbitrary render order rather than as an error.
+   * bug that surfaces as an arbitrary render order rather than as an error. The bulk-add route did
+   * use a count, against this comment, until ASSESSMENT-FIX §4; positioning now lives in
+   * `addQuestions` alone, which is the only way the two cannot drift again.
    */
   private async nextOrderNumber(versionId: string): Promise<number> {
     const [row] = await this.db

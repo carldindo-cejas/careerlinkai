@@ -268,8 +268,8 @@ async function seedRiasec(
     scoringConfig: { algorithm: 'HOLLAND_CODE_TOP3' },
   });
 
-  let orderNumber = 1;
-
+  // The items land in array order — R's ten, then I's, and so on — because `addQuestions` appends
+  // in the order it is given. The counter this used to keep said the same thing twice.
   await builder.addQuestions(
     admin,
     version.id,
@@ -280,7 +280,6 @@ async function seedRiasec(
         // The section label groups sixty items into legible chunks. It is a deliberate, limited
         // disclosure — it never reveals what any *single* item scores (§37).
         sectionLabel: RIASEC_DIMENSION_NAMES[code as keyof typeof RIASEC_DIMENSION_NAMES],
-        orderNumber: orderNumber++,
         required: true,
         options: LIKERT,
         dimensions: [{ code, weight: 1 }],
@@ -347,8 +346,6 @@ async function seedScct(
     },
   });
 
-  let orderNumber = 1;
-
   const sectionNames: Record<string, string> = {
     SE: 'Self-Efficacy',
     OE: 'Outcome Expectations',
@@ -363,7 +360,6 @@ async function seedScct(
         questionText,
         questionType: 'LIKERT' as const,
         sectionLabel: sectionNames[code] ?? code,
-        orderNumber: orderNumber++,
         required: true,
         options: LIKERT,
         dimensions: [{ code, weight: 1 }],

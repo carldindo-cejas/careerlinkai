@@ -22,6 +22,10 @@ import {
   type StaffUserFixture,
 } from '../helpers';
 
+/* The add-question request the *browser* sends, shared with the frontend suite — see the file's
+   own header for why it is not a literal in either. */
+import { ADD_QUESTION_REQUEST } from '../../../contracts/assessment-builder';
+
 /**
  * Phase 5b — the assessment builder endpoints and the §31 generation pipeline.
  *
@@ -315,7 +319,9 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
               { label: 'Yes', value: 'yes', score: 1 },
               { label: 'No', value: 'no', score: 0 },
             ],
-            dimension_codes: [],
+            // Mapped, because this test publishes: the gate refuses an item that measures nothing
+            // on a template that *has* dimensions (ASSESSMENT-FIX §3).
+            dimension_codes: ['TM'],
           },
         ],
       },
@@ -342,6 +348,245 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
     });
 
     expect(afterPublish.status).toBe(422);
+  });
+
+  /**
+   * **The click that 422'd.** This is the request the browser sends when an author presses "Add
+   * question", imported from `contracts/assessment-builder.ts` rather than retyped — the frontend's
+   * own suite asserts the workspace sends exactly this object, so the two assertions together are
+   * what stops the client and the server disagreeing about the contract again (ASSESSMENT-FIX §1).
+   *
+   * A blank, unmapped question is a **legal draft**. It is refused at publish, which is the next
+   * two tests.
+   */
+  it('accepts the builder’s own add-question payload — a blank draft question is legal', async () => {
+    const { versionId } = await draftFixture(counselorToken);
+
+    const added = await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: ADD_QUESTION_REQUEST,
+    });
+
+    expect(added.status, JSON.stringify(added.body)).toBe(201);
+
+    const review = await api('GET', `/assessment-versions/${versionId}`, {
+      token: counselorToken,
+    });
+
+    expect(review.body.data.questions).toHaveLength(1);
+    expect(review.body.data.questions[0].question_text).toBe('');
+    expect(review.body.data.questions[0].options).toHaveLength(5);
+  });
+
+  /** And clearing the text of an existing question — §2's queue-poisoning 422 — is legal too. */
+  it('accepts an auto-save that clears the question text', async () => {
+    const { versionId } = await draftFixture(counselorToken);
+
+    await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: ADD_QUESTION_REQUEST,
+    });
+
+    const review = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+    const questionId = review.body.data.questions[0].id as string;
+
+    const typed = await api('PATCH', `/assessment-questions/${questionId}`, {
+      token: counselorToken,
+      body: { question_text: 'I review my notes within a day of each class.' },
+    });
+
+    expect(typed.status).toBe(200);
+
+    const cleared = await api('PATCH', `/assessment-questions/${questionId}`, {
+      token: counselorToken,
+      body: { question_text: '' },
+    });
+
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect(cleared.body.data.question_text).toBe('');
+  });
+
+  /**
+   * The other side of the bargain: what the write path now permits, publish refuses — **by name**,
+   * because "publish failed" with no number leaves the author scrolling through sixty items.
+   */
+  it('refuses to publish a version whose question has no text, naming the question', async () => {
+    const { versionId } = await draftFixture(counselorToken);
+
+    await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: {
+        questions: [
+          { ...ADD_QUESTION_REQUEST.questions[0], dimension_codes: ['TM'] },
+          {
+            question_text: 'A finished item.',
+            question_type: 'LIKERT',
+            options: [
+              { label: 'Agree', value: 'a', score: 3 },
+              { label: 'Disagree', value: 'd', score: 1 },
+            ],
+            dimension_codes: ['TM'],
+          },
+        ],
+      },
+    });
+
+    const refused = await api('POST', `/assessment-versions/${versionId}/publish`, {
+      token: counselorToken,
+    });
+
+    expect(refused.status).toBe(422);
+    expect(refused.body.errors.questions[0]).toMatch(/Question 1 has no text/);
+  });
+
+  /**
+   * §3 — the silent one. A version of unmapped questions published cleanly, scored every student
+   * into an empty result, and reported nothing to anyone: `total = 0, confirmed = 0, remaining = 0`
+   * satisfied the confirmation gate exactly as a fully-confirmed version does.
+   */
+  it('refuses to publish a question that measures nothing, and publishes once it is mapped', async () => {
+    const { versionId } = await draftFixture(counselorToken);
+
+    await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: {
+        questions: [
+          {
+            question_text: 'I keep a written schedule.',
+            question_type: 'LIKERT',
+            options: [
+              { label: 'Agree', value: 'a', score: 3 },
+              { label: 'Disagree', value: 'd', score: 1 },
+            ],
+            dimension_codes: [],
+          },
+        ],
+      },
+    });
+
+    const refused = await api('POST', `/assessment-versions/${versionId}/publish`, {
+      token: counselorToken,
+    });
+
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.errors.question_dimensions[0]).toMatch(/Question 1 measures nothing/);
+
+    const review = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+
+    const mapped = await api('PATCH', `/assessment-questions/${review.body.data.questions[0].id}`, {
+      token: counselorToken,
+      body: { dimension_codes: ['TM'] },
+    });
+
+    expect(mapped.status).toBe(200);
+
+    const published = await api('POST', `/assessment-versions/${versionId}/publish`, {
+      token: counselorToken,
+    });
+
+    expect(published.status, JSON.stringify(published.body)).toBe(200);
+  });
+
+  /**
+   * …and the case that makes the gate above correct rather than merely strict: a template with no
+   * dimensions is an ungraded survey, which the builder offers in as many words. Unmapped there is
+   * the finished product, not an oversight.
+   */
+  it('still publishes an ungraded survey — no dimensions, so nothing to map', async () => {
+    const { versionId } = await draftFixture(counselorToken, { dimensions: false });
+
+    await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: {
+        questions: [
+          {
+            question_text: 'What is one thing you learned this week?',
+            question_type: 'LIKERT',
+            options: [
+              { label: 'A lot', value: 'a', score: 1 },
+              { label: 'A little', value: 'b', score: 0 },
+            ],
+            dimension_codes: [],
+          },
+        ],
+      },
+    });
+
+    const published = await api('POST', `/assessment-versions/${versionId}/publish`, {
+      token: counselorToken,
+    });
+
+    expect(published.status, JSON.stringify(published.body)).toBe(200);
+  });
+
+  /** §6 — `value` is the stored answer key, and two options cannot share one. */
+  it('refuses two options with the same value', async () => {
+    const { versionId } = await draftFixture(counselorToken);
+
+    const response = await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: {
+        questions: [
+          {
+            question_text: 'Two keys, one meaning.',
+            question_type: 'MULTIPLE_CHOICE',
+            options: [
+              { label: 'First', value: 'same', score: 1 },
+              { label: 'Second', value: 'same', score: 2 },
+            ],
+            dimension_codes: ['TM'],
+          },
+        ],
+      },
+    });
+
+    expect(response.status).toBe(422);
+  });
+
+  /**
+   * §4 — the bulk-add route positioned with `COUNT + 1` while everything else appended with
+   * `MAX + 1`. They agree only while the numbering is gapless, which is a coincidence the route was
+   * relying on without saying so; positioning now lives in the Service alone.
+   */
+  it('appends added questions after the ones already there', async () => {
+    const { versionId } = await draftFixture(counselorToken);
+
+    const item = (text: string) => ({
+      question_text: text,
+      question_type: 'LIKERT' as const,
+      options: [
+        { label: 'Agree', value: 'a', score: 3 },
+        { label: 'Disagree', value: 'd', score: 1 },
+      ],
+      dimension_codes: ['TM'],
+    });
+
+    await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: { questions: [item('First.'), item('Second.')] },
+    });
+
+    const review = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+
+    // Delete the middle one, then add: a `COUNT + 1` route would reuse position 2 here.
+    await api('DELETE', `/assessment-questions/${review.body.data.questions[0].id}`, {
+      token: counselorToken,
+    });
+
+    const added = await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: { questions: [item('Third.')] },
+    });
+
+    expect(added.status, JSON.stringify(added.body)).toBe(201);
+
+    const after = await api('GET', `/assessment-versions/${versionId}`, { token: counselorToken });
+
+    expect(after.body.data.questions.map((question: any) => question.order_number)).toEqual([1, 2]);
+    expect(after.body.data.questions.map((question: any) => question.question_text)).toEqual([
+      'Second.',
+      'Third.',
+    ]);
   });
 
   it('a student cannot reach any builder endpoint', async () => {
@@ -527,6 +772,51 @@ describe('the §31 pipeline (stubbed gateway) and the §25 gate around it', () =
       .where(eq(questionDimensions.questionId, drafted[0]!.id));
 
     expect(mapping!.confirmedBy).toBe(counselor.id);
+  });
+
+  /**
+   * §4's third positioning rule, and the one with no witnesses: the generation job numbered its
+   * questions from 1 regardless of what the version already held, so an author who wrote an item by
+   * hand and *then* drafted with AI got two questions claiming position 1 — no error, just an
+   * arbitrary render order. Migration 0021 would turn that into a failed job; appending is what
+   * makes it a non-event.
+   */
+  it('appends a generated draft after the questions already in the version', async () => {
+    const { versionId } = await draftFixture(counselorToken);
+
+    await api('POST', `/assessment-versions/${versionId}/questions`, {
+      token: counselorToken,
+      body: {
+        questions: [
+          {
+            question_text: 'Written by hand, before the AI ran.',
+            question_type: 'LIKERT',
+            options: [
+              { label: 'Agree', value: 'a', score: 3 },
+              { label: 'Disagree', value: 'd', score: 1 },
+            ],
+            dimension_codes: ['TM'],
+          },
+        ],
+      },
+    });
+
+    await generationService(generatedPayload).generateDraft({
+      aiRequestId: uuid(),
+      versionId,
+      userId: counselor.id,
+      mode: 'DESCRIPTION',
+      sourceText: 'A survey about study habits.',
+    });
+
+    const review = await api('GET', `/assessment-versions/${versionId}`, {
+      token: counselorToken,
+    });
+
+    expect(review.body.data.questions.map((question: any) => question.order_number)).toEqual([
+      1, 2, 3,
+    ]);
+    expect(review.body.data.questions[0].source).toBe('MANUAL');
   });
 
   it('an ungraded draft (no dimensions on the template) writes no mappings, and the gate is trivially satisfied', async () => {

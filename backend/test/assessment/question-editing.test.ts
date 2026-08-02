@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { uuid } from '@/lib/crypto';
 
 import {
+  allAuditRows,
   api,
   assessmentTaxonomy,
   createStaffUser,
@@ -294,6 +295,27 @@ describe('deleting a question', () => {
       'Question 3',
       'Question 4',
     ]);
+  });
+
+  /**
+   * ASSESSMENT-FIX §7. Every sibling mutator audits; this one did not, and it takes no more than a
+   * draft and a wrong click to remove an item somebody else wrote. The row carries the text, because
+   * "what did question 2 say before you deleted it" is otherwise unanswerable.
+   */
+  it('writes an audit row naming who removed it and what it said', async () => {
+    const { versionId } = await draftWithQuestions(2);
+    const [, second] = await questionsOf(versionId);
+
+    await api('DELETE', `/assessment-questions/${second.id}`, { token: adminToken });
+
+    const rows = await allAuditRows();
+    const row = rows.find(
+      (entry) => entry.action === 'ASSESSMENT_QUESTION_DELETED' && entry.targetId === second.id,
+    );
+
+    expect(row).toBeDefined();
+    expect(row!.targetType).toBe('assessment_question');
+    expect(row!.oldValues).toMatchObject({ order_number: 2, question_text: 'Question 2' });
   });
 });
 

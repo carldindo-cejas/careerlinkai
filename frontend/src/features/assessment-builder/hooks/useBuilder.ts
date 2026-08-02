@@ -63,15 +63,25 @@ export function useCreateVersion(templateId: string) {
   });
 }
 
+/**
+ * Adding questions — and **the invalidation is awaited, not fired and forgotten.**
+ *
+ * `mutateAsync` resolves only once `onSuccess` has settled, so returning the refetch promise means
+ * the caller's `await` ends with the new question already in the cache. That is what lets the
+ * workspace select the item it just created: selecting an id the cached version does not contain
+ * yet trips the "keep a valid selection" effect, which helpfully puts the editor back on question 1
+ * — the add appears to do nothing, which is precisely the complaint (ASSESSMENT-FIX §5).
+ *
+ * It also makes the button's spinner mean something: it stops when the new question is on screen,
+ * rather than when the server said it exists.
+ */
 export function useAddQuestions(versionId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (questions: Parameters<typeof builderApi.addQuestions>[1]) =>
       builderApi.addQuestions(versionId, questions),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: builderKeys.version(versionId) });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: builderKeys.version(versionId) }),
   });
 }
 
@@ -112,14 +122,13 @@ export function useUpdateQuestion(versionId: string) {
   });
 }
 
+/** Awaited for the same reason as `useAddQuestions` — the caller selects the copy it just made. */
 export function useDuplicateQuestion(versionId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (questionId: string) => builderApi.duplicateQuestion(questionId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: builderKeys.version(versionId) });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: builderKeys.version(versionId) }),
   });
 }
 

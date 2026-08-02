@@ -97,6 +97,28 @@ function defaultOptionsFor(type: QuestionType): QuestionOptionDraft[] {
   }
 }
 
+/**
+ * The label an author typed, and the answer key it implies.
+ *
+ * `value` tracks the label rather than being a second field to fill in: an author thinks in labels,
+ * and a pair allowed to diverge is a way to end up with a scored answer whose key means nothing.
+ * It cannot follow the label anywhere, though — the key is unique within its question, in the
+ * database as of migration 0021 — so a label that is blank, or that another option is already keyed
+ * by, leaves this option's existing key alone rather than writing a duplicate the server refuses.
+ */
+function keyedByLabel(
+  label: string,
+  options: QuestionOptionDraft[],
+  index: number,
+): Partial<QuestionOptionDraft> {
+  const candidate = label.trim();
+  const taken = options.some(
+    (option, position) => position !== index && option.value.trim() === candidate,
+  );
+
+  return candidate === '' || taken ? { label } : { label, value: candidate };
+}
+
 interface QuestionWorkspaceProps {
   review: VersionReview;
   dimensions: BuilderDimension[];
@@ -136,18 +158,37 @@ export function QuestionWorkspace({ review, dimensions, editable }: QuestionWork
 
   const selected = questions.find((question) => question.id === selectedId) ?? null;
 
+  /**
+   * Add a blank item — **and move the editor to it.**
+   *
+   * The blank text is the deliberate half: the author types into the item they just made, so a
+   * question with no text yet has to be a legal draft state (the server agrees, as of
+   * ASSESSMENT-FIX §1; before that this call 422'd every time). What was missing is the other half
+   * — the new question was created at the bottom of the navigator, possibly below the fold, while
+   * the editor stayed on whatever was already open. Nothing visibly happened, which is what the bug
+   * report describes.
+   *
+   * The selection is set *after* the await, and `useAddQuestions` waits for the refetch, so the id
+   * exists in the cached version by the time it is selected. Selecting one that does not yet exist
+   * is worse than not selecting at all: the effect above would silently snap the editor back.
+   */
   async function handleAdd() {
     try {
-      await addQuestions.mutateAsync([
+      const { question_ids: created } = await addQuestions.mutateAsync([
         {
           question_text: '',
           question_type: 'LIKERT',
           options: LIKERT_OPTIONS,
           // No mapping by default: an item that measures nothing is a legitimate state while it is
-          // being written, and guessing a dimension for the author would be worse than asking.
+          // being written, and guessing a dimension for the author would be worse than asking. The
+          // publish gate is where it stops being acceptable, and it names the item there.
           dimension_codes: [],
         },
       ]);
+
+      if (created[0] !== undefined) {
+        setSelectedId(created[0]);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not add the question.');
     }
@@ -497,10 +538,26 @@ function QuestionEditor({
     patch({ options: next });
   }
 
+  /**
+   * A new option, numbered from the **highest value in use** rather than from the array length.
+   *
+   * The length is the wrong source and it produced collisions on an ordinary edit: remove option 2
+   * of 3 and add one, and the new option is valued "3" alongside the option that already is. `value`
+   * is the stored answer key — the author-facing and export-facing identity of an option — so two
+   * of them meaning the same thing is silent ambiguity rather than a visible bug (ASSESSMENT-FIX
+   * §6). The server refuses it now, and so does the database; this is what keeps the editor from
+   * proposing it in the first place.
+   */
   function addOption() {
+    const highest = options.reduce((peak, option) => {
+      const numeric = Number(option.value.trim());
+
+      return Number.isInteger(numeric) && numeric > peak ? numeric : peak;
+    }, options.length);
+
     const next = [
       ...options,
-      { label: `Option ${options.length + 1}`, value: String(options.length + 1), score: 0 },
+      { label: `Option ${highest + 1}`, value: String(highest + 1), score: 0 },
     ];
 
     setOptions(next);
@@ -752,15 +809,9 @@ function OptionsEditor({
               disabled={!editable}
               aria-label={`Option ${index + 1} label`}
               className="flex-1"
-              onChange={(event) =>
-                // `value` is the stored answer key. It tracks the label rather than being a second
-                // field to fill in — an author thinks in labels, and a divergent pair is a way to
-                // get a scored answer whose key means nothing.
-                onChange(index, {
-                  label: event.target.value,
-                  value: event.target.value.trim() === '' ? String(index + 1) : event.target.value,
-                })
-              }
+              // `value` is the stored answer key, and it follows the label — within the limits
+              // `keyedByLabel` sets out.
+              onChange={(event) => onChange(index, keyedByLabel(event.target.value, options, index))}
               onBlur={onBlur}
             />
             <Input

@@ -429,10 +429,16 @@ export class AssessmentGenerationService {
       const questionIds = await this.builder.addQuestions(
         { id: params.userId } as User,
         params.versionId,
-        output.questions.map((question, index) => ({
+        /**
+         * Appended to whatever the version already holds — `addQuestions` positions them (see
+         * `CreateQuestionInput`). This used to number them from 1, which gave every generated item
+         * the same `order_number` as an existing one whenever an author drafted with AI into a
+         * version they had started by hand: no error, just two questions claiming position 1 and an
+         * arbitrary render order (ASSESSMENT-FIX §4).
+         */
+        output.questions.map((question) => ({
           questionText: question.questionText,
           questionType: question.questionType,
-          orderNumber: index + 1,
           required: true,
           source: 'AI_GENERATED' as const,
           sourceAiRequestId: params.aiRequestId,

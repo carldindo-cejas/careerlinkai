@@ -298,28 +298,55 @@ export const createVersionSchema = z
 
 export type CreateVersionInput = z.infer<typeof createVersionSchema>;
 
-/** The manual editor's write shape — mirrors the service's `CreateQuestionInput`, snake_case. */
+/**
+ * The answer set — **one declaration, read by both write paths, because they had drifted.**
+ *
+ * The add path capped nothing while the update path capped the array at 20, so bulk-add accepted an
+ * option list the editor could then never save (ASSESSMENT-FIX §8). Two copies of a rule are two
+ * rules; this is one.
+ *
+ * `value` is the *stored answer key* and it is unique per question — migration 0021 makes
+ * `question_options (question_id, value)` a unique index. Checking it here as well as in the
+ * database is what turns the loser of that collision into a 422 the author can act on rather than
+ * the raw constraint 500 an uncaught SQLite error becomes (§6, and H4's general rule).
+ */
+const questionOptionsSchema = z
+  .array(
+    z
+      .object({
+        label: z.string().trim().min(1).max(200),
+        value: z.string().trim().min(1).max(200),
+        score: z.number().finite(),
+      })
+      .strict(),
+  )
+  .min(2, 'Every question needs at least 2 options.')
+  .max(20)
+  .refine((options) => new Set(options.map((option) => option.value)).size === options.length, {
+    message: 'Two options cannot share the same value — the value is the answer key.',
+  });
+
+/**
+ * The manual editor's write shape — mirrors the service's `CreateQuestionInput`, snake_case.
+ *
+ * **`question_text` has no `.min(1)`, deliberately** (ASSESSMENT-FIX §1). The builder's UX is
+ * insert-a-stub-then-autosave-into-it: clicking "Add question" writes a blank item and the author
+ * types into it, which requires a blank draft question to be a legal server state. It was not, and
+ * every "Add" click 422'd. A blank item is refused at **publish** instead, where the question being
+ * asked is "is this instrument finished" rather than "may this draft exist" — see
+ * `AssessmentBuilderService.publish`.
+ */
 export const addQuestionsSchema = z
   .object({
     questions: z
       .array(
         z
           .object({
-            question_text: z.string().trim().min(1).max(1000),
+            question_text: z.string().trim().max(1000),
             question_type: z.enum(QUESTION_TYPES),
             section_label: z.string().trim().max(100).nullable().optional(),
             required: z.boolean().optional(),
-            options: z
-              .array(
-                z
-                  .object({
-                    label: z.string().trim().min(1).max(200),
-                    value: z.string().trim().min(1).max(200),
-                    score: z.number().finite(),
-                  })
-                  .strict(),
-              )
-              .min(2, 'Every question needs at least 2 options.'),
+            options: questionOptionsSchema,
             /** Dimension **codes** — the author's vocabulary, resolved by the service. */
             dimension_codes: z.array(z.string().trim().min(1)).max(6).default([]),
           })
@@ -343,26 +370,20 @@ export type AddQuestionsInput = z.infer<typeof addQuestionsSchema>;
  *
  * `section_label` is `.nullable()` on purpose: an author clearing a section heading has to be able
  * to say so, and under `.optional()` alone "absent" and "cleared" would be the same request.
+ *
+ * `question_text` accepts the empty string for the same reason `addQuestionsSchema` does, and the
+ * consequence of it not doing so was worse here (ASSESSMENT-FIX §2): an author who selected the
+ * question text and deleted it sent `question_text: ''`, got a 422, and the failed patch went back
+ * into the auto-save queue — where it rode along with every subsequent save and re-failed, so every
+ * edit to *any other field* on that question failed too until they happened to retype the text.
  */
 export const updateQuestionSchema = z
   .object({
-    question_text: z.string().trim().min(1).max(1000).optional(),
+    question_text: z.string().trim().max(1000).optional(),
     question_type: z.enum(QUESTION_TYPES).optional(),
     section_label: z.string().trim().max(100).nullable().optional(),
     required: z.boolean().optional(),
-    options: z
-      .array(
-        z
-          .object({
-            label: z.string().trim().min(1).max(200),
-            value: z.string().trim().min(1).max(200),
-            score: z.number().finite(),
-          })
-          .strict(),
-      )
-      .min(2, 'Every question needs at least 2 options.')
-      .max(20)
-      .optional(),
+    options: questionOptionsSchema.optional(),
     dimension_codes: z.array(z.string().trim().min(1)).max(6).optional(),
   })
   .strict()

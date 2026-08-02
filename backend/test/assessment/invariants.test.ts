@@ -59,7 +59,6 @@ async function draftWithUnconfirmedMapping() {
   await builder.addQuestion(adminRow, version.id, {
     questionText: 'An AI-proposed question.',
     questionType: 'LIKERT',
-    orderNumber: 1,
     // AI_GENERATED — so its mapping lands with `confirmed_at IS NULL`, which is the only way
     // that column is ever null.
     source: 'AI_GENERATED',
@@ -160,7 +159,6 @@ describe('invariant 1 — a published version is frozen (§12)', () => {
       builder.addQuestion(adminRow, seeded.riasecVersionId!, {
         questionText: 'A 61st item, added after publication.',
         questionType: 'LIKERT',
-        orderNumber: 61,
         options: [{ label: 'Yes', value: '1', score: 1, orderNumber: 1 }],
         dimensions: [{ code: 'R', weight: 1 }],
       }),
