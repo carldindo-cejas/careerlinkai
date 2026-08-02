@@ -38,6 +38,14 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 APP_ENV = "local"
 FRONTEND_URL = "http://localhost:5173"
+# In lockstep with wrangler.toml, and inert here.
+#
+# **There is deliberately no `RESEND_API_KEY` in this file, and a platform gate asserts there never
+# will be** (P4-2). That absence is what keeps the suite hermetic: `sendPasswordResetEmail` returns
+# `not_configured` before it reaches for the network, so no test can dial api.resend.com even if a
+# stub fails to install. Tests that exercise delivery set the key on `env` themselves *and* stub
+# `fetch` — see test/auth/password-reset-email.test.ts.
+EMAIL_FROM = "no-reply@careerlinkai.online"
 WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 STUDENT_JOIN_CODE_TTL_DAYS = "90"

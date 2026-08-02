@@ -44,9 +44,26 @@
 # Every directive below is written to be correct for a **hashed static asset too**, because of the
 # accumulation rule documented above: anything under /* also lands on /assets/*.
 #
-#   script-src 'self'      — no inline scripts and no CDN. Vite emits external modules only, so
-#                            this needs no 'unsafe-inline' and no nonce plumbing. Notably NOT
-#                            'unsafe-eval'; see the Zod note under "What the browser check found".
+#   script-src 'self'      — no inline scripts. Vite emits external modules only, so this needs no
+#                            'unsafe-inline' and no nonce plumbing. Notably NOT 'unsafe-eval'; see
+#                            the Zod note under "What the browser check found".
+#   script-src https://static.cloudflareinsights.com — Cloudflare Web Analytics. **Added 2026-08-02
+#                            after the first browser run against production**, which is the only
+#                            place it is observable: Cloudflare injects this beacon into every HTML
+#                            response at the edge, keyed off the User-Agent, so neither the local
+#                            preview Worker nor a plain `curl` ever sees it. `script-src 'self'`
+#                            refused it on all 15 screens, and Web Analytics had therefore been
+#                            enabled, injected and collecting **nothing** since the CSP shipped on
+#                            2026-07-28. This is P1-2's webfont defect a second time — a policy that
+#                            is correct locally and wrong in production — and it is the reason
+#                            csp-check.mjs may now be pointed at the live domain.
+#                            One exact host, no wildcard. The beacon reports to /cdn-cgi/rum, which
+#                            is same-origin, so `connect-src 'self'` already covers it and no second
+#                            directive is needed. The trust question is narrower than it looks:
+#                            Cloudflare already terminates this site's TLS, runs the Worker and
+#                            holds D1, so their analytics origin is not a new party. Cloudflare also
+#                            emits the tag with an `integrity=sha512-…` and `crossorigin`, so the
+#                            bytes are pinned even though CSP does not itself enforce SRI.
 #   style-src  'unsafe-inline' — required, and the one relaxation here. Tailwind v4 and the
 #                            Framer Motion transforms both write inline `style` attributes; a
 #                            nonce cannot cover attribute styles, so removing this would break
@@ -119,7 +136,7 @@
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; media-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; media-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   X-Frame-Options: DENY
   Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=()

@@ -111,8 +111,38 @@ jobs:
       - name: Install Playwright system dependencies
         run: npx playwright install-deps chromium
 
+      # `test:capture`, not `test` — same suite, same reporters on stdout, plus a machine-readable
+      # report. CI is two cores and always cold (see vite.config.ts on why `testTimeout` was raised
+      # to 15 s), which makes it *likelier* than a developer machine to lose a timing-sensitive
+      # assertion. When that happens the log scrolls past and ages out; this leaves something a
+      # human can open and something a script can diff.
       - name: Test
-        run: npm test
+        run: npm run test:capture
+
+      # `if: always()` is the whole point — an artifact uploaded only on success documents exactly
+      # the runs nobody needs it for.
+      #
+      # ⚠️ `test-results/` and `.vitest-attachments/` differ by one character that matters:
+      # upload-artifact@v4 **skips dot-directories** (`include-hidden-files` defaults to false), so
+      # the attachments path needs the flag and the report path deliberately does not start with a
+      # dot. That default is the P3-10 fault verbatim — `.backups` was never uploaded, and "no files
+      # were found" read as a symptom of a different bug for five runs.
+      #
+      # Screenshots matter here specifically because `extractText.test.ts` runs in real Chrome: a
+      # failure there writes a picture of the page at the moment it broke, which is the one piece of
+      # evidence that cannot be reconstructed after the runner is torn down.
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-test-report
+          path: |
+            frontend/test-results/
+            frontend/.vitest-attachments/
+            frontend/src/**/__screenshots__/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
 
       # The build is part of the gate, not a deploy step: `tsc --noEmit` passing does not prove Vite
       # can actually bundle the thing, and the first place that would surface is a deploy — which,
