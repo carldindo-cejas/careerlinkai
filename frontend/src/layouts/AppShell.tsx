@@ -8,6 +8,7 @@ import { cn } from '@/components/ui/cn';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { useLogout } from '@/features/auth/hooks/useAuth';
 import { NotificationBell } from '@/features/notifications/components/NotificationBell';
+import { BackButton } from '@/routes/BackButton';
 import { useAuthStore } from '@/stores/authStore';
 
 export interface AppNavItem {
@@ -151,6 +152,16 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
             that is not focusable moves the *scroll* position and leaves the focus ring back on the
             link, so the next Tab returns to the navigation the student just skipped. */}
         <main id="main-content" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 p-4 focus-visible:outline-none sm:p-6">
+          {/*
+            One step back, above the page and inside the content column so it lines up with the
+            page's own heading. It sits here rather than in the top bar because the top bar is
+            sticky chrome that belongs to the session — where you are — and this belongs to the
+            page. On a dashboard it renders nothing, margin included.
+
+            It is deliberately *after* the skip-link target: a keyboard user who skips the
+            navigation lands on the shortest way out of the screen they just skipped into.
+          */}
+          <BackButton className="mb-4" />
           <Outlet />
         </main>
       </div>

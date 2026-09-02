@@ -3,6 +3,7 @@ import { Link, Outlet } from 'react-router-dom';
 import { BrandArt } from '@/components/brand/BrandArt';
 import { Logo } from '@/components/brand/Logo';
 import { FadeIn } from '@/components/motion/FadeIn';
+import { BackButton } from '@/routes/BackButton';
 import { paths } from '@/routes/paths';
 
 /**
@@ -22,6 +23,10 @@ export function StudentAccessLayout() {
         <Link to={paths.landing} className="focus-visible:outline-none">
           <Logo />
         </Link>
+
+        {/* One step back, above the card and aligned to its left edge. Default tone — the student's
+            panel is the light one. */}
+        <BackButton className="relative w-full max-w-md" />
 
         <FadeIn className="w-full max-w-md">
           <Outlet />

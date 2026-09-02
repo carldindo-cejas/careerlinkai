@@ -562,13 +562,13 @@ builderRoutes.post('/assessment-versions/:versionId/questions', async (c) => {
   const user = requireUser(c);
   const { version } = await authorizedVersion(builder, user, c.req.param('versionId'));
 
-  const existingCount = await builder.questionCount(version.id);
-
-  const questions: CreateQuestionInput[] = input.questions.map((question, index) => ({
+  // No `orderNumber` here: the Service appends from `MAX + 1` in array order. This route used to
+  // compute `COUNT + 1` itself, which is the same number only while the numbering is gapless and a
+  // collision the day it is not — see `CreateQuestionInput` (ASSESSMENT-FIX §4).
+  const questions: CreateQuestionInput[] = input.questions.map((question) => ({
     questionText: question.question_text,
     questionType: question.question_type,
     sectionLabel: question.section_label ?? null,
-    orderNumber: existingCount + index + 1,
     required: question.required ?? true,
     source: 'MANUAL',
     options: question.options.map((option, optionIndex) => ({
@@ -676,7 +676,7 @@ builderRoutes.delete('/assessment-questions/:questionId', async (c) => {
   const user = requireUser(c);
   const question = await authorizedQuestion(builder, user, c.req.param('questionId'));
 
-  await builder.deleteQuestion(question.id);
+  await builder.deleteQuestion(user, question.id);
 
   return c.json(successEnvelope({ id: question.id }, 'Question removed.'));
 });

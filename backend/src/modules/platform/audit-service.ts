@@ -125,6 +125,11 @@ export type AuditAction =
   // per mapping because the gate's promise is that *someone looked at each one* — this row
   // is who, and when.
   | 'QUESTION_DIMENSION_CONFIRMED'
+  // Removing an item from a DRAFT version (ASSESSMENT-FIX §7). No student is affected — a draft has
+  // no attempts — but it is a real authoring decision by an identifiable person, and it was the one
+  // mutator in the builder that left no trace of itself. The row carries the text that was removed,
+  // because "what was question 12 before you deleted it" is otherwise unanswerable.
+  | 'ASSESSMENT_QUESTION_DELETED'
   | 'ASSESSMENT_PUBLISHED'
   | 'ASSESSMENT_ASSIGNED'
   | 'ASSESSMENT_ASSIGNMENT_CLOSED'
@@ -267,6 +272,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   ASSESSMENT_TEMPLATE_RESTORED: 'RESTORE',
   ASSESSMENT_TEMPLATE_DELETED: 'DELETE',
   QUESTION_DIMENSION_CONFIRMED: 'UPDATE',
+  ASSESSMENT_QUESTION_DELETED: 'DELETE',
   ASSESSMENT_PUBLISHED: 'PUBLISH',
   ASSESSMENT_ASSIGNED: 'ASSIGN',
   /** Closing an assignment retires it without deleting it — the same shape as archiving. */
