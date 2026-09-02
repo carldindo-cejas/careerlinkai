@@ -1,6 +1,6 @@
-import { ArrowLeft, ChevronDown, Loader2 } from 'lucide-react';
+import { ChevronDown, Loader2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 
 import { StudentRecommendationLists } from '@/components/recommendations/StudentRecommendationLists';
 import { CounselorClassesPanel } from '@/features/admin/components/CounselorClassesPanel';
@@ -11,7 +11,6 @@ import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/ca
 import { cn } from '@/components/ui/cn';
 import { Input } from '@/components/ui/input';
 import { useCounselorStudents } from '@/features/admin/hooks/usePlatformAdmin';
-import { paths } from '@/routes/paths';
 import type { CounselorStudentRow } from '@/types/platform';
 
 /**
@@ -93,18 +92,13 @@ export function CounselorDetailPage() {
   }
 
   if (isError) {
-    return (
-      <div className="flex flex-col gap-4">
-        <BackLink />
-        <Alert>We could not load this counselor’s students. {error.message}</Alert>
-      </div>
-    );
+    return <Alert>We could not load this counselor’s students. {error.message}</Alert>;
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <BackLink />
-
+      {/* "All counselors" used to sit here and in the error branch above; the shell's back control
+          (AppShell) now stands one step above every page, error state included. */}
       <div>
         <h1 className="text-xl font-semibold text-foreground">{data.counselor.name}</h1>
         <p className="text-sm text-muted-foreground">
@@ -218,18 +212,6 @@ export function CounselorDetailPage() {
         </>
       )}
     </div>
-  );
-}
-
-function BackLink() {
-  return (
-    <Link
-      to={paths.adminCounselors}
-      className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-    >
-      <ArrowLeft className="size-4" aria-hidden="true" />
-      All counselors
-    </Link>
   );
 }
 

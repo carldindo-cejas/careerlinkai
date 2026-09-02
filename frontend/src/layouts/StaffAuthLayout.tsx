@@ -3,6 +3,7 @@ import { Link, Outlet } from 'react-router-dom';
 import { BrandArt } from '@/components/brand/BrandArt';
 import { Logo } from '@/components/brand/Logo';
 import { FadeIn } from '@/components/motion/FadeIn';
+import { BackButton } from '@/routes/BackButton';
 import { paths } from '@/routes/paths';
 
 /**
@@ -65,6 +66,10 @@ export function StaffAuthLayout() {
         <Link to={paths.landing} className="focus-visible:outline-none lg:hidden">
           <Logo wordmarkClassName="text-sidebar-active-foreground" />
         </Link>
+
+        {/* One step back, above the card and aligned to its left edge — `max-w-md` is the card's
+            own width. Inverted, because this panel is the navy one. */}
+        <BackButton tone="inverted" className="relative w-full max-w-md" />
 
         {/* The plate the card floats on. Cards are transparent line-drawings everywhere else,
             because everywhere else they sit on the light ground and their ink reads against it.

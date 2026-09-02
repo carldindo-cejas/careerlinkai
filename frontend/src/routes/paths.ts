@@ -92,6 +92,9 @@ export function resultPath(attemptId: string): string {
  *
  * Absent state is not an error: a student who typed the URL or opened a bookmark gets the
  * "Back to assessments" default and nothing broken.
+ *
+ * The shell-wide back control reads this same shape (`routes/back.ts`), so a screen that already
+ * hands it over now names the origin in two places without being changed.
  */
 export interface ResultPageState {
   from: string;

@@ -1,6 +1,6 @@
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -11,7 +11,6 @@ import { JoinCodeCard } from '@/features/counselor/components/JoinCodeCard';
 import { RosterBuilder } from '@/features/counselor/components/RosterBuilder';
 import { RosterTable } from '@/features/counselor/components/RosterTable';
 import { useClass } from '@/features/counselor/hooks/useClasses';
-import { paths } from '@/routes/paths';
 
 /**
  * One class: its code, its roster, and the roster builder (FULLPLAN §57, Phase 1A/1B).
@@ -35,19 +34,14 @@ export function ClassDetailPage() {
   }
 
   if (isError) {
-    return (
-      <div className="flex flex-col gap-4">
-        <BackLink />
-        <Alert>{error.message}</Alert>
-      </div>
-    );
+    return <Alert>{error.message}</Alert>;
   }
 
   return (
     <div className="flex flex-col gap-6">
+      {/* "All classes" used to sit here and in the error branch above; the shell's back control
+          (AppShell) now stands one step above every page, error state included. */}
       <div className="flex flex-col gap-2">
-        <BackLink />
-
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-semibold text-foreground">{classRoom.name}</h1>
           <Badge tone={classRoom.status === 'active' ? 'success' : 'neutral'}>
@@ -92,14 +86,3 @@ export function ClassDetailPage() {
   );
 }
 
-function BackLink() {
-  return (
-    <Link
-      to={paths.counselorClasses}
-      className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-    >
-      <ArrowLeft className="size-4" aria-hidden="true" />
-      All classes
-    </Link>
-  );
-}
