@@ -1,7 +1,5 @@
-import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { Navigate } from 'react-router-dom';
-import { z } from 'zod';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -11,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useJoinClass } from '@/features/student/hooks/useStudentAccess';
 import { homePathForRole } from '@/routes/paths';
+import type { JoinClassPayload } from '@/services/studentAccessApi';
 import { useAuthStore } from '@/stores/authStore';
 import { ApiRequestError } from '@/types/api';
 
@@ -27,14 +26,31 @@ import { ApiRequestError } from '@/types/api';
  * student, deactivated account — precisely so the endpoint cannot be used to work out which
  * codes exist or who is on a roster. Client-side rules that reject a code before it is sent
  * would answer that same question for free, so they are not written.
+ *
+ * **And that thinness is why this screen uses react-hook-form's own rules rather than a Zod
+ * resolver (P4-16).** Two required checks and two length caps is the entire ruleset, and Zod
+ * cost 61 KiB to express it — on the one screen in the app a student reaches before they have
+ * signed in to anything, often on a phone on school wifi. Zod is untouched everywhere it earns
+ * its place; a schema library is worth its weight for the assessment builder's nested question
+ * payloads and worth nothing here.
+ *
+ * The caps are the only rules that are not "is it empty", and they exist to bound what gets put
+ * on the wire, not to help the user — a real class code is 9 characters and a real username is
+ * far under 50, so nobody reaching them has typed something that could have succeeded.
  */
 
-const accessSchema = z.object({
-  class_code: z.string().min(1, 'Enter your class code.').max(20),
-  username: z.string().min(1, 'Enter your username.').max(50),
-});
+const RULES = {
+  class_code: {
+    required: 'Enter your class code.',
+    maxLength: { value: 20, message: 'That class code is too long.' },
+  },
+  username: {
+    required: 'Enter your username.',
+    maxLength: { value: 50, message: 'That username is too long.' },
+  },
+} as const;
 
-type AccessFormValues = z.infer<typeof accessSchema>;
+type AccessFormValues = JoinClassPayload;
 
 export function StudentAccessPage() {
   const user = useAuthStore((state) => state.user);
@@ -45,7 +61,6 @@ export function StudentAccessPage() {
     handleSubmit,
     formState: { errors },
   } = useForm<AccessFormValues>({
-    resolver: zodResolver(accessSchema),
     defaultValues: { class_code: '', username: '' },
   });
 
@@ -94,7 +109,7 @@ export function StudentAccessPage() {
                 errors.class_code && 'class-code-error',
                 codeServerError && 'class-code-server-error',
               )}
-              {...register('class_code')}
+              {...register('class_code', RULES.class_code)}
             />
             {errors.class_code ? (
               <FieldError id="class-code-error">{errors.class_code.message}</FieldError>
@@ -114,7 +129,7 @@ export function StudentAccessPage() {
               className="font-mono"
               aria-invalid={Boolean(errors.username)}
               aria-describedby={describedBy(errors.username && 'username-error')}
-              {...register('username')}
+              {...register('username', RULES.username)}
             />
             {errors.username ? (
               <FieldError id="username-error">{errors.username.message}</FieldError>

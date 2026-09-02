@@ -107,6 +107,44 @@ h1, h2, h3, h4, h5, h6 {
   letter-spacing: -0.005em;
 }
 
+/**
+ * The one entrance animation the app uses (design brief: subtle, never showy).
+ *
+ * This was Framer Motion until P4-15. Three components use it and the library cost **121 KiB**
+ * to fade a div — on `/join`, which is the student's first screen and the one most likely to be
+ * opened on a phone in a computer lab. Framer Motion stays in the project for the assessment
+ * builder's drag-and-drop reorder (`QuestionWorkspace`), which is real animation work no
+ * stylesheet can do; it is no longer on the sign-in path.
+ *
+ * **Only `from` is declared, and that is the safety property, not a shorthand.** The implicit
+ * `to` is the element's own computed style, so the un-animated state *is* the finished state:
+ * a browser that never runs the animation, a reduced-motion user, a printed page or a screenshot
+ * taken mid-delay all show the content. The failure mode of the obvious spelling — `opacity: 0`
+ * in a base rule, restored by the animation — is a permanently blank panel if the animation does
+ * not run, which is a worse bug than the one being fixed.
+ *
+ * `backwards` holds the `from` state during `animation-delay`, so a staggered sibling does not
+ * flash in at full opacity before its turn. That is what Framer Motion's `delay` did.
+ */
+@keyframes fade-in-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.fade-in-rise {
+  animation: fade-in-rise 0.35s ease-out backwards;
+}
+
+/* The `useReducedMotion()` hook this replaces read the same OS setting, one render later and
+   only if JavaScript had already run. The media query needs neither. */
+@media (prefers-reduced-motion: reduce) {
+  .fade-in-rise {
+    animation: none;
+  }
+}
+
 /* Keyboard focus is the accent ring, never the browser blue. */
 :focus-visible {
   outline: 2px solid var(--ring);

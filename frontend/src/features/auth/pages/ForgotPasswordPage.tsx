@@ -14,13 +14,23 @@ import { paths, resetPasswordPath } from '@/routes/paths';
 import type { ApiSuccess } from '@/types/api';
 
 /**
- * Forgot password (deviation D7 — Phase 6, in its honest shape).
+ * Forgot password (deviation D7 — closed on the delivery side by plan P4-2).
  *
- * v1 has no email channel (§5 defers email/SMS/push entirely), so there is no link to send.
- * The server acknowledges every request identically; in local development it also returns
- * the reset token so the flow is exercisable end to end, and this page surfaces that. In
- * staging/production the acknowledgement tells the staff member to contact an administrator
- * — which is the truth, not a placeholder for it.
+ * The server acknowledges every request identically, whether or not the address is registered
+ * (§38's anti-enumeration guarantee); in local development it also returns the reset token, so the
+ * flow is exercisable end to end, and this page surfaces that.
+ *
+ * **This screen cannot tell you whether the email arrived, and that is deliberate on two counts.**
+ * The response is identical for a registered and an unregistered address by design — and even for a
+ * real account, delivery is genuinely not guaranteed: the project runs on the Cloudflare Free plan
+ * (FULLPLAN §45, ratified), which delivers only to *verified destination addresses*, so a staff
+ * mailbox that has not been through that one-time step gets nothing. The admin-relay reset (C2)
+ * remains the fallback.
+ *
+ * So the copy below is written to be **true in every one of those states at once**. It must not say
+ * "check your email" (a lie when delivery was refused) and must not say "contact your
+ * administrator" as the only route (wrong once the address is verified). Both are offered, neither
+ * is promised, and nothing here reveals which case the reader is in.
  */
 
 const forgotSchema = z.object({
@@ -64,10 +74,10 @@ export function ForgotPasswordPage() {
     return (
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Check with your administrator</CardTitle>
+          <CardTitle>Reset requested</CardTitle>
           <CardDescription>
             If <span className="font-medium">{submitted.email}</span> is a registered staff
-            account, a password reset has been prepared for it.
+            account, a reset link has been sent to it.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -84,8 +94,9 @@ export function ForgotPasswordPage() {
             </Alert>
           ) : (
             <p className="text-sm text-muted-foreground">
-              CareerLinkAI does not send email. An administrator completes the reset and gives
-              you the reset code — once you have it, use the link below.
+              Not every staff address can receive mail from CareerLinkAI yet. If nothing arrives
+              within a few minutes, ask an administrator to complete the reset — they can give you
+              a reset code to use with the link below.
             </p>
           )}
 

@@ -262,8 +262,8 @@ chasing.
 
 ## 8. Operational settings that live in the dashboard, not in this repository
 
-Two things the code deliberately does not — and cannot — do for itself. Both are one-time setup on a
-deployed environment, and neither shows a symptom when it is missing, which is why they are written
+Three things the code deliberately does not — and cannot — do for itself. All are one-time setup on a
+deployed environment, and none shows a symptom when it is missing, which is why they are written
 down rather than left as folklore.
 
 ### 8.1 A WAF rate-limiting rule for unauthenticated traffic (audit S2)
@@ -309,3 +309,140 @@ app entirely (email, or a webhook).
 Neither alert path can tell you *why* a job failed. That is the `Queue job failed.` line from the
 source-queue consumer, three attempts earlier, which carries the error message and the correlation
 id.
+
+### 8.3 The Resend account and domain that make password-reset email work (plan P4-2)
+
+`/auth/forgot-password` emails the reset link (`src/modules/platform/email-service.ts`). Whether
+anyone receives it is decided outside this repository, and **the default state is that nobody does.**
+
+**Why Resend rather than Cloudflare's own Email Sending.** Cloudflare sends to arbitrary recipients
+only on Workers Paid, which FULLPLAN §45 rules out as a ratified requirement; its free path reaches
+*verified destination addresses* only — one dashboard round-trip per staff mailbox, which is not
+self-service reset in any meaningful sense. Resend's free tier is 3,000 emails/month and 100/day
+across **one** verified domain, reaches any recipient, and leaves Cloudflare on the Free plan because
+it is external to the platform. The cost is that this introduces the system's **only credential** —
+see `wrangler.toml`'s `[vars]` note, which used to claim there were none.
+
+**One-time setup:**
+
+> **1. Verify the domain.** resend.com → **Domains** → **Add Domain** → `careerlinkai.online`.
+> Resend shows a set of SPF and DKIM records to add.
+>
+> **2. Add those records in Cloudflare DNS — every one of them set to `DNS only` (grey cloud).**
+> A proxied DKIM `CNAME` fails verification and the error does not say why. This is the single most
+> common way this setup silently does not work.
+>
+> **3. Create a sending API key** scoped to `careerlinkai.online`, then store it as a secret —
+> never a `[vars]` entry, which a platform gate enforces on all four wrangler configs:
+>
+> ```bash
+> npx wrangler secret put RESEND_API_KEY --env production
+> npx wrangler secret put RESEND_API_KEY --env staging
+> ```
+>
+> Paste at the interactive prompt. **Do not** pipe it (`echo "…" | wrangler secret put`): PowerShell
+> appends a newline that `gh`/`wrangler` read as part of the value, which is exactly the fault that
+> cost P3-10 six wrong diagnoses.
+
+### 8.3.1 The other half nobody had written down: the staff mailboxes must be able to *receive*
+
+Steps 1–3 are the **sending** side, and completing all three still leaves the feature at zero. That
+is not a hypothetical — it is the state this project was actually in on 2026-08-01: domain verified,
+DKIM and SPF published, key set in both environments, code deployed. And every reset link would have
+bounced.
+
+`careerlinkai.online` had **no MX records at all**. The two seeded staff accounts are
+`admin@careerlinkai.online` and `counselor@careerlinkai.online`, so the only two addresses that
+could use self-service reset were on a domain that could not accept mail. Cloudflare Email Routing
+was `enabled: false`, `status: unconfigured`, with zero destination addresses and a catch-all rule
+that was disabled *and* set to `drop`.
+
+**The failure is silent in the one place you would look.** Resend accepts the message, returns an
+id, and the Worker logs `password_reset_email.sent` — because from the sender's side it *was* sent.
+The bounce happens downstream at a mail server this system never talks to. `sent` means "Resend
+accepted it", **not** "a human received it", and no amount of reading Workers Logs will tell you the
+difference. This is the exact shape of the P3-10 backup fault: a green signal from the component
+that was working, standing in for an end-to-end claim nobody had tested.
+
+**Fix — Cloudflare Email Routing, which is free and needs no paid plan** (unlike Email *Sending*,
+which is why §45 is not violated here):
+
+> **4. Enable Email Routing and add a verified destination.** Cloudflare dashboard → the zone →
+> **Email** → **Email Routing**. Add a destination address you actually read and confirm it. An
+> address that is the Cloudflare account owner's own is verified automatically; any other one gets a
+> confirmation email that must be clicked.
+>
+> **5. Set a *catch-all* rule, not per-address rules.** Forward `*@careerlinkai.online` to that
+> destination. Per-address rules would cover `admin@` and `counselor@` and silently fail for **every
+> counselor created afterwards** — and a counselor is created through the admin UI, by someone who
+> will never think to come back here and add a routing rule. The catch-all is what makes the feature
+> work for staff who do not exist yet.
+
+Enabling routing adds root `MX` records (`route1/2/3.mx.cloudflare.net`) and a root SPF TXT
+(`v=spf1 include:_spf.mx.cloudflare.net ~all`). **Neither disturbs Resend**, and the reason is worth
+stating because it looks like it should: Resend sends with a custom return-path of
+`send.careerlinkai.online`, so SPF is evaluated against *that* subdomain's
+`include:amazonses.com` — the root record is not consulted for outbound mail. DKIM stays at
+`resend._domainkey.careerlinkai.online` with `d=careerlinkai.online`, which aligns with the `From:`
+header, so DMARC alignment passes on the DKIM leg. The zone's `A` records are untouched, so the
+Worker keeps serving the site.
+
+A quicker way to check all of this than any dashboard:
+
+```bash
+# receiving (added by step 4) — must not be empty
+nslookup -type=MX careerlinkai.online 1.1.1.1
+# sending (added by step 2) — must both survive step 4
+nslookup -type=TXT resend._domainkey.careerlinkai.online 1.1.1.1
+nslookup -type=TXT send.careerlinkai.online 1.1.1.1
+```
+
+**What it looks like before that is done, and why it is not a bug.** With no key the Worker logs
+`{"message":"password_reset_email.skipped","reason":"not_configured"}` and never touches the
+network. With a key but an unverified domain, Resend answers `403` and the Worker logs
+
+```json
+{ "level": "warn", "message": "password_reset_email.rejected", "code": "403",
+  "detail": "The careerlinkai.online domain is not verified." }
+```
+
+In both cases the request still returns its normal `200` with the usual generic acknowledgement.
+That is deliberate: `/auth/forgot-password` answers a registered and an unregistered address
+identically (§38), so a failure that changed the response would be an account-enumeration oracle
+built out of an error handler — `test/auth/password-reset-email.test.ts` fails if anyone
+reintroduces one, and that assertion has been proven red by mutation. The staff member falls back to
+the admin-initiated reset (C2, `POST /admin/counselors/:id/reset-password`), which is the path that
+has always been in use, and the sign-in screen's copy says so without promising email that may not
+come.
+
+Filter Workers Logs on `pipeline = "password_reset_email"` for which of `sent`, `rejected`,
+`unreachable` or `skipped` a request produced. `rejected` carries Resend's own sentence, which is
+the whole diagnostic value of the response; `unreachable` means the transport failed rather than
+Resend refusing, and wants a different answer. **No line ever carries the token or the link** — a
+reset URL is a live credential for the hour it is valid, and Workers Logs has a longer life and a
+wider audience than the mailbox it was addressed to.
+
+**Status 2026-08-01: the send is witnessed; the delivery is one step short of it.**
+
+All five steps are done on production. A real `POST /auth/forgot-password` against
+`careerlinkai.online` produced, in Workers Logs:
+
+```json
+{ "level": "info", "message": "password_reset_email.sent",
+  "pipeline": "password_reset_email",
+  "user_id": "db6c64a3-d93b-48ce-96e0-b1889f46c4b1",
+  "message_id": "049f7ab2-4aa9-42d6-946a-466aec62b7d6" }
+```
+
+That line retires most of what was unknown, and it is worth being precise about which parts. A
+`sent` **cannot** be produced by a bad key, an unverified domain, or a malformed `from` — each of
+those is a non-2xx that the module reports as `rejected` with Resend's own sentence attached. So the
+key is valid, `careerlinkai.online` **is** verified at Resend, and the message was accepted with an
+id. `/reset-password` was separately confirmed to serve the SPA on production, so the link in the
+body is not a 404.
+
+**What it does not prove, and what §8.3.1 exists because of:** `sent` is Resend accepting the
+message, not a mailbox receiving it. The last claim in the chain — a link arriving in an inbox and
+opening the reset screen — is the one thing no log line in this system can make, and it is exactly
+the claim P3-10 spent five runs believing on the strength of a green signal from one component.
+Treat "a human clicked the link and changed their password" as unwitnessed until someone has.

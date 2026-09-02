@@ -27,6 +27,12 @@ wrangler.drill.toml
 frontend/.vitest-attachments/
 **/__screenshots__/
 
+# `npm run test:capture` — the machine-readable run report, for chasing intermittent failures. Not
+# a dot-directory on purpose: `upload-artifact@v4` skips hidden paths unless `include-hidden-files`
+# is set, and "no files were found" is indistinguishable from "nothing failed" (the fault that cost
+# P3-10 five runs of misattribution).
+frontend/test-results/
+
 # Editor / OS
 .DS_Store
 Thumbs.db

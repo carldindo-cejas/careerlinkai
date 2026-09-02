@@ -126,15 +126,40 @@ describe('auto-save', () => {
     await user.clear(field);
     await user.type(field, 'Reworded item.');
 
-    await waitFor(
-      () => expect(builderApi.updateQuestion).toHaveBeenCalledTimes(1),
-      { timeout: 3000 },
+    /**
+     * **Wait for the save carrying the final text — not for "a call".**
+     *
+     * The previous spelling waited on `toHaveBeenCalledTimes(1)` and then asserted the payload
+     * separately, which is a race the machine decides. `clear()` starts the `DEBOUNCE_MS` window;
+     * on a loaded machine the typing can outlast it, at which point the product correctly saves the
+     * *empty* field, the count reaches one, the wait is satisfied by that save, and the payload
+     * assertion reads a request nobody was describing. Reproduced exactly that way under load —
+     * `question_text: ""` where `"Reworded item."` was expected. The product was right and the test
+     * was measuring the clock.
+     *
+     * Fake timers were tried first and abandoned: freezing `setTimeout` deadlocks the render, with
+     * or without `delay: null` on userEvent, and a test that hangs for fifteen seconds is a worse
+     * instrument than one that waits.
+     *
+     * `toHaveBeenLastCalledWith` is the stale-closure guard the doc comment above asks for: whatever
+     * else was sent on the way, the edit must *settle* on the text as it finally stood.
+     */
+    await waitFor(() =>
+      expect(builderApi.updateQuestion).toHaveBeenLastCalledWith(
+        'qq000000-0000-4000-8000-000000000001',
+        expect.objectContaining({ question_text: 'Reworded item.' }),
+      ),
     );
 
-    expect(builderApi.updateQuestion).toHaveBeenCalledWith(
-      'qq000000-0000-4000-8000-000000000001',
-      expect.objectContaining({ question_text: 'Reworded item.' }),
-    );
+    /**
+     * And the coalescing half: fourteen keystrokes did not become fourteen requests.
+     *
+     * Deliberately not `toBe(1)`. A pause longer than `DEBOUNCE_MS` mid-edit makes an extra save
+     * *correct* — that is what the debounce is for — and pinning the exact count is precisely what
+     * made this test flaky. A per-keystroke implementation lands at fourteen or more and still
+     * fails this decisively, which is the regression the assertion exists to catch.
+     */
+    expect(vi.mocked(builderApi.updateQuestion).mock.calls.length).toBeLessThan(5);
   });
 
   it('shows unsaved, then saved', async () => {

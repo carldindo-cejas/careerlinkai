@@ -24,6 +24,21 @@ export interface Env {
   AUTH_DO: DurableObjectNamespace<AuthGuardDO>;
   QUEUE_DEFAULT: Queue;
   QUEUE_AI: Queue;
+  // Secrets — set with `wrangler secret put`, never in a [vars] block (a platform gate enforces
+  // that). This is the **only** credential in the system, and its existence is the one exception
+  // to the "no secrets, only bindings" rule the file below used to state without qualification.
+  /**
+   * Transactional email via Resend (plan P4-2, deviation D7) — **optional, and optional on
+   * purpose.**
+   *
+   * Undefined in local development and throughout the test suite, which is what keeps the suite
+   * hermetic: with no key the sender returns `not_configured` before it can reach for the network,
+   * so no test can accidentally dial `api.resend.com` even if a stub fails to install.
+   *
+   * Nothing in the product may branch a *response* on whether this key exists. Its absence degrades
+   * password reset to the admin-relay path (C2). See `modules/platform/email-service.ts`.
+   */
+  RESEND_API_KEY?: string;
   /**
    * The built React app (`frontend/dist`), served by this same Worker.
    *
@@ -41,6 +56,14 @@ export interface Env {
   // parsed at the point of use (see src/lib/config.ts).
   APP_ENV: string;
   FRONTEND_URL: string;
+  /**
+   * The `from` address on transactional mail (P4-2). A var rather than a constant because the
+   * sending domain and the *serving* domain are not the same thing: staging is served from a
+   * `workers.dev` subdomain, which Resend cannot verify, so every scope sends from the one domain
+   * that is verified — `careerlinkai.online`. Resend's free tier allows exactly one domain, which
+   * makes that a hard constraint rather than a convention.
+   */
+  EMAIL_FROM: string;
   WORKERS_AI_TEXT_MODEL: string;
   WORKERS_AI_EMBEDDING_MODEL: string;
   STUDENT_JOIN_CODE_TTL_DAYS: string;
