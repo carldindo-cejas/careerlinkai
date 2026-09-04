@@ -201,6 +201,41 @@ describe('offDomainKind — what this assistant declines', () => {
     expect(offDomainKind('how much is tuition at that college?')).toBeNull();
     expect(offDomainKind('what strand should I take for BSCS?')).toBeNull();
   });
+
+  /**
+   * Added 2026-09-05 from a production session. The first cut of these patterns caught *crisis*
+   * vocabulary and missed the register students in career guidance actually use — this exact
+   * message fell through to retrieval, failed the grounding contract, and answered a frightened
+   * student with "I don't have anything in the school's guidance materials that answers that."
+   *
+   * Family pressure and fear about the future are the ordinary emotional content of this product,
+   * not the exceptional case.
+   */
+  it('routes ordinary student distress, not only crisis language', () => {
+    expect(
+      offDomainKind('my parents will be angry if I dont pick engineering and I am very stressed'),
+    ).toBe('PERSONAL');
+    expect(offDomainKind('i am so overwhelmed by all of this')).toBe('PERSONAL');
+    expect(offDomainKind('my parents are forcing me to take nursing')).toBe('PERSONAL');
+    expect(offDomainKind('my mom wont let me take fine arts')).toBe('PERSONAL');
+    expect(offDomainKind('takot ako na hindi ako makapasa')).toBe('PERSONAL');
+  });
+
+  /**
+   * The other half of that change, and the one that keeps it honest.
+   *
+   * Every word above also appears in questions this assistant exists to answer. The guard is
+   * anchored on the student describing *themselves*: "I am stressed" is a person asking for help,
+   * "is nursing stressful?" is a career question, and deflecting the second to a counsellor would
+   * be a worse product sold as a safer one. A parent merely *wanting* something is likewise a
+   * question with family context, not a crisis.
+   */
+  it('does not deflect a career question that merely contains a feeling word', () => {
+    expect(offDomainKind('is nursing a stressful job?')).toBeNull();
+    expect(offDomainKind('are engineers usually stressed at work?')).toBeNull();
+    expect(offDomainKind('my parents want me to take nursing, is it a good match?')).toBeNull();
+    expect(offDomainKind('which careers have the least pressure?')).toBeNull();
+  });
 });
 
 describe('answerableFromResults — narrowing the zero-retrieval path (D7)', () => {

@@ -302,8 +302,53 @@ export type OffDomain = 'HOMEWORK' | 'PERSONAL';
 const HOMEWORK_PATTERNS =
   /\b(?:solve|compute|calculate|simplify|factor(?:ise|ize)?|derive|integrate|differentiate)\b[^.?!]{0,40}?\b(?:equation|problem|expression|answer|for x|for y)\b|\bwrite\b(?:\s+\w+){0,3}?\s+(?:essay|poem|reaction paper|reflection|code|program)\b|\bmy (?:homework|assignment|thesis|research paper|project)\b|\bgawin mo\b[^.?!]{0,30}\b(?:assignment|homework|takdang aralin)\b/i;
 
-const PERSONAL_PATTERNS =
-  /\bi(?:'m| am)?\s+(?:feel|feeling|felt)?\s*(?:so|really|very|super|sobrang)?\s*(?:depressed|hopeless|worthless|suicidal)\b|\b(?:kill myself|end my life|self[- ]harm|hurt myself|want to die|ayoko na mabuhay)\b|\bmy (?:parents|mom|dad|family) (?:hate|beat|hit|are divorcing)\b|\b(?:bullied|bullying) (?:me|at school)\b/i;
+/**
+ * How a student says they are feeling, matched **only where they are describing themselves**.
+ *
+ * The anchor is the whole design. "Is nursing a stressful job?" is an ordinary career question and
+ * must be answered; "I am so stressed" is a person asking for help and must reach one. Both
+ * contain the same root, and only the self-reference separates them — so these words are never
+ * matched bare.
+ */
+const DISTRESS_WORDS =
+  'depressed|hopeless|worthless|suicidal|stressed|stressed out|anxious|overwhelmed|scared|terrified|panicking|panicky|crying|burnt out|burned out|breaking down|falling apart|losing it';
+
+/**
+ * Questions that are really a person in difficulty (§34, Phase 3).
+ *
+ * Extended 2026-09-05 after a production session. The first cut caught *crisis* vocabulary —
+ * self-harm, abuse, "I am hopeless" — and missed the register students in career guidance actually
+ * use. A real message, *"my parents will be angry if I dont pick engineering and I am very
+ * stressed"*, fell straight through to retrieval, failed the grounding contract, and answered a
+ * frightened seventeen-year-old with *"I don't have anything in the school's guidance materials
+ * that answers that."*
+ *
+ * Family pressure and fear about the future are the **ordinary** emotional content of this
+ * product, not the exceptional case, so the ordinary words for them belong here. The additions
+ * stay deliberately asymmetric: self-directed feeling always counts, whereas a parent merely
+ * *wanting* something does not — "my parents want me to take nursing, is it a good match?" is a
+ * career question with family context and answering it is the right thing to do. Only phrasing
+ * that states a conflict ("will be angry", "are forcing me", "won't let me") is treated as
+ * distress.
+ */
+const PERSONAL_PATTERNS = new RegExp(
+  [
+    // "I am so stressed", "I feel hopeless", "I'm really scared"
+    String.raw`\bi(?:'m| am)?\s+(?:feel|feeling|felt|get|got)?\s*(?:so|really|very|super|sobrang|too|always)?\s*(?:${DISTRESS_WORDS})\b`,
+    // Crisis language, unchanged.
+    String.raw`\b(?:kill myself|end my life|self[- ]harm|hurt myself|want to die|ayoko na mabuhay)\b`,
+    // Home, where it states a conflict rather than a preference.
+    String.raw`\bmy (?:parents|mom|dad|mother|father|family) (?:hate|beat|hit|are divorcing)\b`,
+    String.raw`\bmy (?:parents|mom|dad|mother|father|family) (?:will |are |would )?(?:be |get |getting )?(?:angry|mad|furious|disappointed|upset)\b`,
+    String.raw`\bmy (?:parents|mom|dad|mother|father|family) (?:are |is )?(?:forcing|pressuring|pushing)\b`,
+    String.raw`\bmy (?:parents|mom|dad|mother|father|family) (?:wo|do|does)n(?:'|)t (?:let|approve|allow|support)\b`,
+    String.raw`\b(?:forcing|pressuring|pressured) me\b`,
+    String.raw`\b(?:bullied|bullying) (?:me|at school)\b`,
+    // Filipino, in the same two registers.
+    String.raw`\b(?:takot ako|natatakot ako|pagod na ako|stress(?:ed)? ako|nag-?aalala ako|iyak)\b`,
+  ].join('|'),
+  'i',
+);
 
 export function offDomainKind(question: string): OffDomain | null {
   if (PERSONAL_PATTERNS.test(question)) {
