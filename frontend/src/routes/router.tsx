@@ -62,6 +62,7 @@ const AiPolicyPage = admin('AiPolicyPage');
 const CounselorManagementPage = admin('CounselorManagementPage');
 const CounselorDetailPage = admin('CounselorDetailPage');
 const AuditLogPage = admin('AuditLogPage');
+const PlatformUsagePage = admin('PlatformUsagePage');
 
 const CounselorLayout = counselor('CounselorLayout');
 const CounselorDashboardPage = counselor('CounselorDashboardPage');
@@ -152,6 +153,7 @@ export function AppRoutes() {
             <Route path={paths.adminAssessmentTemplates} element={<AssessmentManagementPage />} />
             <Route path={paths.adminAssessmentTemplate} element={<TemplateBuilderPage />} />
             {/* Phase 6 (§20, §37): counselor accounts and the audit trail. */}
+            <Route path={paths.adminPlatformUsage} element={<PlatformUsagePage />} />
             <Route path={paths.adminCounselors} element={<CounselorManagementPage />} />
             {/* Prompt-driven: one counselor's students, Holland codes, and top recommendations. */}
             <Route path={paths.adminCounselorDetail} element={<CounselorDetailPage />} />

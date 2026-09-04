@@ -38,6 +38,8 @@ export const paths = {
   adminCounselors: '/admin/counselors',
   // Prompt-driven: a counselor's assigned students, with their Holland Code and top recommendations.
   adminCounselorDetail: '/admin/counselors/:counselorId',
+  /** What this deployment is spending of the Cloudflare free plan, and what it cannot measure. */
+  adminPlatformUsage: '/admin/platform-usage',
   adminAuditLog: '/admin/audit-log',
   // Phase 5b (§31, §35): the builder + AI generator, in the admin shell.
   adminAssessmentTemplates: '/admin/assessment-templates',

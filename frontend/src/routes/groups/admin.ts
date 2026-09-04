@@ -19,4 +19,5 @@ export { AiInsightsPage } from '@/features/admin/pages/AiInsightsPage';
 export { AiPolicyPage } from '@/features/admin/pages/AiPolicyPage';
 export { CounselorManagementPage } from '@/features/admin/pages/CounselorManagementPage';
 export { CounselorDetailPage } from '@/features/admin/pages/CounselorDetailPage';
+export { PlatformUsagePage } from '@/features/admin/pages/PlatformUsagePage';
 export { AuditLogPage } from '@/features/admin/pages/AuditLogPage';

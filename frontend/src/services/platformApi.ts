@@ -7,6 +7,7 @@ import type {
   AuditLogEntry,
   AuditLogFilters,
   CounselorDashboard,
+  PlatformUsage,
   StudentDashboard,
 } from '@/types/platform';
 
@@ -85,5 +86,10 @@ export const platformApi = {
 
   studentDashboard(): Promise<StudentDashboard> {
     return unwrap(httpClient.get<ApiSuccess<StudentDashboard>>('/student/dashboard'));
+  },
+
+  /** What this deployment is spending of the Cloudflare free plan, and what it cannot see. */
+  platformUsage(): Promise<PlatformUsage> {
+    return unwrap(httpClient.get<ApiSuccess<PlatformUsage>>('/admin/platform-usage'));
   },
 };

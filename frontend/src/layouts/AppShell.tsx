@@ -1,4 +1,4 @@
-import { LogOut, Menu, type LucideIcon } from 'lucide-react';
+import { ChevronDown, LogOut, Menu, type LucideIcon } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
@@ -19,9 +19,41 @@ export interface AppNavItem {
   end?: boolean;
 }
 
+/**
+ * A named set of destinations that belong to one another.
+ *
+ * The admin shell earned this: eleven flat links is a list you read rather than a structure you
+ * navigate, and three of them were AI screens sitting between the catalog and the audit log for no
+ * reason a person could infer. Grouping states the relationship the routes already had.
+ *
+ * The counselor and student shells stay flat, and deliberately — four destinations do not need
+ * chapters, and a group of one is a worse label than no group at all.
+ */
+export interface AppNavGroup {
+  label: string;
+  icon: LucideIcon;
+  items: AppNavItem[];
+}
+
+export type AppNavEntry = AppNavItem | AppNavGroup;
+
+function isGroup(entry: AppNavEntry): entry is AppNavGroup {
+  return 'items' in entry;
+}
+
+/** Every destination in a nav, groups flattened — for breadcrumbs and active-state lookups. */
+function flatten(nav: AppNavEntry[]): AppNavItem[] {
+  return nav.flatMap((entry) => (isGroup(entry) ? entry.items : [entry]));
+}
+
+/** Whether a route is the one being viewed, by the same rule NavLink uses. */
+function matches(item: AppNavItem, pathname: string): boolean {
+  return item.end ? pathname === item.to : pathname.startsWith(item.to);
+}
+
 export interface AppShellProps {
   title: string;
-  nav: AppNavItem[];
+  nav: AppNavEntry[];
   /** Extra chrome next to the breadcrumb — the student shell shows the joined class here. */
   headerBadge?: ReactNode;
   /**
@@ -52,12 +84,17 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
   const user = useAuthStore((state) => state.user);
   const logout = useLogout();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [railExpanded, setRailExpanded] = useState(false);
   const location = useLocation();
 
+  // The drawer copy is always expanded: a rail that collapses on mouse-out makes no sense inside a
+  // sheet the user opened deliberately and closes by tapping away.
   const sidebar = (
     <SidebarBody
       title={title}
       nav={nav}
+      pathname={location.pathname}
+      expanded
       userName={user?.name ?? null}
       userRole={user?.role ?? null}
       signingOut={logout.isPending}
@@ -90,9 +127,51 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
         Skip to main content
       </a>
 
-      {/* Desktop sidebar */}
-      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col bg-sidebar lg:flex">
-        {sidebar}
+      {/*
+        Desktop sidebar — a 4rem rail that grows to 16rem while pointed at.
+
+        The rail is what sits *in flow*; the panel that grows is absolutely positioned on top of
+        it. That split is the whole trick: animating the width of an in-flow sidebar reflows the
+        entire page on every hover, which on a table-heavy admin screen means text rewrapping under
+        the cursor. Here the content column never moves.
+
+        `focus-within` matters as much as hover — a keyboard user tabbing into the navigation must
+        see where they are, and a rail that only ever opened for a mouse would be unusable without
+        one.
+      */}
+      <aside className="sticky top-0 hidden h-screen w-16 shrink-0 lg:block">
+        <div
+          onMouseEnter={() => setRailExpanded(true)}
+          onMouseLeave={() => setRailExpanded(false)}
+          // Focus expands it too, and through the same state rather than through a
+          // `focus-within:` width. Widening in CSS alone would give a keyboard user a 16rem panel
+          // still rendering its collapsed contents — a wide empty rail, which is worse than the
+          // narrow one they started with.
+          onFocus={() => setRailExpanded(true)}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setRailExpanded(false);
+            }
+          }}
+          className={cn(
+            'absolute inset-y-0 left-0 z-30 flex flex-col overflow-hidden bg-sidebar',
+            'transition-[width] duration-200 ease-out motion-reduce:transition-none',
+            railExpanded ? 'w-64 shadow-xl shadow-black/20' : 'w-16',
+          )}
+        >
+          <SidebarBody
+            title={title}
+            nav={nav}
+            pathname={location.pathname}
+            expanded={railExpanded}
+            userName={user?.name ?? null}
+            userRole={user?.role ?? null}
+            signingOut={logout.isPending}
+            onSignOut={() =>
+              logout.mutate(undefined, onSignedOut ? { onSettled: onSignedOut } : undefined)
+            }
+          />
+        </div>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -182,12 +261,13 @@ function Breadcrumbs({
   pathname,
 }: {
   title: string;
-  nav: AppNavItem[];
+  nav: AppNavEntry[];
   pathname: string;
 }) {
-  const root = nav[0];
-  const match = nav
-    .filter((item) => (item.end ? pathname === item.to : pathname.startsWith(item.to)))
+  const items = flatten(nav);
+  const root = items[0];
+  const match = items
+    .filter((item) => matches(item, pathname))
     .sort((a, b) => b.to.length - a.to.length)[0];
 
   // At the root itself the trail would read "Admin / Dashboard" — the section alone is truer.
@@ -226,67 +306,87 @@ function Breadcrumbs({
 function SidebarBody({
   title,
   nav,
+  pathname,
+  expanded,
   userName,
   userRole,
   signingOut,
   onSignOut,
 }: {
   title: string;
-  nav: AppNavItem[];
+  nav: AppNavEntry[];
+  pathname: string;
+  expanded: boolean;
   userName: string | null;
   userRole: string | null;
   signingOut: boolean;
   onSignOut: () => void;
 }) {
+  /**
+   * Which groups the person has opened or closed *by hand*.
+   *
+   * Only their explicit choices live here. A group holding the current route opens on its own, and
+   * storing that as state would fight the route: navigating into a closed group has to open it,
+   * and an effect writing that back would then argue with the next click. Keeping intent and
+   * derivation separate means neither has to know about the other.
+   */
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+
   return (
     <div className="flex h-full flex-col">
-      <div className="px-5 pb-5 pt-6">
-        <Logo wordmarkClassName="text-sidebar-foreground" />
-        <p className="mt-1.5 pl-[2.9rem] text-xs font-medium uppercase tracking-widest text-sidebar-muted">
-          {title}
-        </p>
+      <div className={cn('pb-5 pt-6', expanded ? 'px-5' : 'px-4')}>
+        <Logo wordmarkClassName="text-sidebar-foreground" withWordmark={expanded} />
+        {expanded ? (
+          <p className="mt-1.5 pl-[2.9rem] text-xs font-medium uppercase tracking-widest text-sidebar-muted">
+            {title}
+          </p>
+        ) : null}
       </div>
 
-      <nav className="flex-1 space-y-1 overflow-y-auto px-3">
-        {nav.map((item) => {
-          const Icon = item.icon;
-
-          return (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end ?? false}
-              className={({ isActive }) =>
-                cn(
-                  // The transparent left border on the inactive state reserves the accent bar's
-                  // width, so lighting a link up never shifts its label sideways.
-                  'flex items-center gap-3 rounded-none border-l-2 px-3 py-2.5 text-sm font-medium transition-colors',
-                  isActive
-                    ? 'border-primary bg-sidebar-active text-sidebar-active-foreground'
-                    : 'border-transparent text-sidebar-muted hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground',
-                )
+      {/*
+        `no-scrollbar` hides the track, it does not remove the scrolling. Grouping makes the admin
+        nav short enough to fit without one, but a shell whose content overflowed and could not be
+        reached would be a worse bug than the scrollbar ever was.
+      */}
+      <nav aria-label="Main" className="no-scrollbar flex-1 space-y-1 overflow-y-auto px-3">
+        {nav.map((entry) =>
+          isGroup(entry) ? (
+            <NavGroup
+              key={entry.label}
+              group={entry}
+              pathname={pathname}
+              expanded={expanded}
+              open={toggled[entry.label] ?? entry.items.some((item) => matches(item, pathname))}
+              onToggle={() =>
+                setToggled((current) => ({
+                  ...current,
+                  [entry.label]: !(
+                    current[entry.label] ?? entry.items.some((item) => matches(item, pathname))
+                  ),
+                }))
               }
-            >
-              <Icon className="size-4 shrink-0" aria-hidden="true" />
-              {item.label}
-            </NavLink>
-          );
-        })}
+            />
+          ) : (
+            <NavRow key={entry.to} item={entry} expanded={expanded} />
+          ),
+        )}
       </nav>
 
       <div className="border-t border-sidebar-border p-3">
         {userName ? (
-          <div className="flex items-center gap-3 px-2 pb-3 pt-1">
+          <div className={cn('flex items-center gap-3 pb-3 pt-1', expanded ? 'px-2' : 'px-0')}>
             <span className="relative flex size-8 shrink-0 items-center justify-center border border-sidebar-border bg-sidebar-active text-sm font-semibold text-sidebar-active-foreground">
               <Corners />
               {initials(userName)}
             </span>
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium text-sidebar-active-foreground">
-                {userName}
+            {expanded ? (
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-medium text-sidebar-active-foreground">
+                  {userName}
+                </span>
+                <span className="block text-xs capitalize text-sidebar-muted">{userRole}</span>
               </span>
-              <span className="block text-xs capitalize text-sidebar-muted">{userRole}</span>
-            </span>
+            ) : null}
           </div>
         ) : null}
 
@@ -294,12 +394,128 @@ function SidebarBody({
           type="button"
           onClick={onSignOut}
           disabled={signingOut}
+          title={expanded ? undefined : 'Sign out'}
           className="flex w-full items-center gap-3 rounded-none border-l-2 border-transparent px-3 py-2.5 text-sm font-medium text-sidebar-muted transition-colors hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground disabled:opacity-50"
         >
-          <LogOut className="size-4" aria-hidden="true" />
-          {signingOut ? 'Signing out…' : 'Sign out'}
+          <LogOut className="size-4 shrink-0" aria-hidden="true" />
+          {expanded ? (
+            <span className="truncate">{signingOut ? 'Signing out…' : 'Sign out'}</span>
+          ) : null}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One destination.
+ *
+ * `nested` insets the row so a group's children read as belonging to their heading rather than as
+ * siblings of it — the only thing distinguishing them once the accent bar is spent on active
+ * state.
+ */
+function NavRow({
+  item,
+  expanded,
+  nested = false,
+}: {
+  item: AppNavItem;
+  expanded: boolean;
+  nested?: boolean;
+}) {
+  const Icon = item.icon;
+
+  return (
+    <NavLink
+      to={item.to}
+      end={item.end ?? false}
+      // The label is invisible in the rail, so the tooltip has to carry the name for a mouse user
+      // and `aria-label` has to carry it for everyone else.
+      title={expanded ? undefined : item.label}
+      aria-label={item.label}
+      className={({ isActive }) =>
+        cn(
+          // The transparent left border on the inactive state reserves the accent bar's
+          // width, so lighting a link up never shifts its label sideways.
+          'flex items-center gap-3 rounded-none border-l-2 px-3 py-2.5 text-sm font-medium transition-colors',
+          nested && expanded && 'pl-7',
+          isActive
+            ? 'border-primary bg-sidebar-active text-sidebar-active-foreground'
+            : 'border-transparent text-sidebar-muted hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground',
+        )
+      }
+    >
+      <Icon className="size-4 shrink-0" aria-hidden="true" />
+      {expanded ? <span className="truncate">{item.label}</span> : null}
+    </NavLink>
+  );
+}
+
+/**
+ * A collapsible set of destinations.
+ *
+ * In the rail there is no heading to press and no room for one, so the group renders as its
+ * children's icons instead. The shortest path to a destination stays one click at every width,
+ * which a disclosure that had to be opened first would not.
+ */
+function NavGroup({
+  group,
+  pathname,
+  expanded,
+  open,
+  onToggle,
+}: {
+  group: AppNavGroup;
+  pathname: string;
+  expanded: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const Icon = group.icon;
+  const holdsCurrent = group.items.some((item) => matches(item, pathname));
+
+  if (!expanded) {
+    return (
+      <div className="space-y-1">
+        {group.items.map((item) => (
+          <NavRow key={item.to} item={item} expanded={false} />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className={cn(
+          'flex w-full items-center gap-3 rounded-none border-l-2 border-transparent px-3 py-2.5 text-sm font-medium transition-colors hover:bg-sidebar-active/60',
+          // A closed group holding the current route still has to look like where you are.
+          holdsCurrent && !open
+            ? 'text-sidebar-active-foreground'
+            : 'text-sidebar-muted hover:text-sidebar-active-foreground',
+        )}
+      >
+        <Icon className="size-4 shrink-0" aria-hidden="true" />
+        <span className="flex-1 truncate text-left">{group.label}</span>
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            'size-4 shrink-0 transition-transform duration-200 motion-reduce:transition-none',
+            open ? 'rotate-0' : '-rotate-90',
+          )}
+        />
+      </button>
+
+      {open ? (
+        <div className="space-y-1">
+          {group.items.map((item) => (
+            <NavRow key={item.to} item={item} expanded nested />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

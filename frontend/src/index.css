@@ -153,3 +153,19 @@ h1, h2, h3, h4, h5, h6 {
 ::selection {
   background: color-mix(in srgb, var(--primary) 30%, transparent);
 }
+
+/**
+ * Hide a scrollbar without disabling the scroll.
+ *
+ * Used by the navigation rail. The distinction matters: `overflow: hidden` would make an
+ * overflowing nav unreachable, which is a far worse failure than the track being visible. This
+ * only removes the chrome — wheel, trackpad, touch and keyboard scrolling all still work.
+ */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

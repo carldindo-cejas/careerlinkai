@@ -21,12 +21,29 @@ export const platformAdminKeys = {
   counselors: (params: Record<string, unknown>) => ['admin', 'counselors', params] as const,
   counselorStudents: (id: string) => ['admin', 'counselors', id, 'students'] as const,
   counselorClasses: (id: string) => ['admin', 'counselors', id, 'classes'] as const,
+  platformUsage: ['admin', 'platform-usage'] as const,
 };
 
 export function useAdminDashboard() {
   return useQuery({
     queryKey: platformAdminKeys.dashboard,
     queryFn: () => platformApi.adminDashboard(),
+  });
+}
+
+/**
+ * Cloudflare usage, refetched on a slow timer.
+ *
+ * Sixty seconds because the number that moves fastest here is the daily generation budget, and a
+ * class of forty students working through the assistant together can move it visibly within a
+ * lesson. Anything quicker would spend D1 reads to watch a bar that mostly does not move — and
+ * this screen exists to report a budget, not to consume one.
+ */
+export function usePlatformUsage() {
+  return useQuery({
+    queryKey: platformAdminKeys.platformUsage,
+    queryFn: () => platformApi.platformUsage(),
+    refetchInterval: 60_000,
   });
 }
 

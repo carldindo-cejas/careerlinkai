@@ -18,7 +18,8 @@ import {
   type AuditLogView,
 } from '@/modules/platform/audit-service';
 import { DashboardService } from '@/modules/platform/dashboard-service';
-import { serializeAuditLog } from '@/modules/platform/serializers';
+import { serializeAuditLog, serializePlatformUsage } from '@/modules/platform/serializers';
+import { PlatformUsageService } from '@/modules/platform/usage-service';
 
 /**
  * The Platform module's HTTP surface beyond notifications (FULLPLAN §20, Phase 6): the
@@ -269,6 +270,19 @@ adminPlatformRoutes.get('/dashboard', async (c) => {
       'Dashboard retrieved successfully.',
     ),
   );
+});
+
+/**
+ * `GET /admin/platform-usage` — what this deployment is spending of the Cloudflare free plan.
+ *
+ * Deliberately reports its own blind spots alongside its numbers: several limits this project
+ * genuinely runs against, neurons among them, are not readable from inside a Worker, and a health
+ * screen that quietly omitted them would read as "all clear" when it means "not looked at".
+ */
+adminPlatformRoutes.get('/platform-usage', async (c) => {
+  const snapshot = await new PlatformUsageService(createDatabase(c.env.DB), c.env).snapshot();
+
+  return c.json(successEnvelope(serializePlatformUsage(snapshot), 'Platform usage retrieved successfully.'));
 });
 
 // --- /counselor ----------------------------------------------------------------------------
