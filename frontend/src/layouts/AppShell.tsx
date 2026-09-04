@@ -122,7 +122,7 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
         // normally the first thing Tab reaches, but it is also what Shift+Tab reaches from the
         // top of a scrolled page — and landing on an invisible focused element is the bug this
         // whole control exists to prevent.
-        className="sr-only rounded-none bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50"
+        className="sr-only rounded-none bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60]"
       >
         Skip to main content
       </a>
@@ -139,7 +139,12 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
         see where they are, and a rail that only ever opened for a mouse would be unusable without
         one.
       */}
-      <aside className="sticky top-0 hidden h-screen w-16 shrink-0 lg:block">
+      {/*
+        4rem of reserved flex row. The panel inside is `fixed`, so this element contributes only
+        width — which is what stops the content column sliding under the collapsed rail. It keeps
+        the real navigation as its child, so it must NOT be `aria-hidden`.
+      */}
+      <aside className="hidden w-16 shrink-0 lg:block">
         <div
           onMouseEnter={() => setRailExpanded(true)}
           onMouseLeave={() => setRailExpanded(false)}
@@ -154,9 +159,15 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
             }
           }}
           className={cn(
-            'absolute inset-y-0 left-0 z-30 flex flex-col overflow-hidden bg-sidebar',
+            // `fixed` and above the header, both deliberately. As an `absolute` child of a
+            // `sticky` aside the panel could not reach the full viewport height, and at a lower
+            // z-index than the sticky header the header painted straight over its top 70px —
+            // which is what made an expanded drawer look severed from its own logo.
+            'fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden bg-sidebar',
             'transition-[width] duration-200 ease-out motion-reduce:transition-none',
-            railExpanded ? 'w-64 shadow-xl shadow-black/20' : 'w-16',
+            railExpanded
+              ? 'w-64 border-r border-sidebar-border shadow-2xl shadow-black/40'
+              : 'w-16',
           )}
         >
           <SidebarBody
