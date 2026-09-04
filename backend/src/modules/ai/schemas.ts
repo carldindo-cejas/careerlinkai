@@ -24,6 +24,86 @@ export const extractedTextSchema = z.object({
 });
 
 /**
+ * Which uploaded extensions map to which `source_type` (AiNormalisation Phase 1).
+ *
+ * `.txt` and `.md` cost nothing to accept — the browser reads them with `File.text()`, so there
+ * is no parser on either side — and they are the format a school's existing handouts are most
+ * likely to already be in. Both are `text`: the extension said how to *read* the file, never what
+ * kind of knowledge it holds.
+ */
+export const UPLOAD_SOURCE_TYPES: Record<string, 'pdf' | 'docx' | 'text' | undefined> = {
+  pdf: 'pdf',
+  docx: 'docx',
+  txt: 'text',
+  md: 'text',
+};
+
+/**
+ * A knowledge entry an admin writes by hand.
+ *
+ * ## The Q&A caps are load-bearing, not tidiness
+ *
+ * A Q&A pair must land as **one chunk**. It is stored as a single `Q: …\nA: …` passage, and the
+ * whole point of the shape is that the passage which retrieves is also the passage Gate 1 can
+ * return verbatim. Split across two chunks, half an answer can be retrieved without the other
+ * half — the exact failure the §33 overlap exists to prevent, reintroduced at the source. 300 +
+ * 1200 characters plus the markers sits under the chunker's ~1,680-character window with room to
+ * spare, so the shape is guaranteed by arithmetic rather than by hoping answers stay short.
+ *
+ * A pasted `text` entry has no such constraint — it is chunked like any document — so its cap is
+ * §34's ordinary extracted-text ceiling.
+ */
+const qaEntrySchema = z.object({
+  type: z.literal('qa'),
+  question: z
+    .string()
+    .trim()
+    .min(5, 'Write the question as a student would ask it.')
+    .max(300, 'Keep the question under 300 characters so it stays one searchable passage.'),
+  answer: z
+    .string()
+    .trim()
+    .min(1, 'An answer is required — this text is returned to students word for word.')
+    .max(1200, 'Keep the answer under 1200 characters so it stays one searchable passage.'),
+});
+
+const textEntrySchema = z.object({
+  type: z.literal('text'),
+  title: z
+    .string()
+    .trim()
+    .min(3, 'Give this a title, so it can be found again.')
+    .max(200, 'Keep the title under 200 characters.'),
+  body: z
+    .string()
+    .trim()
+    .min(1, 'There is nothing to save.')
+    .max(
+      MAX_EXTRACTED_TEXT_CHARS,
+      `The text exceeds the ${MAX_EXTRACTED_TEXT_CHARS.toLocaleString()}-character cap.`,
+    ),
+});
+
+/**
+ * A discriminated union rather than one loose object with everything optional: the two shapes
+ * have genuinely different fields, and `.strict()` on each means sending a `body` alongside a
+ * `question` is a 422 instead of a silently ignored half-saved entry.
+ */
+export const createKnowledgeEntrySchema = z.discriminatedUnion('type', [
+  qaEntrySchema.strict(),
+  textEntrySchema.strict(),
+]);
+
+/**
+ * The edit form posts the whole entry back, so this is the same union — a partial update of one
+ * half of a Q&A pair would leave the stored passage internally inconsistent (a new question
+ * paired with the old answer), which is worse than asking the form to send both.
+ */
+export const updateKnowledgeEntrySchema = createKnowledgeEntrySchema;
+
+export type CreateKnowledgeEntryInput = z.infer<typeof createKnowledgeEntrySchema>;
+
+/**
  * §13.7: only the two text fields and the active flag are writable. `.strict()` so a caller
  * trying to write `scope` — the column reserved for §63's finer scopes — is told no rather
  * than silently ignored.

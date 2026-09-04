@@ -16,9 +16,15 @@ import {
   RECOMMENDATION_EXPLANATION_PROMPT_VERSION,
   RECOMMENDATION_EXPLANATION_SYSTEM_PROMPT,
 } from '@/prompts/recommendation-explanation.v1';
+import { unsupportedClaims, validateCitations } from '@/lib/grounding';
 import { academicAverage } from '@/lib/recommendation';
 import type { AiGatewayService, GenerateOptions } from '@/modules/ai/ai-gateway-service';
-import type { RetrievalService, RetrievedChunk } from '@/modules/ai/retrieval-service';
+import {
+  RETRIEVAL_TOP_K,
+  type RetrievalService,
+  type RetrievedChunk,
+} from '@/modules/ai/retrieval-service';
+import { sourceTitles } from '@/modules/ai/sources';
 import { RecommendationService } from '@/modules/recommendation/recommendation-service';
 
 /**
@@ -37,6 +43,15 @@ import { RecommendationService } from '@/modules/recommendation/recommendation-s
  * fallback. A grounded number is always better than an ungrounded paragraph (§30).
  */
 
+/**
+ * How many of the §30 context slots the target's *own* chunks may claim (Phase 2's first pass).
+ *
+ * Three of six. Enough that a catalog entry and its neighbours are certainly present, and few
+ * enough that the general guidance material which connects those facts to a RIASEC profile is
+ * not squeezed out — an explanation built only from catalog facts reads like a brochure.
+ */
+const TARGET_CHUNK_SLOTS = 3;
+
 /** §34: reject a response shorter than 20 or longer than 1500 characters. */
 const MIN_EXPLANATION_CHARS = 20;
 const MAX_EXPLANATION_CHARS = 1500;
@@ -44,6 +59,15 @@ const MAX_EXPLANATION_CHARS = 1500;
 /** §34's absolute-claim filter: language that promises an outcome is rejected outright. */
 const ABSOLUTE_CLAIM_PATTERN =
   /guaranteed|you will definitely|100% certain|you are destined|you will become/i;
+
+/** The thing being explained, with the catalog text retrieval searches on (§30, D4). */
+interface Target {
+  kind: 'CAREER' | 'PROGRAM';
+  label: string;
+  description: string | null;
+  /** The `careers.id` / `programs.id` the catalog knowledge entry for this target is keyed by. */
+  entityId: string | null;
+}
 
 export interface ExplainOutcome {
   /** Present when an AI explanation exists (fresh or previously generated). */
@@ -82,13 +106,24 @@ export class ExplanationService {
     const target = await this.targetLabelFor(recommendation);
     const student = await this.studentContextFor(recommendation);
 
-    // §30: the query is built from the student's top RIASEC dimensions and the target.
-    const query = [
-      target.label,
-      target.kind === 'PROGRAM' ? 'college program' : 'career',
-      'for a student whose strongest interests are',
-      student.topDimensions.map((dimension) => dimension.name).join(', '),
-    ].join(' ');
+    /**
+     * The retrieval query is the target's **own catalog text** — its title and description
+     * (AiNormalisation D4).
+     *
+     * §30 originally built a sentence from the label plus the student's top RIASEC dimensions:
+     * *"Nursing at Saint Louis College college program for a student whose strongest interests are
+     * Social, Investigative"*. No guidance document is written that way, so the query matched the
+     * corpus on almost nothing but the program name. The description already in the database is
+     * written in the same register as the material being searched, which is exactly what a
+     * bi-encoder is comparing.
+     *
+     * The student's interests are not lost — they are in the *prompt*, where they belong. What
+     * gets retrieved is knowledge about the target; who it is being explained to is context the
+     * model is given, not a search term.
+     */
+    const query = [target.label, target.description]
+      .filter((part): part is string => part !== null && part.trim().length > 0)
+      .join('. ');
 
     const baseOptions: Omit<GenerateOptions, 'systemPrompt' | 'userPrompt'> = {
       userId,
@@ -107,7 +142,7 @@ export class ExplanationService {
     let retrieved: RetrievedChunk[];
 
     try {
-      retrieved = await this.retrieval.retrieve(query);
+      retrieved = await this.retrieveForTarget(query, target);
     } catch (error) {
       await this.gateway.logSkipped(
         { ...baseOptions, systemPrompt: '', userPrompt: query },
@@ -169,13 +204,116 @@ export class ExplanationService {
       return { explanation: null, fallbackReason: recommendation.reason, failure: 'FAILED_VALIDATION' };
     }
 
+    /**
+     * The grounding contract (AiNormalisation Phase 3), in cost order.
+     *
+     * **Cite or refuse.** This paragraph is attached to a computed number, which is exactly the
+     * context in which an ungrounded sentence reads as evidence for that number. An explanation
+     * that cites nothing was written from the model's own general knowledge, and there is no way
+     * to tell that by reading it — so it does not ship.
+     *
+     * **Then the claim check**, which catches what a citation cannot: a marker on a sentence
+     * whose figure appears in no passage. A model that has been told to cite will cite, including
+     * on the sentence where it invented something.
+     *
+     * Both failures land where every other failure in this service lands — the deterministic §27
+     * reason, which was true whatever the model did. Rejecting a sound explanation costs a
+     * paragraph; accepting an invented one costs a student acting on it.
+     */
+    const citations = validateCitations(text, retrieved.length);
+
+    if (!citations.ok) {
+      await this.gateway.logSkipped(
+        { ...options, systemPrompt: '', userPrompt: query },
+        `Rejected by the grounding contract: ${citations.reason}.`,
+      );
+
+      return {
+        explanation: null,
+        fallbackReason: recommendation.reason,
+        failure: citations.reason,
+      };
+    }
+
+    const unsupported = unsupportedClaims(text, [
+      ...retrieved.map(({ chunk }) => chunk.content),
+      // Arithmetic is grounding too (§26): the score, the reason and the interest names are
+      // computed, not retrieved, and a check that did not know that would reject the truest
+      // sentences in the paragraph.
+      target.label,
+      recommendation.reason,
+      `${recommendation.matchScore}`,
+      ...student.topDimensions.map((dimension) => dimension.name),
+    ]);
+
+    if (unsupported.length > 0) {
+      await this.gateway.logSkipped(
+        { ...options, systemPrompt: '', userPrompt: query },
+        `Rejected by the grounding contract: UNSUPPORTED_CLAIM (${unsupported
+          .map((claim) => `${claim.kind}:${claim.token}`)
+          .join(', ')}).`,
+      );
+
+      return {
+        explanation: null,
+        fallbackReason: recommendation.reason,
+        failure: 'UNSUPPORTED_CLAIM',
+      };
+    }
+
     const explanation = await this.recommendations.saveExplanation(
       recommendation.id,
       text,
       result.request.model ?? 'unknown',
+      // What the student is shown under the paragraph. An answer whose source a reader can see is
+      // an answer they can judge — and an answer with no visible source is visibly not a fact.
+      sourceTitles(retrieved),
     );
 
     return { explanation, fallbackReason: recommendation.reason };
+  }
+
+  /**
+   * **Two-pass retrieval** (AiNormalisation Phase 2): this target's own chunks first, then
+   * general guidance material for whatever slots remain.
+   *
+   * One pass over the whole corpus ranks everything on similarity alone, so a well-written
+   * general passage about "choosing a healthcare career" can outrank the catalog entry for the
+   * exact program being explained — and the paragraph a student reads then says nothing specific
+   * about their match. The first pass is filtered to `entity_id`, so the entry *about this
+   * program* is in the context by construction rather than by winning a similarity contest.
+   *
+   * The second pass is not optional garnish. A catalog entry alone is a few facts; the theory
+   * chunks are what let the model connect them to the student's RIASEC profile, which is what
+   * §30 asked the explanation to do.
+   *
+   * Deduplicated by chunk id: a chunk can legitimately be returned by both passes, and the same
+   * passage twice in a context block is wasted context and a subtly worse prompt.
+   */
+  private async retrieveForTarget(query: string, target: Target): Promise<RetrievedChunk[]> {
+    const entity =
+      target.entityId === null
+        ? undefined
+        : {
+            type: target.kind === 'CAREER' ? ('career' as const) : ('program' as const),
+            id: target.entityId,
+          };
+
+    const own =
+      entity === undefined
+        ? []
+        : await this.retrieval.retrieve(query, { entity, limit: TARGET_CHUNK_SLOTS });
+
+    const general = await this.retrieval.retrieve(query, {
+      limit: RETRIEVAL_TOP_K - own.length,
+    });
+
+    const seen = new Set(own.map(({ chunk }) => chunk.id));
+
+    return [...own, ...general.filter(({ chunk }) => !seen.has(chunk.id))].slice(
+      0,
+      RETRIEVAL_TOP_K,
+    );
   }
 
   // --- prompt assembly (§32) -----------------------------------------------------------
@@ -196,7 +334,7 @@ export class ExplanationService {
    */
   private userPrompt(
     recommendation: Recommendation,
-    target: { kind: string; label: string },
+    target: Target,
     student: {
       topDimensions: { name: string; score: number }[];
       strand: string | null;
@@ -242,21 +380,28 @@ export class ExplanationService {
 
   // --- context loading -------------------------------------------------------------------
 
-  private async targetLabelFor(
-    recommendation: Recommendation,
-  ): Promise<{ kind: 'CAREER' | 'PROGRAM'; label: string }> {
+  private async targetLabelFor(recommendation: Recommendation): Promise<Target> {
     if (recommendation.matchType === 'CAREER') {
       const [career] = await this.db
-        .select({ title: careers.title })
+        .select({ title: careers.title, description: careers.description })
         .from(careers)
         .where(eq(careers.id, recommendation.targetCareerId!))
         .limit(1);
 
-      return { kind: 'CAREER', label: career?.title ?? 'this career' };
+      return {
+        kind: 'CAREER',
+        label: career?.title ?? 'this career',
+        description: career?.description ?? null,
+        entityId: recommendation.targetCareerId,
+      };
     }
 
     const [program] = await this.db
-      .select({ name: programs.name, collegeName: colleges.name })
+      .select({
+        name: programs.name,
+        description: programs.description,
+        collegeName: colleges.name,
+      })
       .from(programs)
       .innerJoin(colleges, eq(programs.collegeId, colleges.id))
       .where(eq(programs.id, recommendation.targetProgramId!))
@@ -265,6 +410,8 @@ export class ExplanationService {
     return {
       kind: 'PROGRAM',
       label: program === undefined ? 'this program' : `${program.name} at ${program.collegeName}`,
+      description: program?.description ?? null,
+      entityId: recommendation.targetProgramId,
     };
   }
 

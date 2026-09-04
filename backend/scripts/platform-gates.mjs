@@ -220,6 +220,32 @@ for (const name of REQUIRED_NUMERIC_VARS) {
   );
 }
 
+/**
+ * **The retrieval tuning vars, in every scope** (AiNormalisation Phase 0).
+ *
+ * Neither of these throws when absent — `retrievalSimilarityThreshold` falls back to the measured
+ * default and an unset rerank model degrades to plain similarity order. That is exactly why they
+ * are gated here: a scope that quietly omits them retrieves *worse* with no error anywhere, which
+ * is the same silent-failure shape D1 and D2 were.
+ */
+const REQUIRED_RETRIEVAL_VARS = ['WORKERS_AI_RERANK_MODEL', 'RETRIEVAL_SIMILARITY_THRESHOLD'];
+
+for (const name of REQUIRED_RETRIEVAL_VARS) {
+  const declared = (wranglerToml.match(new RegExp(`^${name} = "`, 'gm')) ?? []).length;
+
+  gate(
+    `wrangler.toml: ${name} declared in all three scopes`,
+    declared >= 3,
+    `Found ${declared} declaration(s); expected 3. A scope missing this retrieves worse, silently.`,
+  );
+
+  gate(
+    `wrangler.test.toml: ${name} declared (the suite boots the same config code)`,
+    new RegExp(`^${name} = "`, 'm').test(wranglerTestToml),
+    `Add ${name} to wrangler.test.toml's [vars].`,
+  );
+}
+
 // The Phase H operational surfaces (audit H1 / M11 / observability). Each is a config-only
 // capability a deploy ships fine without — so a missing one is exactly the silent kind of gap
 // these gates exist to catch: a dropped dead-lettered job, unpersisted logs, no housekeeping.

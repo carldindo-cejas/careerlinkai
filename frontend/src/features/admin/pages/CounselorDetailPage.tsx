@@ -6,11 +6,12 @@ import { StudentRecommendationLists } from '@/components/recommendations/Student
 import { CounselorClassesPanel } from '@/features/admin/components/CounselorClassesPanel';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/components/ui/cn';
 import { Input } from '@/components/ui/input';
+import { Pagination } from '@/components/ui/pagination';
 import { useCounselorStudents } from '@/features/admin/hooks/usePlatformAdmin';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import type { CounselorStudentRow } from '@/types/platform';
 
 /**
@@ -35,7 +36,6 @@ export function CounselorDetailPage() {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortField>('name');
   const [direction, setDirection] = useState<SortDirection>('asc');
-  const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const students = data?.students ?? [];
@@ -56,9 +56,7 @@ export function CounselorDetailPage() {
     return direction === 'asc' ? sorted : sorted.reverse();
   }, [students, search, sort, direction]);
 
-  const lastPage = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
-  const currentPage = Math.min(page, lastPage);
-  const pageItems = filtered.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE);
+  const { pageItems, pagination, setPage } = useClientPagination(filtered, PER_PAGE);
 
   function onSort(field: SortField) {
     if (field === sort) {
@@ -184,31 +182,7 @@ export function CounselorDetailPage() {
             </div>
           </Card>
 
-          {lastPage > 1 ? (
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
-                Page {currentPage} of {lastPage}
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={currentPage <= 1}
-                  onClick={() => setPage(currentPage - 1)}
-                >
-                  Previous
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={currentPage >= lastPage}
-                  onClick={() => setPage(currentPage + 1)}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-          ) : null}
+          <Pagination pagination={pagination} onPageChange={setPage} noun="students" />
         </>
       )}
     </div>

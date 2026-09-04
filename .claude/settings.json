@@ -158,7 +158,8 @@
       "Bash(rg -n \"write\\\\\\(\" -A 25 src/modules/audit/*.ts)",
       "Bash(rg -rn \"/publish'\" test/)",
       "Bash(rg -n \"publish\\\\`\" test/)",
-      "Bash(rg -n \"CreateQuestionInput\" -r '' src test)"
+      "Bash(rg -n \"CreateQuestionInput\" -r '' src test)",
+      "Bash(git fetch *)"
     ],
     "additionalDirectories": [
       "\\tmp",

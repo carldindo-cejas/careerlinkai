@@ -92,6 +92,20 @@ export const chatApi = {
   async clear(): Promise<void> {
     await httpClient.delete('/student/chat');
   },
+
+  /**
+   * Mark one answer as wrong (Phase 4).
+   *
+   * The one signal that leads straight to a fix: the chunk ids behind the answer are already
+   * recorded, so an admin can follow the flag to the passage that produced it.
+   */
+  flagAnswer(messageId: string): Promise<{ message_id: string }> {
+    return unwrap(
+      httpClient.post<ApiSuccess<{ message_id: string }>>(
+        `/student/chat/messages/${messageId}/feedback`,
+      ),
+    );
+  },
 };
 
 /**

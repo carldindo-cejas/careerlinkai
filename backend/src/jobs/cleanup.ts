@@ -4,7 +4,9 @@ import { createDatabase } from '@/db/client';
 import { apiTokens, passwordResetTokens } from '@/db/schema';
 import type { Env } from '@/env';
 import { now } from '@/lib/datetime';
+import { log } from '@/lib/logger';
 import { reapStaleAiRequests } from '@/modules/ai/assessment-generation-service';
+import { syncCatalogKnowledge } from '@/modules/ai/catalog-knowledge-service';
 
 /**
  * Nightly housekeeping (FULLPLAN §45 enhancement, audit M11) — run by the Cron Trigger in
@@ -42,6 +44,16 @@ export interface CleanupResult {
   expiredTokens: number;
   staleResetTokens: number;
   stalledAiRequests: number;
+  /** Catalog knowledge entries rewritten and re-queued this run (AiNormalisation Phase 1). */
+  catalogEntriesSynced: number;
+  /** Entries archived because their career or program left the catalog. */
+  catalogEntriesRetired: number;
+  /**
+   * Entries that still need rewriting but did not fit this invocation's subrequest budget (§45).
+   * Non-zero means tomorrow's run continues — worth logging, because a number that never reaches
+   * zero is the signal that the catalog is changing faster than one nightly batch can absorb.
+   */
+  catalogEntriesRemaining: number;
 }
 
 export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
@@ -65,9 +77,44 @@ export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
   // more than the row is expensive.
   const stalled = await reapStaleAiRequests(db);
 
+  /**
+   * The one item here that is not a sweep (AiNormalisation Phase 1): regenerate the knowledge
+   * entry for every career and program, so an edit to the catalog reaches the AI without anyone
+   * remembering to press anything.
+   *
+   * It sits on this cron rather than on a second trigger because the Free plan's neuron budget
+   * resets at 00:00 UTC and this runs at 03:00 — three hours into a fresh allocation, five hours
+   * before a Manila school day. It is also nearly free in the normal case: an entry whose text is
+   * unchanged is not rewritten, not queued, and not re-embedded, so a night with no catalog edits
+   * costs zero model calls.
+   *
+   * Deliberately last, and deliberately swallowed. The token sweeps above are the reason this
+   * trigger exists; a sync that fails must not take them with it.
+   */
+  let catalogEntriesSynced = 0;
+  let catalogEntriesRetired = 0;
+  let catalogEntriesRemaining = 0;
+
+  try {
+    const sync = await syncCatalogKnowledge(db, env);
+
+    catalogEntriesSynced = sync.changed;
+    catalogEntriesRetired = sync.retired;
+    catalogEntriesRemaining = sync.remaining;
+  } catch (error) {
+    log('error', 'catalog_knowledge.sync_failed', {
+      pipeline: 'knowledge_ingestion',
+      stage: 'catalog_sync_failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   return {
     expiredTokens: expired.length,
     staleResetTokens: stale.length,
     stalledAiRequests: stalled,
+    catalogEntriesSynced,
+    catalogEntriesRetired,
+    catalogEntriesRemaining,
   };
 }

@@ -85,13 +85,16 @@ export function ClassListPage() {
 
 function ClassCard({ classRoom }: { classRoom: ClassRoom }) {
   return (
-    <Card className="h-full transition-colors hover:border-primary">
+    // The whole card is the target: clicking anywhere on a class opens it. The title's link is
+    // stretched over the card (after:absolute after:inset-0) so there is still exactly one link
+    // per card for keyboard and screen-reader users, not a card full of duplicates.
+    <Card className="relative h-full transition-colors hover:border-primary focus-within:border-primary">
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <CardTitle>
             <Link
               to={classDetailPath(classRoom.id)}
-              className="hover:underline focus-visible:outline-none focus-visible:underline"
+              className="after:absolute after:inset-0 hover:underline focus-visible:outline-none focus-visible:underline"
             >
               {classRoom.name}
             </Link>
@@ -112,13 +115,11 @@ function ClassCard({ classRoom }: { classRoom: ClassRoom }) {
           </p>
         </div>
 
-        <Link
-          to={classDetailPath(classRoom.id)}
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-        >
+        {/* A label, not a second link — the stretched title link already covers this. */}
+        <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
           <Users className="size-4" aria-hidden="true" />
           Roster
-        </Link>
+        </span>
       </CardContent>
     </Card>
   );

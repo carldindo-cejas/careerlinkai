@@ -55,6 +55,14 @@ import type { Paginated } from '@/types/class';
 
 const VERSIONS_SHOWN = 3;
 
+/**
+ * The tooltip on every authoring control a counselor cannot use on a curated instrument. One
+ * constant rather than five copies, because the sentence is a claim about the server's rule and
+ * five copies is how one of them ends up describing a different rule.
+ */
+const NOT_YOURS =
+  "This is a shared instrument, managed by an administrator. You can still assign it to your classes.";
+
 interface AssessmentTableProps {
   data: Paginated<AssessmentRow> | undefined;
   isPending: boolean;
@@ -87,6 +95,20 @@ interface AssessmentTableProps {
 
   page: number;
   onPageChange: (page: number) => void;
+
+  /**
+   * Whether the signed-in user may *author* this row — not whether they may assign it.
+   *
+   * The two came apart in production: a counselor sees the curated global instruments in this list
+   * (that is the point — they assign them), but the server authorizes every authoring act against
+   * template ownership, so View, Edit, Archive and Delete all answer "Assessment template not
+   * found." on a row sitting right there on screen. The buttons are **disabled with the reason in
+   * their tooltip** rather than hidden, for the same reason the delete button already is: a missing
+   * control is indistinguishable from a bug, and a 404 after a click is worse than either.
+   *
+   * Assign is deliberately left alone — it is authorized against the counselor's *class*.
+   */
+  canManage: (row: AssessmentRow) => boolean;
 
   onView: (row: AssessmentRow) => void;
   onEdit: (row: AssessmentRow) => void;
@@ -130,6 +152,7 @@ export function AssessmentTable({
   onSort,
   page,
   onPageChange,
+  canManage,
   onView,
   onEdit,
   onAssign,
@@ -426,8 +449,11 @@ export function AssessmentTable({
                           <Button
                             variant="ghost"
                             size="sm"
+                            disabled={!canManage(row)}
                             aria-label={`View ${row.title}`}
-                            title="View in the builder"
+                            title={
+                              canManage(row) ? 'View in the builder' : NOT_YOURS
+                            }
                             onClick={() => onView(row)}
                           >
                             <Eye className="size-4" aria-hidden="true" />
@@ -435,8 +461,13 @@ export function AssessmentTable({
                           <Button
                             variant="ghost"
                             size="sm"
+                            disabled={!canManage(row)}
                             aria-label={`Edit ${row.title}`}
-                            title="Edit title, type and scoring"
+                            title={
+                              canManage(row)
+                                ? 'Edit title, type and scoring'
+                                : NOT_YOURS
+                            }
                             onClick={() => onEdit(row)}
                           >
                             <Pencil className="size-4" aria-hidden="true" />
@@ -460,8 +491,9 @@ export function AssessmentTable({
                               variant="ghost"
                               size="sm"
                               loading={busyId === row.id}
+                              disabled={!canManage(row)}
                               aria-label={`Restore ${row.title}`}
-                              title="Restore"
+                              title={canManage(row) ? 'Restore' : NOT_YOURS}
                               onClick={() => onRestore(row)}
                             >
                               <ArchiveRestore className="size-4" aria-hidden="true" />
@@ -471,8 +503,9 @@ export function AssessmentTable({
                               variant="ghost"
                               size="sm"
                               loading={busyId === row.id}
+                              disabled={!canManage(row)}
                               aria-label={`Archive ${row.title}`}
-                              title="Archive"
+                              title={canManage(row) ? 'Archive' : NOT_YOURS}
                               onClick={() => onArchive(row)}
                             >
                               <Archive className="size-4" aria-hidden="true" />
@@ -487,12 +520,14 @@ export function AssessmentTable({
                           <Button
                             variant="ghost"
                             size="sm"
-                            disabled={!row.can_delete}
+                            disabled={!row.can_delete || !canManage(row)}
                             aria-label={`Delete ${row.title}`}
                             title={
-                              row.can_delete
-                                ? 'Delete permanently'
-                                : (row.delete_blocked_reason ?? 'This assessment cannot be deleted.')
+                              !canManage(row)
+                                ? NOT_YOURS
+                                : row.can_delete
+                                  ? 'Delete permanently'
+                                  : (row.delete_blocked_reason ?? 'This assessment cannot be deleted.')
                             }
                             onClick={() => onDelete(row)}
                           >

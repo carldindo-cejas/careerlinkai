@@ -15,8 +15,11 @@ export function serializeKnowledgeDocument(
 ): Record<string, unknown> {
   return {
     id: document.id,
+    title: document.title,
     file_name: document.fileName,
-    file_type: document.fileType,
+    source_type: document.sourceType,
+    entity_type: document.entityType,
+    entity_id: document.entityId,
     processing_status: document.processingStatus,
     visibility: document.visibility,
     archived_at: document.archivedAt,
@@ -45,6 +48,7 @@ export function serializeExplanation(
     recommendation_id: explanation.recommendationId,
     explanation_text: explanation.explanationText,
     ai_model: explanation.aiModel,
+    sources: explanation.sources ?? [],
     created_at: explanation.createdAt,
   };
 }
@@ -62,6 +66,8 @@ export function serializeChatMessage(message: ChatMessage): Record<string, unkno
     role: message.role,
     content: message.content,
     ai_request_id: message.aiRequestId,
+    sources: message.sources ?? [],
+    feedback: message.feedback,
     created_at: message.createdAt,
   };
 }

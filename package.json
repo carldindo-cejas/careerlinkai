@@ -6,6 +6,8 @@
   "scripts": {
     "deploy:staging": "npm --prefix backend run deploy:staging",
     "deploy:production": "npm --prefix backend run deploy:production",
+    "db:migrate:staging": "npm --prefix backend run db:migrate:staging",
+    "db:migrate:production": "npm --prefix backend run db:migrate:production",
     "preview": "npm --prefix backend run preview"
   }
 }

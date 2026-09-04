@@ -17,7 +17,8 @@ type NumericVar =
   | 'STUDENT_TOKEN_TTL_HOURS'
   | 'STAFF_TOKEN_TTL_HOURS'
   | 'ASSESSMENT_GENERATION_MAX_QUESTIONS'
-  | 'API_RATE_LIMIT_PER_MINUTE';
+  | 'API_RATE_LIMIT_PER_MINUTE'
+  | 'RETRIEVAL_SIMILARITY_THRESHOLD';
 
 function requireNumber(env: Env, key: NumericVar): number {
   const raw = env[key];
@@ -73,4 +74,32 @@ export function staffTokenTtlHours(env: Env): number {
  */
 export function apiRateLimitPerMinute(env: Env): number {
   return requireNumber(env, 'API_RATE_LIMIT_PER_MINUTE');
+}
+
+/**
+ * Whether the §34 verifier pass runs (AiNormalisation Phase 3). Off unless explicitly `"true"` —
+ * it is the one check in the grounding contract that spends neurons, and a check that quietly
+ * turns itself on would spend them on every answered question.
+ */
+export function aiVerifierEnabled(env: Env): boolean {
+  return env.AI_VERIFIER_ENABLED?.trim().toLowerCase() === 'true';
+}
+
+/**
+ * The §30 retrieval similarity floor, 0–1 (AiNormalisation D2, default 0.55).
+ *
+ * Unlike the four above this one **does not throw** when the var is absent: it is a tuning knob
+ * with a measured default in `retrieval-service.ts`, and an environment that has not declared it
+ * yet should retrieve at the default rather than fail every explanation and every chat turn. A
+ * value outside 0–1 is a typo, not a setting, and is treated as absent.
+ */
+export function retrievalSimilarityThreshold(env: Env): number | undefined {
+  const raw = env.RETRIEVAL_SIMILARITY_THRESHOLD;
+  const value = Number(raw);
+
+  if (typeof raw !== 'string' || raw.trim() === '' || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  return value >= 0 && value <= 1 ? value : undefined;
 }

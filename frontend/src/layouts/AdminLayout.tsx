@@ -1,4 +1,5 @@
 import {
+  HelpCircle,
   BookOpen,
   Bot,
   Briefcase,
@@ -26,6 +27,7 @@ const nav: AppNavItem[] = [
   { to: paths.adminCanonicalPrograms, label: 'Canonical programs', icon: Library },
   { to: paths.adminAssessmentTemplates, label: 'Assessments', icon: BookOpen },
   { to: paths.adminKnowledge, label: 'Knowledge', icon: FileText },
+  { to: paths.adminAiInsights, label: 'AI gaps', icon: HelpCircle },
   { to: paths.adminAiPolicy, label: 'AI Policy', icon: Bot },
   { to: paths.adminCounselors, label: 'Counselors', icon: Users },
   { to: paths.adminAuditLog, label: 'Audit log', icon: ScrollText },

@@ -85,8 +85,9 @@ async function seedChunk(content: string): Promise<string> {
   await db().insert(knowledgeDocuments).values({
     id: documentId,
     uploadedBy: admin.id,
+    title: 'guidance.pdf',
     fileName: 'guidance.pdf',
-    fileType: 'pdf',
+    sourceType: 'pdf',
     storagePath: `knowledge/${documentId}/guidance.pdf`,
     processingStatus: 'COMPLETED',
     visibility: 'GLOBAL',
@@ -175,11 +176,13 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
   it('answers, and persists both sides of the turn', async () => {
     await clearConversation();
 
-    const { service } = pipeline({ responses: ['Your top match leans Investigative.'] });
+    // No retrieval behind this one, so there is nothing to cite — and the sentence claims only
+    // what the student's own computed results already say, which is what Gate 2 is for.
+    const { service } = pipeline({ responses: ['That is your strongest match on your own results.'] });
     const turn = await service.ask(studentId, 'Why is this my top match?', await currentSet());
 
     expect(turn.failure).toBeNull();
-    expect(turn.answer.content).toBe('Your top match leans Investigative.');
+    expect(turn.answer.content).toBe('That is your strongest match on your own results.');
     // The generation is linked to its `ai_requests` row — the §13.7 provenance pointer.
     expect(turn.answer.aiRequestId).not.toBeNull();
 
@@ -199,7 +202,7 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     const set = await currentSet();
     const { service, prompts } = pipeline({ responses: ['Sure.'] });
 
-    await service.ask(studentId, 'What are my options?', set);
+    await service.ask(studentId, 'What are my top options?', set);
 
     const user = prompts[0]!.user;
 
@@ -217,7 +220,9 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
       policy: { instructions: 'Mention the guidance office.', restrictions: 'No fees.' },
     });
 
-    await service.ask(studentId, 'Hello', await currentSet());
+    // "Hello" is answerable from nothing, and Phase 3 refuses that rather than generating — so
+    // this asks something Gate 2 covers, since what is under test is the prompt, not the gate.
+    await service.ask(studentId, 'What are my results?', await currentSet());
 
     expect(prompts[0]!.system).toContain('Mention the guidance office.');
     expect(prompts[0]!.system).toContain('No fees.');
@@ -228,7 +233,7 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
 
     const chunkId = await seedChunk('Nursing programs at this school require a Grade 11 average.');
     const { service, prompts } = pipeline({
-      responses: ['The materials mention a Grade 11 average.'],
+      responses: ['The materials mention a Grade 11 average [1].'],
       matches: [{ id: chunkId, score: 0.9 }],
     });
 
@@ -261,11 +266,11 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     const set = await currentSet();
     const { service, prompts } = pipeline({ responses: ['One.', 'Two.'] });
 
-    await service.ask(studentId, 'First question', set);
-    await service.ask(studentId, 'Second question', set);
+    await service.ask(studentId, 'My first question about these results', set);
+    await service.ask(studentId, 'My second question about these results', set);
 
     expect(prompts[1]!.user).toContain('RECENT CONVERSATION');
-    expect(prompts[1]!.user).toContain('First question');
+    expect(prompts[1]!.user).toContain('My first question about these results');
     expect(prompts[1]!.user).toContain('One.');
   });
 
@@ -279,7 +284,7 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     const { service } = pipeline({
       responses: ['You will definitely get into this program.'],
     });
-    const turn = await service.ask(studentId, 'Will I get in?', await currentSet());
+    const turn = await service.ask(studentId, 'Will I get into my top match?', await currentSet());
 
     expect(turn.failure).toBe('FAILED_VALIDATION');
     expect(turn.answer.content).not.toContain('definitely');
@@ -294,7 +299,7 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
 
     const { service } = pipeline({ responses: [], failGeneration: true });
     const set = await currentSet();
-    const turn = await service.ask(studentId, 'Anything?', set);
+    const turn = await service.ask(studentId, 'Anything about my results?', set);
 
     expect(turn.failure).toBe('MODEL_ERROR');
     expect(turn.answer.content).toContain(set!.careers[0]!.career.title);
@@ -309,11 +314,11 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     await clearConversation();
 
     const { service } = pipeline({ responses: [], failGeneration: true });
-    const turn = await service.ask(studentId, 'A question worth keeping', await currentSet());
+    const turn = await service.ask(studentId, 'A question worth keeping about my results', await currentSet());
 
     const messages = await service.messagesFor(studentId, turn.conversation.id);
 
-    expect(messages[0]!.content).toBe('A question worth keeping');
+    expect(messages[0]!.content).toBe('A question worth keeping about my results');
   });
 
   /** A student with no recommendations gets an honest answer, not a crash. */
@@ -349,7 +354,10 @@ describe('the chat endpoints', () => {
 
     const response = await api('POST', '/student/chat', {
       token: studentToken,
-      body: { message: 'What should I take?' },
+      // Phrased as a question about their own results: with no corpus behind it, Phase 3 refuses
+      // anything the student's results cannot answer *before* reaching the model, so a bare
+      // "what should I take?" would exit at that gate and never exercise the outage path.
+      body: { message: 'What should I take, based on my top matches?' },
     });
 
     expect(response.status).toBe(201);

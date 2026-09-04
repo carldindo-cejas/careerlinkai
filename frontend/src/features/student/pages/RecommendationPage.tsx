@@ -441,6 +441,15 @@ function ExplainMore({ recommendationId }: { recommendationId: string }) {
         className="rounded-none bg-muted p-3 focus-visible:outline-none"
       >
         <p className="text-sm text-foreground/80">{explain.data.explanation.explanation_text}</p>
+        {/*
+          Naming the material this paragraph cited is the last line of the grounding contract, and
+          the one a person performs: a student who can see the source can judge the answer.
+        */}
+        {explain.data.explanation.sources.length > 0 ? (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Based on: {explain.data.explanation.sources.join(', ')}
+          </p>
+        ) : null}
         <p className="mt-1 text-xs text-muted-foreground">
           AI-generated from the school&apos;s guidance materials — the scores above are computed,
           not AI.

@@ -8,13 +8,21 @@ import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
 import { AiPolicyService } from '@/modules/ai/ai-policy-service';
+import {
+  syncCatalogKnowledge,
+  type CatalogSyncResult,
+} from '@/modules/ai/catalog-knowledge-service';
 import { ingestionFrom } from '@/modules/ai/factory';
+import { AiInsightsService } from '@/modules/ai/insights-service';
 import { MAX_FILE_BYTES } from '@/modules/ai/knowledge-ingestion-service';
 import {
+  createKnowledgeEntrySchema,
   extractedTextSchema,
   listKnowledgeDocumentsQuerySchema,
   LIST_KNOWLEDGE_QUERY_KEYS,
   updateAiPolicySchema,
+  updateKnowledgeEntrySchema,
+  UPLOAD_SOURCE_TYPES,
 } from '@/modules/ai/schemas';
 import { serializeAiPolicy, serializeKnowledgeDocument } from '@/modules/ai/serializers';
 
@@ -68,10 +76,19 @@ adminAiRoutes.post('/knowledge-documents', async (c) => {
     throw ApiError.validation({ file: ['The file exceeds the 10 MB limit.'] });
   }
 
+  /**
+   * `.txt` and `.md` join PDF and DOCX (AiNormalisation Phase 1) — and they cost nothing to
+   * accept: there is no parser to add on either side, because the browser reads a text file with
+   * `File.text()`. Both land as `source_type = 'text'`; the extension described how to *read* the
+   * file, never what kind of knowledge it holds.
+   */
   const extension = file.name.toLowerCase().split('.').pop();
+  const sourceType = UPLOAD_SOURCE_TYPES[extension ?? ''];
 
-  if (extension !== 'pdf' && extension !== 'docx') {
-    throw ApiError.validation({ file: ['Only PDF and DOCX files are supported.'] });
+  if (sourceType === undefined) {
+    throw ApiError.validation({
+      file: ['Only PDF, DOCX, TXT and MD files are supported.'],
+    });
   }
 
   const parsed = extractedTextSchema.safeParse({ extracted_text: form.extracted_text });
@@ -86,7 +103,7 @@ adminAiRoutes.post('/knowledge-documents', async (c) => {
     requireUser(c),
     {
       fileName: file.name,
-      fileType: extension,
+      sourceType,
       fileBytes: await file.arrayBuffer(),
       extractedText: parsed.data.extracted_text,
     },
@@ -130,6 +147,185 @@ adminAiRoutes.post('/knowledge-documents/:id/reprocess', async (c) => {
   );
 
   return c.json(successEnvelope(serializeKnowledgeDocument(document), 'Reprocessing queued.'));
+});
+
+/**
+ * **Write a knowledge entry, rather than upload one** (AiNormalisation Phase 1).
+ *
+ * The measurement that produced this endpoint: on 2026-09-04 the production corpus held zero
+ * documents and had never held one. Uploading was the only way in, and it requires somebody to
+ * have a PDF — so the AI had nothing to stand on and refused, correctly, on every question.
+ *
+ * Two shapes, one row:
+ *
+ *   * `type: "text"` — a title and a body. A paragraph of policy, an admissions note, anything.
+ *   * `type: "qa"` — a question and its authoritative answer, stored as one `Q: …\nA: …` passage.
+ *     This is the highest-value input in the system. It embeds close to how a student actually
+ *     phrases the question, and it is what Gate 1 will return **verbatim, with no model call**,
+ *     which is simultaneously the cheapest answer and the only one that cannot hallucinate.
+ */
+adminAiRoutes.post('/knowledge-entries', async (c) => {
+  const input = await parseBody(c, createKnowledgeEntrySchema);
+
+  const document = await ingestionFrom(createDatabase(c.env.DB), c.env).createEntry(
+    requireUser(c),
+    input.type === 'qa'
+      ? {
+          sourceType: 'qa',
+          title: input.question,
+          // The corpus contract: one passage carrying both halves. A question embedded without
+          // its answer retrieves the question back, which is not knowledge.
+          body: `Q: ${input.question}\nA: ${input.answer}`,
+        }
+      : { sourceType: 'text', title: input.title, body: input.body },
+    clientIp(c),
+  );
+
+  return c.json(
+    successEnvelope(serializeKnowledgeDocument(document), 'Saved. It will be searchable in a moment.'),
+    201,
+  );
+});
+
+/**
+ * The body an entry was written from, for the edit form — so correcting one word does not mean
+ * retyping the rest. Available for any entry, including uploads, because reading what the AI
+ * actually sees is how an admin diagnoses a bad answer.
+ */
+adminAiRoutes.get('/knowledge-documents/:id/content', async (c) => {
+  const service = ingestionFrom(createDatabase(c.env.DB), c.env);
+  const document = await service.find(c.req.param('id'));
+  const body = await service.bodyOf(document.id);
+
+  return c.json(
+    successEnvelope(
+      { ...serializeKnowledgeDocument(document), body },
+      'Entry content retrieved.',
+    ),
+  );
+});
+
+/**
+ * Edit an authored entry. Saving re-chunks and re-embeds through the existing reprocess path,
+ * so a corrected fact **replaces** the wrong one in the index rather than joining it there.
+ *
+ * Uploads and catalog entries are refused by the service, each for its own reason (see
+ * `updateEntry`). PATCH rather than PUT: a title fix should not require resending the body.
+ */
+adminAiRoutes.patch('/knowledge-entries/:id', async (c) => {
+  const input = await parseBody(c, updateKnowledgeEntrySchema);
+  const document = await ingestionFrom(createDatabase(c.env.DB), c.env).updateEntry(
+    requireUser(c),
+    c.req.param('id'),
+    input.type === 'qa'
+      ? { title: input.question, body: `Q: ${input.question}\nA: ${input.answer}` }
+      : { title: input.title, body: input.body },
+    clientIp(c),
+  );
+
+  return c.json(
+    successEnvelope(serializeKnowledgeDocument(document), 'Saved. The AI is re-reading it now.'),
+  );
+});
+
+/**
+ * What the admin is told after a sync.
+ *
+ * `remaining` is the part worth surfacing rather than hiding: one invocation may only rewrite so
+ * many entries before it runs out of the Free plan's 50 subrequests (§45), so on a first seed of a
+ * full catalog the honest answer is "this much done, press again" — not a cheerful total that is
+ * not yet true.
+ */
+function catalogSyncMessage(result: CatalogSyncResult): string {
+  if (result.skipped !== undefined) {
+    return result.skipped;
+  }
+
+  if (result.changed === 0 && result.retired === 0) {
+    return 'Every career and program is already up to date in the knowledge base.';
+  }
+
+  const parts = [
+    result.changed === 0 ? null : `${result.changed} entries queued for re-reading`,
+    result.retired === 0 ? null : `${result.retired} archived`,
+    result.remaining === 0 ? null : `${result.remaining} still to do — run this again`,
+  ].filter((part): part is string => part !== null);
+
+  return `${parts.join(', ')}.`;
+}
+
+/**
+ * Run the catalog sync on demand.
+ *
+ * It also runs nightly, but "nightly" is the wrong answer to *"I just fixed that program's
+ * description and the AI is still saying the old thing"* — an admin who made a correction should
+ * be able to make it true now. Idempotent and cheap when nothing changed: an entry whose text is
+ * unchanged is not rewritten, not re-queued, and not re-embedded.
+ */
+adminAiRoutes.post('/knowledge-catalog-sync', async (c) => {
+  const result = await syncCatalogKnowledge(createDatabase(c.env.DB), c.env, requireUser(c).id);
+
+  return c.json(
+    successEnvelope(
+      result,
+      catalogSyncMessage(result),
+    ),
+  );
+});
+
+/**
+ * **What the knowledge base does not cover** (AiNormalisation Phase 4).
+ *
+ * Three reads, no new pipeline. Every honest refusal this system has ever made already wrote an
+ * `ai_requests` row carrying the question and the reason — the work was done in Phase 5a and
+ * nobody had ever looked at it. Surfacing it is what turns a refusal from a dead end into the
+ * admin's backlog: answer the top five questions, and the next student to ask any of them gets
+ * that answer verbatim from Gate 1, with no model call and no possibility of invention.
+ *
+ * One endpoint rather than three, because it is one screen and three round trips on a school's
+ * connection is three chances to see a spinner.
+ */
+adminAiRoutes.get('/ai-insights', async (c) => {
+  const service = new AiInsightsService(createDatabase(c.env.DB));
+
+  const [unanswered, coverage, flagged, health] = await Promise.all([
+    service.unansweredQuestions(),
+    service.coverage(),
+    service.flaggedAnswers(),
+    service.corpusHealth(),
+  ]);
+
+  return c.json(
+    successEnvelope(
+      {
+        unanswered_questions: unanswered.map((row) => ({
+          question: row.question,
+          asks: row.asks,
+          last_asked_at: row.lastAskedAt,
+        })),
+        coverage: {
+          careers: coverage.careers,
+          programs: coverage.programs,
+          gaps: coverage.gaps.map((gap) => ({
+            kind: gap.kind,
+            id: gap.id,
+            label: gap.label,
+            stalled: gap.stalled,
+          })),
+        },
+        flagged_answers: flagged.map((row) => ({
+          message_id: row.messageId,
+          answer: row.answer,
+          question: row.question,
+          ai_request_id: row.aiRequestId,
+          chunk_ids: row.chunkIds,
+          created_at: row.createdAt,
+        })),
+        corpus: health,
+      },
+      'AI insights retrieved.',
+    ),
+  );
 });
 
 // --- AI policy (§13.7): the single GLOBAL row — list and edit, never create or delete. ------

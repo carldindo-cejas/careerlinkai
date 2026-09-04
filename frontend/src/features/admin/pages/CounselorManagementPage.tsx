@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Pagination } from '@/components/ui/pagination';
 import {
   useCounselors,
   useCreateCounselor,
@@ -152,31 +153,13 @@ export function CounselorManagementPage() {
         />
       ))}
 
-      {data && data.pagination.last_page > 1 ? (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Page {data.pagination.current_page} of {data.pagination.last_page} ·{' '}
-            {data.pagination.total} counselors
-          </p>
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={page <= 1 || isFetching}
-              onClick={() => setPage((value) => value - 1)}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={page >= data.pagination.last_page || isFetching}
-              onClick={() => setPage((value) => value + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+      {data ? (
+        <Pagination
+          pagination={data.pagination}
+          onPageChange={setPage}
+          noun="counselors"
+          isFetching={isFetching}
+        />
       ) : null}
     </div>
   );

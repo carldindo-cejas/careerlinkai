@@ -129,6 +129,31 @@ export const PROCESSING_STATUSES = ['UPLOADED', 'PROCESSING', 'COMPLETED', 'FAIL
 export type ProcessingStatus = (typeof PROCESSING_STATUSES)[number];
 
 /**
+ * Where a knowledge entry came from (migration 0022).
+ *
+ * This replaced `file_type`, which could only be `pdf | docx` — and that column was the whole
+ * reason the corpus stayed empty: knowledge could only enter the system as a file somebody
+ * uploaded. The values are ordered by how the content was authored, not by format:
+ *
+ *   * `pdf` / `docx` — an uploaded file, extracted in the admin's browser (§33 v1.5).
+ *   * `text` — a pasted note, or an uploaded `.txt`/`.md` (no parser needed either way).
+ *   * `qa` — one admin-authored question and its authoritative answer. The highest-value input:
+ *     it embeds close to how a student actually phrases the question, and it is what Gate 1
+ *     returns verbatim with no model call at all.
+ *   * `catalog` — generated from a `careers` or `programs` row this system already holds, so
+ *     every recommendation target has grounding *about itself* without anyone uploading anything.
+ */
+export const KNOWLEDGE_SOURCE_TYPES = ['pdf', 'docx', 'text', 'qa', 'catalog'] as const;
+export type KnowledgeSourceType = (typeof KNOWLEDGE_SOURCE_TYPES)[number];
+
+/** The two catalog things a `catalog` entry can be about (migration 0022). */
+export const KNOWLEDGE_ENTITY_TYPES = ['career', 'program'] as const;
+export type KnowledgeEntityType = (typeof KNOWLEDGE_ENTITY_TYPES)[number];
+
+/** The source types an admin may author or edit in place — the rest are derived or uploaded. */
+export const AUTHORED_SOURCE_TYPES = ['text', 'qa'] as const;
+
+/**
  * §13.7 (v1.2): v1 uses only `GLOBAL`. `COUNSELOR_PRIVATE` is deferred to §63 — it shipped in
  * v1.1 with no retrieval-scoping rule, which made it a cross-tenant leak waiting to happen.
  * The value stays in the enum so restoring it later is not a migration.

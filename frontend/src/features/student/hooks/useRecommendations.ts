@@ -162,6 +162,10 @@ export function useAskChat() {
             role: 'user',
             content: message,
             ai_request_id: null,
+            // The optimistic echo of what the student just typed — a question, so nothing to cite
+            // and nothing to flag.
+            sources: [],
+            feedback: null,
             created_at: new Date().toISOString(),
           },
         ],
@@ -187,6 +191,34 @@ export function useAskChat() {
           turn.answer,
         ],
       }));
+    },
+  });
+}
+
+/**
+ * Mark one assistant answer as wrong (Phase 4).
+ *
+ * Optimistic: the thumb fills the moment it is pressed, because a student reporting a wrong answer
+ * should not be left wondering whether the report landed. There is no un-flag — the signal goes to
+ * an admin review queue, and an item that can vanish before anyone looks at it is worse than a
+ * stale one.
+ */
+export function useFlagAnswer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (messageId: string) => chatApi.flagAnswer(messageId),
+    onSuccess: (_result, messageId) => {
+      queryClient.setQueryData<ChatTranscript>(chatKeys.transcript, (current) =>
+        current === undefined
+          ? current
+          : {
+              ...current,
+              messages: current.messages.map((message) =>
+                message.id === messageId ? { ...message, feedback: 'DOWN' as const } : message,
+              ),
+            },
+      );
     },
   });
 }

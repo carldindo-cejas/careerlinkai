@@ -27,6 +27,7 @@ import { now } from '@/lib/datetime';
 import {
   academicAverage,
   rankTop,
+  rankTopDistinct,
   scoreCareer,
   scoreProgram,
   TOP_N,
@@ -383,12 +384,17 @@ export class RecommendationService {
     recommendationId: string,
     explanationText: string,
     aiModel: string,
+    /** The knowledge entries this paragraph was written from (migration 0025), shown to the student. */
+    sources: string[] = [],
   ): Promise<RecommendationExplanation> {
     const row = {
       id: uuid(),
       recommendationId,
       explanationText,
       aiModel,
+      // Empty means "nothing to name", which is stored as NULL: a column that says [] and a
+      // column that says nothing would render identically and mean the same thing.
+      sources: sources.length === 0 ? null : sources,
       createdAt: now(),
     };
 
@@ -733,13 +739,20 @@ export class RecommendationService {
           linked.map((career) => career.typicalRiasecCode),
         ),
         name: program.name,
+        /*
+          What this row *is*, as opposed to which college's copy of it this row is. The canonical
+          id when the offering has been matched to one; the name otherwise, so two unmapped copies
+          of the same degree still collapse. See `rankTopDistinct`.
+        */
+        canonicalKey: program.programCatalogId ?? `name:${program.name.trim().toLowerCase()}`,
       };
     });
 
-    return rankTop(
+    return rankTopDistinct(
       matches,
       (m) => m.matchScore,
       (m) => m.name,
+      (m) => m.canonicalKey,
       TOP_N,
     );
   }

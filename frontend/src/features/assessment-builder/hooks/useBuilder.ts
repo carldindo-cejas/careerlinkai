@@ -64,6 +64,25 @@ export function useCreateVersion(templateId: string) {
 }
 
 /**
+ * Copy a version into a fresh DRAFT — the edit path for anything already published.
+ *
+ * The invalidation is **awaited** (`mutateAsync` resolves once `onSuccess` settles) for the same
+ * reason `useAddQuestions` awaits its own: the caller selects the returned draft immediately, and
+ * selecting a version the cached template does not list yet renders as "the button did nothing".
+ */
+export function useDuplicateVersion(templateId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (versionId: string) => builderApi.duplicateVersion(versionId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: builderKeys.template(templateId),
+      }),
+  });
+}
+
+/**
  * Adding questions — and **the invalidation is awaited, not fired and forgotten.**
  *
  * `mutateAsync` resolves only once `onSuccess` has settled, so returning the refetch promise means

@@ -13,6 +13,7 @@ import {
   useAddDimensions,
   useBuilderTemplate,
   useCreateVersion,
+  useDuplicateVersion,
   useGenerateFromDescription,
   useGenerateFromDocument,
   useGenerationStatus,
@@ -76,6 +77,7 @@ export function TemplateBuilderPage() {
           key={activeVersionId}
           versionId={activeVersionId}
           templateId={template.id}
+          onSelectVersion={setSelectedVersionId}
           /* The template owns the dimensions (they are shared by every version, §12), so they are
              passed down rather than re-fetched inside the workspace. */
           dimensions={template.dimensions ?? []}
@@ -164,6 +166,18 @@ function DimensionsCard({ template }: { template: BuilderTemplate }) {
 
 // --- Versions ----------------------------------------------------------------------------------
 
+/**
+ * The version list — **and the only place an already-published instrument becomes editable again.**
+ *
+ * "New version" and "Edit a copy" are two different acts and the card offers both, because
+ * collapsing them is what made the curated RIASEC and SCCT instruments effectively read-only:
+ * their single version is PUBLISHED and therefore frozen (invariant 1), and the only button on
+ * offer produced an *empty* v2. Correcting one item meant retyping sixty. "Edit a copy" duplicates
+ * the version whole — every question, option, mapping and the scoring config — into a DRAFT, then
+ * selects it, so the author lands in the ordinary workspace with the real content in front of them.
+ *
+ * The frozen version itself is never touched, and remains the one assigned classes are sitting.
+ */
 function VersionsCard({
   template,
   activeVersionId,
@@ -174,6 +188,7 @@ function VersionsCard({
   onSelect: (versionId: string) => void;
 }) {
   const createVersion = useCreateVersion(template.id);
+  const duplicateVersion = useDuplicateVersion(template.id);
   const versions = template.versions ?? [];
 
   return (
@@ -182,32 +197,57 @@ function VersionsCard({
         <div>
           <CardTitle>Versions</CardTitle>
           <CardDescription>
-            A published version is frozen forever — fix a mistake by publishing the next one.
+            A published version is frozen forever — edit a copy of it and publish that as the next
+            one. "New version" starts empty instead, for a genuinely new edition.
           </CardDescription>
         </div>
         <Button
           variant="secondary"
-          disabled={createVersion.isPending}
+          disabled={createVersion.isPending || duplicateVersion.isPending}
           onClick={() => createVersion.mutate()}
         >
           New version
         </Button>
       </CardHeader>
-      <CardContent className="flex flex-wrap gap-2">
+      <CardContent className="flex flex-col gap-2">
         {versions.length === 0 ? (
           <p className="text-sm text-muted-foreground">No versions yet — create one to start adding questions.</p>
         ) : (
-          versions.map((version) => (
-            <Button
-              key={version.id}
-              variant={version.id === activeVersionId ? 'primary' : 'secondary'}
-              onClick={() => onSelect(version.id)}
-            >
-              v{version.version_number} · {version.status}
-            </Button>
-          ))
+          <div className="flex flex-wrap gap-2">
+            {versions.map((version) => (
+              <div key={version.id} className="flex items-center gap-1">
+                <Button
+                  variant={version.id === activeVersionId ? 'primary' : 'secondary'}
+                  onClick={() => onSelect(version.id)}
+                >
+                  v{version.version_number} · {version.status}
+                </Button>
+                {/* Only on a frozen version. A DRAFT is already editable in place, and offering to
+                    copy it there would invite two half-finished drafts of the same edition. */}
+                {version.status !== 'DRAFT' ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title={`Copy v${version.version_number}'s questions into a new draft you can edit`}
+                    disabled={duplicateVersion.isPending || createVersion.isPending}
+                    onClick={() => {
+                      void duplicateVersion
+                        .mutateAsync(version.id)
+                        .then((draft) => onSelect(draft.id))
+                        // The mutation's own `isError` renders the message; this keeps the
+                        // rejection out of the console as an unhandled promise rejection.
+                        .catch(() => undefined);
+                    }}
+                  >
+                    {duplicateVersion.isPending ? 'Copying…' : 'Edit a copy'}
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          </div>
         )}
         {createVersion.isError ? <Alert>{createVersion.error.message}</Alert> : null}
+        {duplicateVersion.isError ? <Alert>{duplicateVersion.error.message}</Alert> : null}
       </CardContent>
     </Card>
   );
@@ -219,11 +259,14 @@ function VersionWorkspace({
   versionId,
   templateId,
   dimensions,
+  onSelectVersion,
 }: {
   versionId: string;
   templateId: string;
   dimensions: BuilderDimension[];
+  onSelectVersion: (versionId: string) => void;
 }) {
+  const duplicateVersion = useDuplicateVersion(templateId);
   const { data: review, isLoading, isError, error } = useVersionReview(versionId);
 
   if (isLoading) {
@@ -236,9 +279,64 @@ function VersionWorkspace({
 
   const draft = review.status === 'DRAFT';
 
+  /**
+   * **§5's permanent rule, honoured in the UI as well as the server.** RIASEC and SCCT can never be
+   * AI-generated or AI-edited by any principal, and `authorizeGenerateWithAi` refuses them with a
+   * 403. Now that a curated instrument can have a DRAFT version — the copy this page's "Edit a
+   * copy" makes — a category-blind `draft` check would put the "Draft with AI" panel in front of an
+   * author whose every click it 403s. The rule is enforced on the server; this stops the UI from
+   * offering an act the system will refuse.
+   */
+  const aiAllowed = review.template.category === 'CUSTOM';
+
   return (
     <>
-      {draft ? <GeneratePanel review={review} /> : null}
+      {/*
+        **The read-only explanation, at the point of confusion.**
+
+        Landing on RIASEC shows sixty questions that will not respond to a click, and the reason —
+        this version published, and a published version is frozen — is otherwise only inferable from
+        a `PUBLISHED` badge three cards up. Saying it here, next to the way out, is what turns
+        "these are locked" into "these are edited by copying". The button is the same act as the
+        version list's "Edit a copy"; it is repeated because this is where someone discovers they
+        need it.
+      */}
+      {draft ? null : (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <div>
+              <CardTitle>
+                v{review.version_number} is {review.status.toLowerCase()} and
+                read-only
+              </CardTitle>
+              <CardDescription>
+                Students who sat this version keep the instrument their answers
+                were scored against, so it can never change. Copy it into a
+                draft to edit the questions, then publish that draft as the next
+                version.
+              </CardDescription>
+            </div>
+            <Button
+              disabled={duplicateVersion.isPending}
+              onClick={() => {
+                void duplicateVersion
+                  .mutateAsync(review.id)
+                  .then((created) => onSelectVersion(created.id))
+                  .catch(() => undefined);
+              }}
+            >
+              {duplicateVersion.isPending ? 'Copying…' : 'Edit a copy'}
+            </Button>
+          </CardHeader>
+          {duplicateVersion.isError ? (
+            <CardContent>
+              <Alert>{duplicateVersion.error.message}</Alert>
+            </CardContent>
+          ) : null}
+        </Card>
+      )}
+
+      {draft && aiAllowed ? <GeneratePanel review={review} /> : null}
 
       {/*
         The workspace replaces what used to be two cards — a read-only review list and a separate

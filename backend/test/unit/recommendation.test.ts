@@ -7,6 +7,7 @@ import {
   programEligibility,
   programRiasecCompatibility,
   rankTop,
+  rankTopDistinct,
   riasecCompatibility,
   scoreCareer,
   scoreProgram,
@@ -321,6 +322,103 @@ describe('rankTop', () => {
     ];
 
     rankTop(matches, score, label);
+
+    expect(matches.map((m) => m.name)).toEqual(['a', 'b']);
+  });
+});
+
+describe('rankTopDistinct', () => {
+  const score = (m: { score: number; name: string; key: string }) => m.score;
+  const label = (m: { score: number; name: string; key: string }) => m.name;
+  const key = (m: { score: number; name: string; key: string }) => m.key;
+
+  /**
+   * The bug this exists for. A `programs` row is one college's offering and §27 scores a program
+   * on inputs that do not vary by institution, so every college's BS Nursing tied on the same
+   * score — and a top-10 of *rows* was ten copies of it, with the student's other matching degrees
+   * pushed below the cut.
+   */
+  it('keeps one offering per canonical program, not one per college', () => {
+    const ranked = rankTopDistinct(
+      [
+        { score: 88, name: 'BS Nursing', key: 'cat-nursing' },
+        { score: 88, name: 'BS Nursing', key: 'cat-nursing' },
+        { score: 88, name: 'BS Nursing', key: 'cat-nursing' },
+        { score: 84, name: 'BS Computer Science', key: 'cat-cs' },
+        { score: 84, name: 'BS Computer Science', key: 'cat-cs' },
+        { score: 80, name: 'BS Civil Engineering', key: 'cat-ce' },
+      ],
+      score,
+      label,
+      key,
+    );
+
+    expect(ranked.map((m) => m.name)).toEqual([
+      'BS Nursing',
+      'BS Computer Science',
+      'BS Civil Engineering',
+    ]);
+  });
+
+  it('collapses unmapped offerings keyed by name', () => {
+    const ranked = rankTopDistinct(
+      [
+        { score: 70, name: 'BS Nursing', key: 'name:bs nursing' },
+        { score: 70, name: 'BS Nursing', key: 'name:bs nursing' },
+        { score: 60, name: 'BS Biology', key: 'name:bs biology' },
+      ],
+      score,
+      label,
+      key,
+    );
+
+    expect(ranked.map((m) => m.name)).toEqual(['BS Nursing', 'BS Biology']);
+  });
+
+  /** Same order as `rankTop`, so which offering represents a degree is reproducible (§26). */
+  it('keeps the highest-scoring offering, and on a tie the alphabetically first', () => {
+    const ranked = rankTopDistinct(
+      [
+        { score: 70, name: 'Zeta College BSN', key: 'cat-nursing' },
+        { score: 90, name: 'Alpha College BSN', key: 'cat-nursing' },
+      ],
+      score,
+      label,
+      key,
+    );
+
+    expect(ranked.map((m) => m.name)).toEqual(['Alpha College BSN']);
+
+    const tied = rankTopDistinct(
+      [
+        { score: 90, name: 'Zeta College BSN', key: 'cat-nursing' },
+        { score: 90, name: 'Alpha College BSN', key: 'cat-nursing' },
+      ],
+      score,
+      label,
+      key,
+    );
+
+    expect(tied.map((m) => m.name)).toEqual(['Alpha College BSN']);
+  });
+
+  it('still keeps only the top 10 by default', () => {
+    const matches = Array.from({ length: 25 }, (_, i) => ({
+      score: i,
+      name: `program-${i}`,
+      key: `cat-${i}`,
+    }));
+
+    expect(rankTopDistinct(matches, score, label, key)).toHaveLength(10);
+  });
+
+  it('does not mutate the caller’s array', () => {
+    const matches = [
+      { score: 10, name: 'a', key: 'k1' },
+      { score: 90, name: 'b', key: 'k2' },
+    ];
+
+    rankTopDistinct(matches, score, label, key);
 
     expect(matches.map((m) => m.name)).toEqual(['a', 'b']);
   });

@@ -163,12 +163,25 @@ describe('PDF extraction (§33)', () => {
 });
 
 describe('the guards around both', () => {
-  it('rejects a file type neither parser handles', async () => {
-    const file = new File(['plain text is not a supported upload'], 'notes.txt', {
-      type: 'text/plain',
+  it('rejects a file type nothing here can read', async () => {
+    const file = new File(['not a supported upload'], 'notes.rtf', {
+      type: 'application/rtf',
     });
 
-    await expect(extractText(file)).rejects.toThrow(/Only PDF and DOCX/i);
+    await expect(extractText(file)).rejects.toThrow(/Only PDF, DOCX, TXT and MD/i);
+  });
+
+  /**
+   * `.txt` and `.md` need no parser at all — a text file is already its own extraction — so
+   * accepting them costs nothing on either side, and they are the format a school's existing
+   * handouts and FAQ notes are most likely to already be in (AiNormalisation Phase 1).
+   */
+  it('reads .txt and .md directly, with no parser and no dynamic import', async () => {
+    for (const name of ['handbook.txt', 'faq.md']) {
+      const file = new File(['Enrolment closes on 30 June.'], name, { type: 'text/plain' });
+
+      await expect(extractText(file)).resolves.toBe('Enrolment closes on 30 June.');
+    }
   });
 
   it('enforces the §34 cap in the browser, before half a megabyte is uploaded for a 422', async () => {

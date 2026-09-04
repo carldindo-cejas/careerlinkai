@@ -57,6 +57,21 @@ export const builderApi = {
     );
   },
 
+  /**
+   * **How a published instrument is edited.** Copies a version whole — questions, options,
+   * mappings and its full scoring config — into a new DRAFT, and hands back that draft.
+   *
+   * Distinct from `createVersion`, which mints an *empty* one. Both are needed: a genuinely new
+   * edition of an instrument starts blank, while fixing a typo in RIASEC's sixty items must not.
+   */
+  duplicateVersion(versionId: string): Promise<BuilderVersionSummary> {
+    return unwrap(
+      httpClient.post<ApiSuccess<BuilderVersionSummary>>(
+        `/assessment-versions/${versionId}/duplicate`,
+      ),
+    );
+  },
+
   /** The §31 review payload — questions WITH scores and mappings (the author's view). */
   getVersion(versionId: string): Promise<VersionReview> {
     return unwrap(httpClient.get<ApiSuccess<VersionReview>>(`/assessment-versions/${versionId}`));

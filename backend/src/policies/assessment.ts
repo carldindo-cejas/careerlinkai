@@ -148,6 +148,40 @@ export function canManageTemplate(user: User, template: AssessmentTemplate): boo
 }
 
 /**
+ * **Assigning is authorized against the class, not the template** — and this is the distinction the
+ * assignment route had wrong.
+ *
+ * A counselor's whole job is handing their class the *curated* instruments: RIASEC and SCCT are
+ * `GLOBAL` and admin-owned, so `canManageTemplate` refuses them, and the assignment endpoint gating
+ * on it meant a counselor pressing Assign on RIASEC got "Assessment template not found." §39's
+ * table has always said `assign → counselor (owns class) ✅`; the real check is
+ * `canManageAssignment(user, classRoom)`, which `assignToClasses` already applies per class.
+ *
+ * What is left for this function to decide is only **visibility**: may the caller see this
+ * instrument at all? That is the same rule as the list — an admin sees everything, a counselor sees
+ * the global instruments plus their own — so a counselor still cannot assign another counselor's
+ * private template, and still cannot reach a class that is not theirs.
+ */
+export function canAssignTemplate(user: User, template: AssessmentTemplate): boolean {
+  return (
+    user.role === 'admin' || template.ownership === 'GLOBAL' || template.creatorId === user.id
+  );
+}
+
+/**
+ * **404, not 403**, for the ownership failure — the standing rule: a counselor probing another
+ * counselor's private template ids must not learn which ids exist.
+ */
+export function authorizeAssignTemplate(
+  user: User,
+  template: AssessmentTemplate | undefined,
+): asserts template is AssessmentTemplate {
+  if (template === undefined || !canAssignTemplate(user, template)) {
+    throw ApiError.notFound('Assessment template not found.');
+  }
+}
+
+/**
  * **404, not 403**, for the ownership failure — the standing rule: a counselor probing another
  * counselor's private template ids must not learn which ids exist.
  */

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { classApi } from '@/services/classApi';
 import type { CreateClassPayload, UpdateClassPayload } from '@/types/class';
@@ -9,6 +9,7 @@ import type { CreateClassPayload, UpdateClassPayload } from '@/types/class';
 
 export const classKeys = {
   all: ['classes'] as const,
+  page: (page: number) => ['classes', 'page', page] as const,
   detail: (id: string) => ['classes', id] as const,
   options: ['classes', 'options'] as const,
 };
@@ -22,10 +23,18 @@ export function useClassOptions() {
   });
 }
 
-export function useClasses() {
+/**
+ * One page of the counselor's classes.
+ *
+ * The key stays under `classKeys.all`, so every mutation's existing invalidation still reaches all
+ * the pages. `keepPreviousData` holds the current page on screen while the next one loads, so
+ * paging does not blank the grid — the same reason the admin lists do it.
+ */
+export function useClasses(page = 1) {
   return useQuery({
-    queryKey: classKeys.all,
-    queryFn: () => classApi.list(),
+    queryKey: classKeys.page(page),
+    queryFn: () => classApi.list(page),
+    placeholderData: keepPreviousData,
   });
 }
 

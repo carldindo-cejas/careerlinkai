@@ -3,6 +3,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import type { Database } from '@/db/client';
 import { aiRequests, type AiRequest } from '@/db/schema';
 import { AI_REQUEST_IN_FLIGHT_STATUSES, type AiRequestType } from '@/db/enums';
+import { estimateTokens } from '@/lib/chunker';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { log } from '@/lib/logger';
@@ -55,9 +56,19 @@ import { log } from '@/lib/logger';
  * a weather report). Production passes `env.AI` unchanged.
  */
 
-/** The two Workers AI shapes this system uses — the whole surface, kept stubbable. */
+/**
+ * The two Workers AI shapes this system uses — the whole surface, kept stubbable.
+ *
+ * The third argument is Workers AI's per-call options, which is how a request is routed through
+ * **Cloudflare AI Gateway** (Phase 4): `{ gateway: { id } }`. Optional, and unused unless
+ * `AI_GATEWAY_ID` is set.
+ */
 export interface WorkersAiClient {
-  run(model: string, inputs: Record<string, unknown>): Promise<unknown>;
+  run(
+    model: string,
+    inputs: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ): Promise<unknown>;
 }
 
 export interface GenerateOptions {
@@ -80,10 +91,51 @@ export interface GenerateOptions {
 
 export type GenerateResult =
   | { ok: true; text: string; request: AiRequest }
-  | { ok: false; reason: 'MODEL_UNAVAILABLE' | 'QUOTA_EXHAUSTED' | 'MODEL_ERROR' | 'EMPTY_RESPONSE'; request: AiRequest };
+  | {
+      ok: false;
+      reason:
+        | 'MODEL_UNAVAILABLE'
+        | 'QUOTA_EXHAUSTED'
+        | 'MODEL_ERROR'
+        | 'EMPTY_RESPONSE'
+        | 'BUDGET_EXHAUSTED';
+      request: AiRequest;
+    };
+
+/**
+ * The daily generation budget, as this service sees it (AiNormalisation Phase 4).
+ *
+ * A function rather than a binding, so the gateway stays ignorant of Durable Objects and the suite
+ * can drive it without one. Returns false when this call must not be made.
+ */
+export type GenerationBudget = () => Promise<boolean>;
 
 /** §33 v1.5: the embedding model accepts up to 100 texts per call. */
 export const EMBEDDING_BATCH_LIMIT = 100;
+
+/**
+ * The embedding model's hard input ceiling, in tokens (`@cf/baai/bge-base-en-v1.5`: 512).
+ *
+ * Nothing in Workers AI reports a truncation — an over-long text embeds "successfully" into a
+ * vector representing only its head — which is exactly why this constant exists next to a log
+ * line rather than in a comment. `MAX_CHUNK_TOKENS` is set below it; this is the tripwire that
+ * fires if that invariant is ever broken again (AiNormalisation D1).
+ */
+export const EMBEDDING_MAX_INPUT_TOKENS = 512;
+
+/**
+ * BGE v1.5 is an **asymmetric** retriever: a short query is meant to carry this instruction
+ * prefix while passages stay bare (AiNormalisation D3). Embedding both sides identically puts
+ * query and passage vectors in slightly different regions of the space and costs a few points of
+ * similarity on every correct match.
+ */
+export const BGE_QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
+
+/** One reranked candidate: the index of the passage as supplied, and its relevance score. */
+export interface RerankedPassage {
+  index: number;
+  score: number;
+}
 
 /** A quota error must never be retried (§30 v1.5) — recognize it by its message. */
 function isQuotaError(error: unknown): boolean {
@@ -143,7 +195,27 @@ export class AiGatewayService {
   constructor(
     private readonly db: Database,
     private readonly ai: WorkersAiClient | undefined,
-    private readonly models: { text: string; embedding: string },
+    private readonly models: {
+      text: string;
+      embedding: string;
+      rerank?: string;
+      /**
+       * Cloudflare AI Gateway's id (Phase 4). Free, and it adds response caching, analytics and
+       * rate limiting in front of the `AI` binding without a line of service code — every call
+       * below simply carries `{ gateway: { id } }` when it is set.
+       *
+       * Note the name collision this project has lived with since Phase 5a: `AiGatewayService` is
+       * our internal adapter and predates any use of the Cloudflare product. They are unrelated,
+       * and this field is the only place the two meet.
+       */
+      gatewayId?: string;
+    },
+    /**
+     * Charged once per text generation (Phase 4). Absent means unlimited, which is what the suite
+     * and every non-production path want — a budget that had to be stubbed everywhere would be a
+     * budget people route around.
+     */
+    private readonly budget?: GenerationBudget,
   ) {}
 
   /**
@@ -274,17 +346,39 @@ export class AiGatewayService {
       );
     }
 
+    /**
+     * The budget is charged **here**, in the one place every generation passes through, and before
+     * the call rather than after it. Charging afterwards would let a burst of concurrent requests
+     * all pass a check that none of them had yet paid for — the same TOCTOU the DO's `charge()`
+     * exists to close.
+     *
+     * Refusal is an ordinary typed failure, so every caller's existing fallback handles it with no
+     * new branch: the student sees their computed results, and the row says why.
+     */
+    if (this.budget !== undefined && !(await this.budget())) {
+      return this.failure(
+        options,
+        startedAt,
+        'BUDGET_EXHAUSTED',
+        'The daily AI generation budget is spent. Answers fall back to computed results until it resets at 00:00 UTC.',
+      );
+    }
+
     let output: unknown;
 
     try {
       output = await withTimeout(
-        this.ai.run(this.models.text, {
-          messages: [
-            { role: 'system', content: options.systemPrompt },
-            { role: 'user', content: options.userPrompt },
-          ],
-          max_tokens: options.maxTokens ?? 512,
-        }),
+        this.ai.run(
+          this.models.text,
+          {
+            messages: [
+              { role: 'system', content: options.systemPrompt },
+              { role: 'user', content: options.userPrompt },
+            ],
+            max_tokens: options.maxTokens ?? 512,
+          },
+          this.gatewayOptions(),
+        ),
         MODEL_CALL_TIMEOUT_MS,
       );
     } catch (error) {
@@ -343,11 +437,17 @@ export class AiGatewayService {
       throw new Error('AI binding is not configured — embeddings cannot be generated.');
     }
 
+    this.warnOnOversizedInput(texts);
+
     const vectors: number[][] = [];
 
     for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_LIMIT) {
       const batch = texts.slice(i, i + EMBEDDING_BATCH_LIMIT);
-      const output = (await this.ai.run(this.models.embedding, { text: batch })) as {
+      const output = (await this.ai.run(
+        this.models.embedding,
+        { text: batch },
+        this.gatewayOptions(),
+      )) as {
         data?: number[][];
       };
 
@@ -361,6 +461,129 @@ export class AiGatewayService {
     }
 
     return vectors;
+  }
+
+  /**
+   * Embed **one query**, with the BGE retrieval instruction prefix (AiNormalisation D3).
+   *
+   * Separate from `embed()` on purpose: passages must stay bare, and the two call sites having
+   * one shared entry point is precisely how they came to be embedded identically. Passage
+   * vectors already in Vectorize remain valid — only the query side changes.
+   */
+  async embedQuery(query: string): Promise<number[] | undefined> {
+    const [vector] = await this.embed([`${BGE_QUERY_PREFIX}${query}`]);
+
+    return vector;
+  }
+
+  /**
+   * Score `passages` against `query` with a cross-encoder (`@cf/baai/bge-reranker-base`), most
+   * relevant first. This is what makes a lower similarity floor safe: retrieval casts a wide
+   * net on cheap vector similarity, and the reranker — which reads query and passage *together*
+   * rather than comparing two independently-made vectors — decides what actually survives.
+   *
+   * Soft-fails to `undefined` rather than throwing. A reranker that is unavailable, unconfigured,
+   * or answering in an unexpected shape must degrade to plain similarity order, not take down a
+   * retrieval that already has its candidates.
+   */
+  async rerank(query: string, passages: string[]): Promise<RerankedPassage[] | undefined> {
+    const model = this.models.rerank;
+
+    if (model === undefined || this.ai === undefined || passages.length === 0) {
+      return undefined;
+    }
+
+    try {
+      const output = (await withTimeout(
+        this.ai.run(
+          model,
+          { query, contexts: passages.map((text) => ({ text })) },
+          this.gatewayOptions(),
+        ),
+        MODEL_CALL_TIMEOUT_MS,
+      )) as { response?: { id?: unknown; score?: unknown }[] };
+
+      const scored = output?.response;
+
+      if (!Array.isArray(scored)) {
+        throw new Error('The reranker returned no `response` array.');
+      }
+
+      return scored.flatMap((item) =>
+        typeof item?.id === 'number' &&
+        typeof item.score === 'number' &&
+        item.id >= 0 &&
+        item.id < passages.length
+          ? [{ index: item.id, score: item.score }]
+          : [],
+      );
+    } catch (error) {
+      log('error', 'ai_gateway.rerank_failed', {
+        pipeline: 'ai_gateway',
+        stage: 'rerank_failed',
+        model,
+        passages: passages.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      return undefined;
+    }
+  }
+
+  /**
+   * The optional verifier pass (AiNormalisation Phase 3) — *"does this context support this
+   * claim?"*, answered yes or no, in about thirty tokens.
+   *
+   * **Off by default, behind `AI_VERIFIER_ENABLED`.** It is the only check in the grounding
+   * contract that costs neurons, which makes it the only one that cannot be afforded on every
+   * answer within 10,000 a day. Enable it when the budget allows and the corpus is small enough
+   * that answers are rare; leave it off and the cheap checks still stand.
+   *
+   * Runs *after* the free checks, on answers that survived them and still assert a figure — the
+   * class where being wrong is most expensive and hardest to spot by reading.
+   *
+   * A verifier that errors, times out, or answers anything other than a clear "no" returns
+   * `true`. That asymmetry is deliberate: this pass exists to catch a claim the mechanical checks
+   * missed, not to become a second way for a working answer to disappear when Workers AI has a
+   * bad minute.
+   */
+  async verifyClaim(context: string, claim: string): Promise<boolean> {
+    if (this.ai === undefined) {
+      return true;
+    }
+
+    try {
+      const output = await withTimeout(
+        this.ai.run(
+          this.models.text,
+          {
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You check whether a statement is supported by the given context. Answer with exactly one word: YES if every fact in the statement appears in the context, NO if any fact does not.',
+              },
+              { role: 'user', content: `CONTEXT:\n${context}\n\nSTATEMENT:\n${claim}` },
+            ],
+            max_tokens: 5,
+          },
+          this.gatewayOptions(),
+        ),
+        MODEL_CALL_TIMEOUT_MS,
+      );
+
+      const answer = extractResponseText(output)?.trim().toUpperCase() ?? '';
+
+      return !answer.startsWith('NO');
+    } catch (error) {
+      log('error', 'ai_gateway.verifier_failed', {
+        pipeline: 'ai_gateway',
+        stage: 'verifier_failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      return true;
+    }
   }
 
   /**
@@ -380,6 +603,47 @@ export class AiGatewayService {
   }
 
   // --- internals ---------------------------------------------------------------------
+
+  /**
+   * Cloudflare AI Gateway routing, or nothing.
+   *
+   * `undefined` rather than `{}` when unset: Workers AI treats an empty options object as a
+   * request with no gateway, and passing one anyway would make every call carry a shape that
+   * means nothing — the sort of thing that reads as configuration and is not.
+   */
+  private gatewayOptions(): Record<string, unknown> | undefined {
+    return this.models.gatewayId === undefined || this.models.gatewayId === ''
+      ? undefined
+      : { gateway: { id: this.models.gatewayId } };
+  }
+
+  /**
+   * Log any text sent for embedding that exceeds the model's input limit.
+   *
+   * Deliberately a log and not a throw: truncation degrades a vector, it does not corrupt the
+   * corpus, and failing ingestion outright over one long chunk would trade a partial answer for
+   * none at all. The point is that D1's class of defect — invisible, silent, corpus-wide — cannot
+   * recur *unobserved*.
+   */
+  private warnOnOversizedInput(texts: string[]): void {
+    const oversized = texts.filter(
+      (text) => estimateTokens(text) > EMBEDDING_MAX_INPUT_TOKENS,
+    );
+
+    if (oversized.length === 0) {
+      return;
+    }
+
+    log('error', 'ai_gateway.embedding_input_truncated', {
+      pipeline: 'ai_gateway',
+      stage: 'embedding_input_truncated',
+      model: this.models.embedding,
+      limit_tokens: EMBEDDING_MAX_INPUT_TOKENS,
+      oversized_texts: oversized.length,
+      total_texts: texts.length,
+      max_estimated_tokens: Math.max(...oversized.map((text) => estimateTokens(text))),
+    });
+  }
 
   private async failure(
     options: GenerateOptions,

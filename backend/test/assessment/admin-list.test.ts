@@ -392,6 +392,67 @@ describe('assigning globally and to specific classes', () => {
     expect(titles).not.toContain(neverAssigned.title);
   });
 
+  /**
+   * **The counselor path, which every test above this point skipped.**
+   *
+   * All the assignment coverage ran as an admin, so the route's gate — template *ownership* —
+   * looked correct for as long as nobody exercised the one caller it was wrong for. A counselor
+   * assigning an admin-owned GLOBAL instrument (RIASEC and SCCT are exactly this, and handing them
+   * to a class is the counselor's core job) got "Assessment template not found." on a row their own
+   * list had just shown them.
+   */
+  it('lets a counselor assign an admin-owned GLOBAL instrument to their own class', async () => {
+    const { template } = await publishedAssessment(adminToken);
+    const mine = await createClass(counselorToken, { name: `Mine ${uuid().slice(0, 4)}` });
+
+    const response = await api('POST', `/assessment-templates/${template.id}/assignments`, {
+      token: counselorToken,
+      body: { scope: 'CLASS', class_ids: [mine.id] },
+    });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.data.assigned_classes).toBe(1);
+
+    const assignments = await api('GET', `/counselor/classes/${mine.id}/assignments`, {
+      token: counselorToken,
+    });
+
+    expect(
+      assignments.body.data.some(
+        (assignment: any) => assignment.assessment.title === template.title,
+      ),
+    ).toBe(true);
+  });
+
+  it('still refuses a counselor another counselor’s private assessment — 404, not 201', async () => {
+    const otherCounselorToken = await login(await createStaffUser({ role: 'counselor' }));
+    const { template } = await publishedAssessment(otherCounselorToken);
+    const mine = await createClass(counselorToken, { name: `Theirs ${uuid().slice(0, 4)}` });
+
+    const refused = await api('POST', `/assessment-templates/${template.id}/assignments`, {
+      token: counselorToken,
+      body: { scope: 'CLASS', class_ids: [mine.id] },
+    });
+
+    // 404 rather than 403: a private template id must not be confirmed to exist.
+    expect(refused.status).toBe(404);
+  });
+
+  it('refuses a counselor a class that is not theirs, even on an instrument they may assign', async () => {
+    const { template } = await publishedAssessment(adminToken);
+    const otherCounselorToken = await login(await createStaffUser({ role: 'counselor' }));
+    const notMine = await createClass(otherCounselorToken, { name: `Not mine ${uuid().slice(0, 4)}` });
+
+    const refused = await api('POST', `/assessment-templates/${template.id}/assignments`, {
+      token: counselorToken,
+      body: { scope: 'CLASS', class_ids: [notMine.id] },
+    });
+
+    // The real authorization for assigning: the class. Loosening the template check did not touch it.
+    expect(refused.status).toBe(422);
+    expect(refused.body.errors.class_ids).toBeDefined();
+  });
+
   it('refuses to assign an assessment with nothing published — a 422, not a 403', async () => {
     const template = await createAssessment(adminToken);
 

@@ -1,20 +1,37 @@
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
 import {
   chatConversations,
   chatMessages,
+  knowledgeChunks,
+  knowledgeDocuments,
   type ChatConversation,
   type ChatMessage,
 } from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import {
+  answerableFromResults,
+  citedIndexes,
+  normaliseQuestion,
+  offDomainKind,
+  offDomainReply,
+  parseQaChunk,
+  unsupportedClaims,
+  validateCitations,
+} from '@/lib/grounding';
+import {
   RECOMMENDATION_CHAT_PROMPT_VERSION,
   RECOMMENDATION_CHAT_SYSTEM_PROMPT,
 } from '@/prompts/recommendation-chat.v1';
 import type { AiGatewayService, GenerateOptions } from '@/modules/ai/ai-gateway-service';
-import type { RetrievalService, RetrievedChunk } from '@/modules/ai/retrieval-service';
+import {
+  toFtsQuery,
+  type RetrievalService,
+  type RetrievedChunk,
+} from '@/modules/ai/retrieval-service';
+import { sourceTitlesFor } from '@/modules/ai/sources';
 import type { RecommendationSet } from '@/modules/recommendation/recommendation-service';
 
 /**
@@ -59,6 +76,29 @@ const ABSOLUTE_CLAIM_PATTERN =
 /** Bounded so one student cannot bank an unbounded transcript against the daily neuron quota. */
 export const MAX_QUESTION_CHARS = 1000;
 
+/** How many Q&A candidates Gate 1 pulls before comparing normalised question text. */
+const GATE_ONE_CANDIDATES = 10;
+
+/**
+ * What a student is told when nothing covers their question.
+ *
+ * Deliberately not an apology and not a dead end: it says what is missing, and it routes to the
+ * person who can actually answer. Every one of these also writes an `ai_requests` row carrying
+ * the exact question — which is the backlog an admin closes with one Q&A entry, after which this
+ * same question is answered by Gate 1 for free, forever.
+ */
+const NO_COVERAGE_REPLY =
+  'I don’t have anything in the school’s guidance materials that answers that, so I would rather not guess. Your guidance counselor can help — and if you tell them what you asked, they can add it here for next time. I can still explain anything about your own assessment results, matches and scores.';
+
+/** One answer, whichever gate produced it. */
+interface Answer {
+  text: string;
+  aiRequestId: string | null;
+  failure: string | null;
+  /** Knowledge entries to name under the answer. Empty for anything not drawn from documents. */
+  sources: string[];
+}
+
 export interface ChatTurn {
   conversation: ChatConversation;
   question: ChatMessage;
@@ -76,6 +116,11 @@ export class ChatService {
       instructions: string | null;
       restrictions: string | null;
     } | null,
+    /**
+     * The §34 verifier pass (`AI_VERIFIER_ENABLED`). Off by default — it is the only check in the
+     * grounding contract that spends neurons, so it is a budget decision rather than a code one.
+     */
+    private readonly verifier = false,
   ) {}
 
   /**
@@ -116,6 +161,43 @@ export class ChatService {
       .orderBy(asc(chatMessages.createdAt), asc(chatMessages.id));
   }
 
+  /**
+   * Flag an answer as wrong (AiNormalisation Phase 4).
+   *
+   * Scoped by student through the conversation, like every other read here: a message id alone is
+   * not authority to touch it. Idempotent — flagging twice is the same state, and a student
+   * clicking again should not be an error.
+   *
+   * Deliberately no un-flagging in v1. The signal goes to an admin review queue, and a
+   * disappearing item is worse than a stale one: it removes the evidence before anyone has looked
+   * at it, and the admin has no way to know it was ever there.
+   */
+  async flagAnswer(studentId: string, messageId: string): Promise<boolean> {
+    const [message] = await this.db
+      .select({ id: chatMessages.id })
+      .from(chatMessages)
+      .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.role, 'assistant'),
+          eq(chatConversations.studentId, studentId),
+        ),
+      )
+      .limit(1);
+
+    if (message === undefined) {
+      return false;
+    }
+
+    await this.db
+      .update(chatMessages)
+      .set({ feedback: 'DOWN' })
+      .where(eq(chatMessages.id, messageId));
+
+    return true;
+  }
+
   /** Wipe the transcript. The student's own data, and their own decision to clear it. */
   async clearFor(studentId: string): Promise<void> {
     // The `chat_messages` FK cascades, so deleting the conversation takes its messages with it.
@@ -144,6 +226,7 @@ export class ChatService {
       'assistant',
       outcome.text,
       outcome.aiRequestId,
+      outcome.sources,
     );
 
     await this.db
@@ -166,7 +249,100 @@ export class ChatService {
     question: string,
     history: ChatMessage[],
     recommendations: RecommendationSet | null,
-  ): Promise<{ text: string; aiRequestId: string | null; failure: string | null }> {
+  ): Promise<Answer> {
+    /**
+     * **Gate 0 — scope.** Declined by design (§34), before anything is retrieved or generated.
+     * A guidance assistant that answers homework has quietly become a homework tool that is bad
+     * at homework; a student bringing a personal problem gets pointed at a person instead.
+     */
+    const offDomain = offDomainKind(question);
+
+    if (offDomain !== null) {
+      return {
+        text: offDomainReply(offDomain),
+        aiRequestId: null,
+        failure: `OUT_OF_SCOPE_${offDomain}`,
+        sources: [],
+      };
+    }
+
+    /**
+     * **Gate 1 — an admin already answered this.** Zero neurons, zero hallucination, and the
+     * admin's words reach the student unaltered.
+     *
+     * The exact-match half runs first because it is free: a keyword lookup over Q&A entries, then
+     * a normalised string comparison. No embedding, no vector query, no generation. This is the
+     * gate the whole flywheel turns on — the questions students repeat most are the ones that
+     * never reach the model at all.
+     */
+    const canned = await this.cannedAnswerFor(question);
+
+    if (canned !== null) {
+      return { text: canned.answer, aiRequestId: null, failure: null, sources: [canned.title] };
+    }
+
+    return this.generated(studentId, question, history, recommendations);
+  }
+
+  /**
+   * An admin-authored answer to exactly this question, or null.
+   *
+   * Matching is on the normalised question text — case, punctuation and diacritics removed —
+   * because none of that variation changes which written answer is correct. It is deliberately
+   * *exact* after normalisation rather than fuzzy: Gate 1 returns an admin's words verbatim, with
+   * no model in the loop to notice that the question was actually a different one.
+   *
+   * FTS5 narrows the candidates to Q&A entries sharing the question's words, so this is one D1
+   * query regardless of corpus size. Never throws: a lookup failure means the question goes
+   * through the normal pipeline, which is a slower answer rather than no answer.
+   */
+  private async cannedAnswerFor(question: string): Promise<{ answer: string; title: string } | null> {
+    const match = toFtsQuery(question);
+
+    if (match === null) {
+      return null;
+    }
+
+    try {
+      const rows = await this.db
+        .select({ content: knowledgeChunks.content, title: knowledgeDocuments.title })
+        .from(knowledgeChunks)
+        .innerJoin(
+          sql`knowledge_chunks_fts`,
+          sql`knowledge_chunks_fts.rowid = ${knowledgeChunks}.rowid`,
+        )
+        .innerJoin(knowledgeDocuments, eq(knowledgeDocuments.id, knowledgeChunks.documentId))
+        .where(
+          and(
+            sql`knowledge_chunks_fts MATCH ${match}`,
+            eq(knowledgeChunks.sourceType, 'qa'),
+            isNull(knowledgeDocuments.archivedAt),
+          ),
+        )
+        .limit(GATE_ONE_CANDIDATES);
+
+      const asked = normaliseQuestion(question);
+
+      for (const row of rows) {
+        const pair = parseQaChunk(row.content);
+
+        if (pair !== null && normaliseQuestion(pair.question) === asked) {
+          return { answer: pair.answer, title: row.title };
+        }
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async generated(
+    studentId: string,
+    question: string,
+    history: ChatMessage[],
+    recommendations: RecommendationSet | null,
+  ): Promise<Answer> {
     const baseOptions: Omit<GenerateOptions, 'systemPrompt' | 'userPrompt'> = {
       userId: studentId,
       requestType: 'CHAT',
@@ -202,6 +378,36 @@ export class ChatService {
       retrieved = [];
     }
 
+    /**
+     * **D7, narrowed** (AiNormalisation Phase 3). The reasoning above is sound for *"which of my
+     * top three pays best?"* and exactly wrong for *"how much is tuition at that college?"*.
+     *
+     * In the second case nothing has been retrieved, the recommendation set says nothing about
+     * fees, and the only thing standing between the student and an invented figure is the
+     * prompt's first rule — which an 8B model obeys perhaps four times in five. Four times in
+     * five is not a guarantee; it is a coin weighted slightly in our favour, handed to a
+     * seventeen-year-old making a decision about their future.
+     *
+     * So the zero-retrieval path survives only for questions the student's own results can
+     * actually answer. Everything else refuses, honestly, and the refusal is logged as the gap it
+     * is — which is what turns it into an admin's backlog item rather than a dead end.
+     */
+    const resultsContext = this.resultsContextFor(recommendations);
+
+    if (retrieved.length === 0 && !answerableFromResults(question, resultsContext)) {
+      await this.gateway.logSkipped(
+        { ...baseOptions, systemPrompt: '', userPrompt: question },
+        'Nothing retrieved and the question is not answerable from the student’s own results — refusing to generate ungrounded (§30).',
+      );
+
+      return {
+        text: NO_COVERAGE_REPLY,
+        aiRequestId: null,
+        failure: 'NO_GROUNDING',
+        sources: [],
+      };
+    }
+
     const options: GenerateOptions = {
       ...baseOptions,
       inputContext: {
@@ -222,6 +428,7 @@ export class ChatService {
         // output, and pointing a fallback message at an `ai_requests` row would record it as one.
         aiRequestId: null,
         failure: result.reason,
+        sources: [],
       };
     }
 
@@ -236,10 +443,102 @@ export class ChatService {
         text: this.deterministicReply(recommendations),
         aiRequestId: null,
         failure: 'FAILED_VALIDATION',
+        sources: [],
       };
     }
 
-    return { text, aiRequestId: result.request.id, failure: null };
+    /**
+     * **Cite or refuse** — but only when there was something to cite. An answer built from the
+     * student's own computed results has no passages behind it, and demanding a marker there
+     * would reject the one class of answer that is arithmetic rather than retrieval.
+     */
+    if (retrieved.length > 0) {
+      const citations = validateCitations(text, retrieved.length);
+
+      if (!citations.ok) {
+        return {
+          text: this.deterministicReply(recommendations),
+          aiRequestId: null,
+          failure: citations.reason,
+          sources: [],
+        };
+      }
+    }
+
+    /**
+     * **The claim check.** This is where the invented tuition fee dies: a figure or a name the
+     * model wrote that appears in none of the material it was given did not come from that
+     * material. Citing correctly and inventing within the cited sentence is a thing models do,
+     * so the marker is checked and then ignored.
+     */
+    const unsupported = unsupportedClaims(text, [
+      ...retrieved.map(({ chunk }) => chunk.content),
+      resultsContext,
+    ]);
+
+    if (unsupported.length > 0) {
+      return {
+        text: this.deterministicReply(recommendations),
+        aiRequestId: null,
+        failure: 'UNSUPPORTED_CLAIM',
+        sources: [],
+      };
+    }
+
+    /**
+     * The one paid check, and only where it earns its neurons: an answer that survived everything
+     * above **and still asserts a figure**. Those are the claims a student acts on and the ones a
+     * reader cannot sanity-check by eye, so they are worth ~30 tokens when the budget allows.
+     */
+    if (this.verifier && /\d{3,}/.test(text)) {
+      const supported = await this.gateway.verifyClaim(
+        [...retrieved.map(({ chunk }) => chunk.content), resultsContext].join('\n'),
+        text,
+      );
+
+      if (!supported) {
+        return {
+          text: this.deterministicReply(recommendations),
+          aiRequestId: null,
+          failure: 'UNSUPPORTED_CLAIM',
+          sources: [],
+        };
+      }
+    }
+
+    return {
+      text,
+      aiRequestId: result.request.id,
+      failure: null,
+      // Only what the answer actually cited. Naming a passage the model never used would be a
+      // worse lie than naming none: the student would check it and find nothing.
+      sources: sourceTitlesFor(retrieved, citedIndexes(text)),
+    };
+  }
+
+  /**
+   * The student's own results as one searchable string.
+   *
+   * Two jobs, both about honesty rather than presentation: it is what `answerableFromResults`
+   * tests a question against, and it is the non-document half of the claim check's sources —
+   * because a match score of 87% is grounded by §26 arithmetic, and a check that did not know
+   * that would reject the truest sentence in the answer.
+   */
+  private resultsContextFor(recommendations: RecommendationSet | null): string {
+    if (recommendations === null) {
+      return '';
+    }
+
+    return [
+      ...recommendations.careers.map(
+        ({ recommendation, career }) =>
+          `${career.title} ${recommendation.matchScore}% ${recommendation.reason}`,
+      ),
+      ...recommendations.programs.map(
+        ({ recommendation, program, college }) =>
+          `${program.name} ${college.name} ${recommendation.matchScore}% ${recommendation.reason}`,
+      ),
+    ].join('\n');
   }
 
   /**
@@ -390,6 +689,7 @@ export class ChatService {
     role: 'user' | 'assistant',
     content: string,
     aiRequestId: string | null,
+    sources: string[] = [],
   ): Promise<ChatMessage> {
     const message: ChatMessage = {
       id: uuid(),
@@ -397,6 +697,10 @@ export class ChatService {
       role,
       content,
       aiRequestId,
+      // NULL, not [], for "nothing to name" — the two would render identically and mean the same
+      // thing, and the absence of a source line is what tells a student this is not a cited fact.
+      sources: sources.length === 0 ? null : sources,
+      feedback: null,
       createdAt: now(),
     };
 

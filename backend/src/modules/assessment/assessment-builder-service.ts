@@ -822,6 +822,99 @@ export class AssessmentBuilderService {
     return version;
   }
 
+  /**
+   * **How a published instrument is edited** — RIASEC and SCCT included (§5, §12).
+   *
+   * Invariant 1 says a PUBLISHED version is frozen forever, and that is not negotiable: a student
+   * who sat v1 must keep the instrument their answers were given against. But "frozen" was being
+   * read as "uneditable", which it never was — §12's answer has always been *publish the next
+   * version*. Until now the only way to reach that next version was `createVersion`, which mints an
+   * **empty** draft: correcting one typo in RIASEC meant retyping sixty items, three hundred
+   * options and sixty mappings by hand, so in practice nobody edited the curated instruments at
+   * all.
+   *
+   * This copies the source version whole — instructions, duration, **the full `scoringConfig`**,
+   * and every question with its options and dimension mappings — into a fresh DRAFT. The author
+   * then edits an ordinary draft through the ordinary workspace and publishes it as v(N+1). Nothing
+   * about invariant 1 moves: the source is untouched and still frozen, and existing assignments go
+   * on pointing at it until someone assigns the new one.
+   *
+   * Copying the *whole* `scoringConfig` rather than rebuilding `{ algorithm }` is the part that
+   * makes this correct for SCCT specifically: its §23 weights (`composite_weights`,
+   * `composite_ranges`) live on the version, and a "new version" that dropped them would score the
+   * same answers differently while looking identical in the builder.
+   *
+   * The copy is **MANUAL and therefore confirmed**, by the same reasoning as `duplicateQuestion`:
+   * duplicating is an authoring act by the person doing it. Note what this does *not* do — it does
+   * not launder an unreviewed AI mapping through a copy, because a source version that still had
+   * unconfirmed mappings could never have been published, and a DRAFT source is copied by someone
+   * who is looking at those mappings on screen as they click.
+   *
+   * **This is not an AI path.** §5's permanent rule is about AI generating or editing RIASEC/SCCT;
+   * `authorizeGenerateWithAi` still refuses those categories for every principal, and nothing here
+   * touches it. A human retyping a question was always allowed.
+   */
+  async duplicateVersion(user: User, sourceVersionId: string): Promise<AssessmentVersion> {
+    const source = await this.findVersion(sourceVersionId);
+
+    if (source === undefined) {
+      throw ApiError.notFound('Assessment version not found.');
+    }
+
+    const draft = await this.createVersion(user, source.assessmentTemplateId, {
+      instructions: source.instructions,
+      durationMinutes: source.durationMinutes,
+      // The whole config object, not a rebuilt `{ algorithm }` — see the note above.
+      scoringConfig: source.scoringConfig,
+    });
+
+    const content = await this.versionContent(source.id);
+
+    // One bulk call rather than sixty singular ones: `addQuestions` appends in array order from
+    // `MAX + 1`, so reading the source in `order_number` order (`versionContent` does) is what
+    // preserves RIASEC's R > I > A > S > E > C item sequence in the copy.
+    await this.addQuestions(
+      user,
+      draft.id,
+      content.questions.map((question) => ({
+        questionText: question.questionText,
+        questionType: question.questionType,
+        sectionLabel: question.sectionLabel,
+        required: question.required,
+        source: 'MANUAL' as const,
+        options: (content.optionsByQuestion.get(question.id) ?? []).map((option, index) => ({
+          label: option.label,
+          value: option.value,
+          score: option.score,
+          orderNumber: index + 1,
+        })),
+        dimensions: (content.mappingsByQuestion.get(question.id) ?? []).map((mapping) => ({
+          code: mapping.dimensionCode,
+          weight: mapping.weight,
+        })),
+      })),
+    );
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_VERSION_DUPLICATED',
+      module: MODULE,
+      targetType: 'assessment_version',
+      targetId: draft.id,
+      oldValues: {
+        source_version_id: source.id,
+        source_version_number: source.versionNumber,
+        source_status: source.status,
+      },
+      newValues: {
+        version_number: draft.versionNumber,
+        question_count: content.questions.length,
+      },
+    });
+
+    return draft;
+  }
+
   async findVersion(versionId: string): Promise<AssessmentVersion | undefined> {
     const [version] = await this.db
       .select()

@@ -8,6 +8,7 @@ import {
   useAskChat,
   useChatTranscript,
   useClearChat,
+  useFlagAnswer,
 } from '@/features/student/hooks/useRecommendations';
 import { toast } from '@/stores/toastStore';
 import type { ChatMessage } from '@/types/recommendation';
@@ -41,8 +42,12 @@ export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendat
     <>
       {/* Desktop: a sticky column. `xl` rather than `lg` because the page is already two columns
           of cards, and a third at 1024px leaves all three too narrow to read. */}
-      <aside className="hidden xl:block xl:w-[380px] xl:shrink-0">
-        <div className="sticky top-6">
+      {/* `self-stretch` is load-bearing: the row is `items-start`, which sizes this column to its
+          own content and leaves the sticky child no range to travel in — the panel would scroll
+          away with the cards. Stretching the column to the full row height gives it that range.
+          `top-[4.5rem]` clears the shell's own sticky top bar. */}
+      <aside className="hidden xl:block xl:w-[380px] xl:shrink-0 xl:self-stretch">
+        <div className="sticky top-[4.5rem]">
           <ChatSurface hasRecommendations={hasRecommendations} className="h-[calc(100vh-6rem)]" />
         </div>
       </aside>
@@ -300,6 +305,7 @@ function EmptyState({
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
+  const flag = useFlagAnswer();
   const isStudent = message.role === 'user';
   /**
    * The fallback tell. An assistant message with no `ai_request_id` was **not** generated — the
@@ -338,6 +344,44 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <p className="text-xs text-muted-foreground">
             From your computed results — the assistant was unavailable.
           </p>
+        ) : null}
+
+        {/*
+          Where the answer came from. A student who can see the source can judge the answer, and a
+          counselor fielding a question can check it against the same document in seconds — which
+          is the point: this is the last line of the grounding contract, and it is the one a person
+          performs rather than the code.
+        */}
+        {message.sources.length > 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Based on: {message.sources.join(', ')}
+          </p>
+        ) : null}
+
+        {/*
+          Reporting a wrong answer (Phase 4). Offered only on generated answers: a deterministic
+          reply is computed arithmetic, and inviting a student to flag it would collect a signal
+          about the one kind of answer that cannot be wrong in the way this reports.
+
+          One direction only, and it does not undo. The flag goes to an admin review queue where
+          the chunk ids behind the answer lead straight to the passage that produced it, and an
+          item that can vanish before anyone looks at it is worse than a stale one.
+        */}
+        {!isStudent && !isFallback ? (
+          message.feedback === 'DOWN' ? (
+            <p className="text-xs text-muted-foreground">
+              Reported — a counselor will look at this.
+            </p>
+          ) : (
+            <button
+              type="button"
+              className="self-start text-xs text-muted-foreground underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
+              disabled={flag.isPending}
+              onClick={() => flag.mutate(message.id)}
+            >
+              This answer looks wrong
+            </button>
+          )
         ) : null}
       </div>
     </li>

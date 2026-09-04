@@ -15,6 +15,7 @@ export { CollegeDetailPage } from '@/features/admin/pages/CollegeDetailPage';
 export { CareerListPage } from '@/features/admin/pages/CareerListPage';
 export { CanonicalProgramPage } from '@/features/admin/pages/CanonicalProgramPage';
 export { KnowledgeListPage } from '@/features/admin/pages/KnowledgeListPage';
+export { AiInsightsPage } from '@/features/admin/pages/AiInsightsPage';
 export { AiPolicyPage } from '@/features/admin/pages/AiPolicyPage';
 export { CounselorManagementPage } from '@/features/admin/pages/CounselorManagementPage';
 export { CounselorDetailPage } from '@/features/admin/pages/CounselorDetailPage';

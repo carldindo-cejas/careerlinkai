@@ -130,6 +130,11 @@ export type AuditAction =
   // mutator in the builder that left no trace of itself. The row carries the text that was removed,
   // because "what was question 12 before you deleted it" is otherwise unanswerable.
   | 'ASSESSMENT_QUESTION_DELETED'
+  // Copying a version into a fresh DRAFT — how a *published* instrument is edited, RIASEC and SCCT
+  // included (§12: fix a mistake by publishing the next version). Recorded because the copy is the
+  // moment the curated content forks: the row names who started the edit and which version they
+  // started it from, which is what makes "who changed RIASEC, and from what" answerable at all.
+  | 'ASSESSMENT_VERSION_DUPLICATED'
   | 'ASSESSMENT_PUBLISHED'
   | 'ASSESSMENT_ASSIGNED'
   | 'ASSESSMENT_ASSIGNMENT_CLOSED'
@@ -147,6 +152,7 @@ export type AuditAction =
   // say to students (the retrieval corpus); a policy edit changes what it is *allowed* to
   // say. Both are exactly the class of action §13.8 exists for.
   | 'KNOWLEDGE_DOCUMENT_UPLOADED'
+  | 'KNOWLEDGE_DOCUMENT_UPDATED'
   | 'KNOWLEDGE_DOCUMENT_ARCHIVED'
   | 'KNOWLEDGE_DOCUMENT_REPROCESSED'
   | 'AI_POLICY_UPDATED'
@@ -273,6 +279,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   ASSESSMENT_TEMPLATE_DELETED: 'DELETE',
   QUESTION_DIMENSION_CONFIRMED: 'UPDATE',
   ASSESSMENT_QUESTION_DELETED: 'DELETE',
+  ASSESSMENT_VERSION_DUPLICATED: 'CREATE',
   ASSESSMENT_PUBLISHED: 'PUBLISH',
   ASSESSMENT_ASSIGNED: 'ASSIGN',
   /** Closing an assignment retires it without deleting it — the same shape as archiving. */
@@ -283,6 +290,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   // Recommendation + AI.
   RECOMMENDATIONS_GENERATED: 'CREATE',
   KNOWLEDGE_DOCUMENT_UPLOADED: 'CREATE',
+  KNOWLEDGE_DOCUMENT_UPDATED: 'UPDATE',
   KNOWLEDGE_DOCUMENT_ARCHIVED: 'ARCHIVE',
   KNOWLEDGE_DOCUMENT_REPROCESSED: 'UPDATE',
   AI_POLICY_UPDATED: 'UPDATE',

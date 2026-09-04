@@ -7,14 +7,19 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/components/ui/cn';
+import { Pagination } from '@/components/ui/pagination';
 import { useClassResults } from '@/features/counselor/hooks/useAssignments';
 import { useRoster } from '@/features/counselor/hooks/useRoster';
 import {
   useRegenerateStudentRecommendations,
   useStudentRecommendations,
 } from '@/features/student/hooks/useRecommendations';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import { toast } from '@/stores/toastStore';
 import { fullName, type RosterEntry } from '@/types/class';
+
+/** Each row expands into two full recommendation lists — ten collapsed rows is already the screen. */
+const PER_PAGE = 10;
 
 /**
  * The counselor's view of their own students' recommendations (audit F2, absorbing P1-1).
@@ -53,6 +58,8 @@ export function ClassRecommendationsPanel({ classId }: { classId: string }) {
   const { data: roster, isPending, isError, error } = useRoster(classId);
   const { data: results } = useClassResults(classId);
   const [openStudentId, setOpenStudentId] = useState<string | null>(null);
+
+  const { pageItems, pagination, setPage } = useClientPagination(roster ?? [], PER_PAGE);
 
   /**
    * Student id → their latest Holland code. Built from the results already on the page rather than
@@ -108,7 +115,7 @@ export function ClassRecommendationsPanel({ classId }: { classId: string }) {
           </p>
         ) : null}
 
-        {(roster ?? []).map((entry) => (
+        {pageItems.map((entry) => (
           <StudentRow
             key={entry.id}
             entry={entry}
@@ -121,6 +128,8 @@ export function ClassRecommendationsPanel({ classId }: { classId: string }) {
             }
           />
         ))}
+
+        <Pagination pagination={pagination} onPageChange={setPage} noun="students" />
       </CardContent>
     </Card>
   );

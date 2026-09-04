@@ -69,6 +69,16 @@ export interface ChatMessage {
    * panel labels it as such rather than passing computed text off as a generation.
    */
   ai_request_id: string | null;
+  /**
+   * The knowledge entries this answer was written from — shown under it as *"Based on: …"*.
+   *
+   * Empty is the common and correct state: a deterministic reply, a refusal, or an answer built
+   * from the student's own computed results has nothing to name. The **absence** of a source line
+   * is itself information — an answer with no visible source is visibly not a sourced fact.
+   */
+  sources: string[];
+  /** `DOWN` once a student has marked this answer wrong (Phase 4). Null otherwise. */
+  feedback: 'DOWN' | null;
   created_at: string | null;
 }
 

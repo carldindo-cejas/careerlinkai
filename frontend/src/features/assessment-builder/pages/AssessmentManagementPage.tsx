@@ -277,6 +277,16 @@ export function AssessmentManagementPage() {
         onSort={onSort}
         page={page}
         onPageChange={setPage}
+        /**
+         * **Who may author a row, as opposed to assign it.**
+         *
+         * An admin manages everything. A counselor's list is "the global instruments plus their
+         * own" (the server's own words), so within what a counselor can see, `GLOBAL` is exactly
+         * the set that is not theirs — which is the same line `canManageTemplate` draws on the
+         * server. Deriving it here rather than shipping a `can_manage` flag keeps the row payload
+         * unchanged; if the visibility rule ever widens, this has to move with it.
+         */
+        canManage={(row) => isAdmin || row.ownership !== 'GLOBAL'}
         onView={(row) => navigate(`${base}/assessment-templates/${row.id}`)}
         onEdit={(row) => {
           setEditingRow(row);

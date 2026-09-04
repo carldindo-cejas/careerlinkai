@@ -4,8 +4,13 @@ import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Pagination } from '@/components/ui/pagination';
 import { useClassResults, useResetAttempt } from '@/features/counselor/hooks/useAssignments';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import type { AssessmentResult } from '@/types/assessment';
+
+/** Result cards are tall — ten is already a long scroll. */
+const PER_PAGE = 10;
 
 /**
  * The class results overview (FULLPLAN §37) with the §21 retake button — deviation D8,
@@ -15,9 +20,14 @@ import type { AssessmentResult } from '@/types/assessment';
  * assignment is: it **voids a result the student already produced**. The expired attempt is
  * kept as history, but it stops counting — and if it fed a recommendation, that
  * recommendation regenerates from whatever results remain.
+ *
+ * One card per scored attempt, so a class that has taken two assessments is already eighty cards —
+ * paged here, over the results the panel has already fetched.
  */
 export function ClassResultsPanel({ classId }: { classId: string }) {
   const { data: results, isLoading, isError, error } = useClassResults(classId);
+
+  const { pageItems, pagination, setPage } = useClientPagination(results ?? [], PER_PAGE);
 
   return (
     <Card>
@@ -41,9 +51,11 @@ export function ClassResultsPanel({ classId }: { classId: string }) {
           </p>
         ) : null}
 
-        {(results ?? []).map((result) => (
+        {pageItems.map((result) => (
           <ResultRow key={result.attempt_id} classId={classId} result={result} />
         ))}
+
+        <Pagination pagination={pagination} onPageChange={setPage} noun="results" />
       </CardContent>
     </Card>
   );

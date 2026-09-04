@@ -103,8 +103,9 @@ describe('POST /admin/knowledge-documents (§33 — browser-extracted text, raw 
 
     expect(status).toBe(201);
     expect(body.data).toMatchObject({
+      title: 'riasec-theory.pdf',
       file_name: 'riasec-theory.pdf',
-      file_type: 'pdf',
+      source_type: 'pdf',
       processing_status: 'UPLOADED',
       visibility: 'GLOBAL',
       archived_at: null,
@@ -121,13 +122,31 @@ describe('POST /admin/knowledge-documents (§33 — browser-extracted text, raw 
     await expect(sidecar!.text()).resolves.toBe(LONG_TEXT);
   });
 
-  it('rejects a non-PDF/DOCX file, an oversized text, and an empty text — §34 caps, server-side', async () => {
+  it('rejects an unsupported extension, an oversized text, and an empty text — §34 caps, server-side', async () => {
     const admin = await createStaffUser({ role: 'admin' });
     const token = await login(admin);
 
-    expect((await uploadOverHttp(token, { name: 'notes.txt' })).status).toBe(422);
+    expect((await uploadOverHttp(token, { name: 'notes.rtf' })).status).toBe(422);
     expect((await uploadOverHttp(token, { text: '' })).status).toBe(422);
     expect((await uploadOverHttp(token, { text: 'x'.repeat(500_001) })).status).toBe(422);
+  });
+
+  /**
+   * `.txt` and `.md` cost nothing to accept — the browser reads them with `File.text()`, so no
+   * parser exists on either side — and they are the format a school's existing handouts are most
+   * likely to already be in (AiNormalisation Phase 1). Both land as `text`: the extension said
+   * how to read the file, not what kind of knowledge it holds.
+   */
+  it('accepts .txt and .md as source_type "text"', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+
+    for (const name of ['handbook.txt', 'faq.md']) {
+      const { status, body } = await uploadOverHttp(token, { name });
+
+      expect(status).toBe(201);
+      expect(body.data.source_type).toBe('text');
+    }
   });
 
   it('is admin-only — a counselor gets a flat 403', async () => {
@@ -151,7 +170,7 @@ describe('the processing pipeline (stubbed gateway + vector store)', () => {
       adminRow!,
       {
         fileName: 'riasec.pdf',
-        fileType: 'pdf',
+        sourceType: 'pdf',
         fileBytes: new Uint8Array([1]).buffer,
         extractedText: LONG_TEXT,
       },
@@ -184,6 +203,74 @@ describe('the processing pipeline (stubbed gateway + vector store)', () => {
     expect(row!.processingStatus).toBe('COMPLETED');
   });
 
+  /**
+   * AiNormalisation Phase 2. A vector's only metadata used to be `{ document_id }`, so when
+   * explaining one program there was no way to prefer chunks *about that program* — it competed
+   * against the whole corpus on cosine distance alone.
+   *
+   * The chunk row and the vector must carry the **same** three values: the keyword half of hybrid
+   * retrieval filters on the row, the vector half filters inside Vectorize, and two subtly
+   * different definitions of "about this program" would make the two halves disagree.
+   */
+  it('carries source and entity metadata onto both the chunk rows and the vectors', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const adminRow = await findUser(admin.id);
+    const { store, upserts } = stubVectors();
+    const { client } = stubEmbedder();
+    const service = inlineService(store, client);
+
+    const { document } = await service.upsertCatalogEntry(adminRow!.id, {
+      entityType: 'career',
+      entityId: 'career-metadata-fixture',
+      title: 'Career: Radiologic Technologist',
+      body: 'Career: Radiologic Technologist.\nOperates imaging equipment in hospitals.',
+      contentHash: 'fixture-hash',
+    });
+
+    const chunks = await db()
+      .select()
+      .from(knowledgeChunks)
+      .where(eq(knowledgeChunks.documentId, document.id));
+
+    expect(chunks[0]).toMatchObject({
+      sourceType: 'catalog',
+      entityType: 'career',
+      entityId: 'career-metadata-fixture',
+    });
+
+    expect(upserts.at(-1)![0]!.metadata).toEqual({
+      document_id: document.id,
+      source_type: 'catalog',
+      entity_type: 'career',
+      entity_id: 'career-metadata-fixture',
+    });
+  });
+
+  /**
+   * Vectorize metadata is string-valued, so an absent entity must be **absent**, not `''`. An
+   * empty string would make "has no entity" a value an equality filter could match, which is the
+   * wrong answer to "is this chunk about a career?".
+   */
+  it('omits entity metadata entirely for an entry that is not about a catalog row', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const adminRow = await findUser(admin.id);
+    const { store, upserts } = stubVectors();
+    const { client } = stubEmbedder();
+    const service = inlineService(store, client);
+
+    await service.createEntry(
+      adminRow!,
+      { sourceType: 'text', title: 'General guidance', body: 'Choosing a strand is a decision about interests, not only grades.' },
+      null,
+    );
+
+    const metadata = upserts.at(-1)![0]!.metadata!;
+
+    expect(metadata.source_type).toBe('text');
+    expect(metadata).not.toHaveProperty('entity_type');
+    expect(metadata).not.toHaveProperty('entity_id');
+  });
+
   it('re-processing replaces chunks wholesale and removes the old vectors first — idempotent by replacement', async () => {
     const admin = await createStaffUser({ role: 'admin' });
     const adminRow = await findUser(admin.id);
@@ -193,7 +280,7 @@ describe('the processing pipeline (stubbed gateway + vector store)', () => {
 
     const document = await service.upload(
       adminRow!,
-      { fileName: 'r.pdf', fileType: 'pdf', fileBytes: new Uint8Array([1]).buffer, extractedText: LONG_TEXT },
+      { fileName: 'r.pdf', sourceType: 'pdf', fileBytes: new Uint8Array([1]).buffer, extractedText: LONG_TEXT },
       null,
     );
 
@@ -224,7 +311,7 @@ describe('the processing pipeline (stubbed gateway + vector store)', () => {
 
     const document = await service.upload(
       adminRow!,
-      { fileName: 'r.pdf', fileType: 'pdf', fileBytes: new Uint8Array([1]).buffer, extractedText: LONG_TEXT },
+      { fileName: 'r.pdf', sourceType: 'pdf', fileBytes: new Uint8Array([1]).buffer, extractedText: LONG_TEXT },
       null,
     );
 
@@ -252,7 +339,7 @@ describe('the processing pipeline (stubbed gateway + vector store)', () => {
 
     const document = await service.upload(
       adminRow!,
-      { fileName: 'r.pdf', fileType: 'pdf', fileBytes: new Uint8Array([1]).buffer, extractedText: LONG_TEXT },
+      { fileName: 'r.pdf', sourceType: 'pdf', fileBytes: new Uint8Array([1]).buffer, extractedText: LONG_TEXT },
       null,
     );
 

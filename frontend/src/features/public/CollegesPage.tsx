@@ -3,12 +3,17 @@ import { useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
+import { Pagination } from '@/components/ui/pagination';
 import { Select } from '@/components/ui/select';
 import { CollegeCard } from '@/features/public/components/CollegeCard';
 import {
   usePublicCollegeRegions,
   usePublicColleges,
 } from '@/features/public/hooks/usePublicCatalog';
+import { useClientPagination } from '@/hooks/useClientPagination';
+
+/** Five rows of the three-column grid — the most cards a reader can scan without losing the filters. */
+const PER_PAGE = 15;
 
 /**
  * The public Colleges page (prompt-driven, v1.5). Every registered college, filterable by region —
@@ -26,6 +31,7 @@ export function CollegesPage() {
   const colleges = usePublicColleges(regionId);
 
   const items = colleges.data ?? [];
+  const { pageItems, pagination, setPage } = useClientPagination(items, PER_PAGE);
 
   return (
     <div>
@@ -97,9 +103,13 @@ export function CollegesPage() {
                 {regionId ? ' in this region' : ''}
               </p>
               <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                {items.map((college) => (
+                {pageItems.map((college) => (
                   <CollegeCard key={college.id} college={college} />
                 ))}
+              </div>
+
+              <div className="mt-8">
+                <Pagination pagination={pagination} onPageChange={setPage} noun="colleges" />
               </div>
             </>
           ) : null}

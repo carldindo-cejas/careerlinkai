@@ -23,11 +23,23 @@ export interface VectorMatch {
   score: number;
 }
 
+/**
+ * A Vectorize metadata filter (AiNormalisation Phase 2) — `{ entity_id: { $eq: '…' } }`, or the
+ * shorthand `{ entity_id: '…' }`, both of which Vectorize accepts.
+ *
+ * **A filter only works if a metadata index for that property was created before the vectors were
+ * upserted.** Vectors written earlier are not in the index and are not returned by a query
+ * filtering on it — silently, with no error. That ordering is the single most dangerous thing
+ * about this feature and is why it is stated here rather than in a runbook:
+ * `wrangler vectorize create-metadata-index` first, reprocess second.
+ */
+export type VectorFilter = Record<string, string | { $eq?: string; $ne?: string }>;
+
 export interface VectorStore {
   upsert(vectors: VectorRecord[]): Promise<unknown>;
   query(
     vector: number[],
-    options: { topK: number; returnMetadata?: boolean },
+    options: { topK: number; returnMetadata?: boolean; filter?: VectorFilter },
   ): Promise<{ matches: VectorMatch[] }>;
   deleteByIds(ids: string[]): Promise<unknown>;
 }

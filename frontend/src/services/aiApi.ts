@@ -1,8 +1,12 @@
 import { httpClient, unwrap } from '@/services/httpClient';
 import type {
+  AiInsights,
   AiPolicy,
+  CatalogSyncResult,
   ExplainOutcome,
   KnowledgeDocument,
+  KnowledgeEntryContent,
+  KnowledgeEntryPayload,
   ProcessingStatus,
   UpdateAiPolicyPayload,
 } from '@/types/ai';
@@ -53,6 +57,39 @@ export const aiApi = {
     );
   },
 
+  /**
+   * Write an entry rather than upload one — a pasted note or a Q&A pair (AiNormalisation
+   * Phase 1). No file, no parser, no waiting for someone to produce a PDF.
+   */
+  createKnowledgeEntry(payload: KnowledgeEntryPayload): Promise<KnowledgeDocument> {
+    return unwrap(
+      httpClient.post<ApiSuccess<KnowledgeDocument>>('/admin/knowledge-entries', payload),
+    );
+  },
+
+  /** The entry plus its text, for the edit form — so a one-word fix is a one-word fix. */
+  knowledgeEntryContent(id: string): Promise<KnowledgeEntryContent> {
+    return unwrap(
+      httpClient.get<ApiSuccess<KnowledgeEntryContent>>(
+        `/admin/knowledge-documents/${id}/content`,
+      ),
+    );
+  },
+
+  /** Saving re-chunks and re-embeds: the corrected text replaces the old one in the index. */
+  updateKnowledgeEntry(id: string, payload: KnowledgeEntryPayload): Promise<KnowledgeDocument> {
+    return unwrap(
+      httpClient.patch<ApiSuccess<KnowledgeDocument>>(`/admin/knowledge-entries/${id}`, payload),
+    );
+  },
+
+  /** Regenerate the entry for every career and program now, rather than at 03:00 UTC. */
+  syncCatalogKnowledge(): Promise<CatalogSyncResult> {
+    return unwrap(
+      httpClient.post<ApiSuccess<CatalogSyncResult>>('/admin/knowledge-catalog-sync'),
+    );
+  },
+
   /** DELETE archives (§13.7) — the response is the archived row, not a 204. */
   archiveKnowledgeDocument(id: string): Promise<KnowledgeDocument> {
     return unwrap(
@@ -67,6 +104,11 @@ export const aiApi = {
         `/admin/knowledge-documents/${id}/reprocess`,
       ),
     );
+  },
+
+  /** The Phase 4 report: unanswered questions, catalog coverage, flagged answers, corpus health. */
+  aiInsights(): Promise<AiInsights> {
+    return unwrap(httpClient.get<ApiSuccess<AiInsights>>('/admin/ai-insights'));
   },
 
   listAiPolicies(): Promise<AiPolicy[]> {

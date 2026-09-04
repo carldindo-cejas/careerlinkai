@@ -57,6 +57,7 @@ const CollegeDetailPage = admin('CollegeDetailPage');
 const CareerListPage = admin('CareerListPage');
 const CanonicalProgramPage = admin('CanonicalProgramPage');
 const KnowledgeListPage = admin('KnowledgeListPage');
+const AiInsightsPage = admin('AiInsightsPage');
 const AiPolicyPage = admin('AiPolicyPage');
 const CounselorManagementPage = admin('CounselorManagementPage');
 const CounselorDetailPage = admin('CounselorDetailPage');
@@ -144,6 +145,7 @@ export function AppRoutes() {
             <Route path={paths.adminCanonicalPrograms} element={<CanonicalProgramPage />} />
             {/* Phase 5a: what the AI may know, and what it may say (§33, §13.7). */}
             <Route path={paths.adminKnowledge} element={<KnowledgeListPage />} />
+            <Route path={paths.adminAiInsights} element={<AiInsightsPage />} />
             <Route path={paths.adminAiPolicy} element={<AiPolicyPage />} />
             {/* Phase 5b + v1.5: the assessment table, then the builder + AI generator (§31).
                 Same pages as the counselor shell — scope is enforced server-side, not by routing. */}

@@ -314,6 +314,8 @@ describe('RecommendationPage', () => {
         role: 'user',
         content: 'Why is Career 1 my top match?',
         ai_request_id: null,
+        sources: [],
+        feedback: null,
         created_at: null,
       },
       answer: {
@@ -321,6 +323,8 @@ describe('RecommendationPage', () => {
         role: 'assistant',
         content: 'It leans Investigative, which is your strongest interest.',
         ai_request_id: 'ai-1',
+        sources: [],
+        feedback: null,
         created_at: null,
       },
       failure: null,
@@ -353,6 +357,8 @@ describe('RecommendationPage', () => {
         role: 'user',
         content: 'Anything?',
         ai_request_id: null,
+        sources: [],
+        feedback: null,
         created_at: null,
       },
       answer: {
@@ -361,6 +367,8 @@ describe('RecommendationPage', () => {
         content: 'The assistant is unavailable at the moment, so here is what your results say.',
         // The tell: no request behind it.
         ai_request_id: null,
+        sources: [],
+        feedback: null,
         created_at: null,
       },
       failure: 'MODEL_UNAVAILABLE',

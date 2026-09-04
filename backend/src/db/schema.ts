@@ -14,6 +14,8 @@ import type {
   ChatRole,
   ClassStatus,
   EnrollmentStatus,
+  KnowledgeEntityType,
+  KnowledgeSourceType,
   KnowledgeVisibility,
   MatchType,
   NotificationCategory,
@@ -1109,6 +1111,12 @@ export const recommendationExplanations = sqliteTable(
       .references(() => recommendations.id, { onDelete: 'cascade' }),
     explanationText: text('explanation_text').notNull(),
     aiModel: text('ai_model').notNull(),
+    /**
+     * The titles of the knowledge entries this paragraph was written from (migration 0025),
+     * shown to the student under it. Stored rather than derived: the corpus changes, and an
+     * answer must keep naming what it was actually written from.
+     */
+    sources: text('sources', { mode: 'json' }).$type<string[]>(),
     createdAt: createdAt(),
   },
   (table) => [
@@ -1132,10 +1140,36 @@ export const knowledgeDocuments = sqliteTable(
     uploadedBy: text('uploaded_by')
       .notNull()
       .references(() => users.id),
+    /**
+     * What a human calls this entry (migration 0022). For an upload it is the file name; for a
+     * pasted note or a Q&A pair it is the only human-readable handle the row has.
+     */
+    title: text('title').notNull(),
     fileName: text('file_name').notNull(),
-    fileType: text('file_type').$type<'pdf' | 'docx'>().notNull(),
-    /** The R2 object key — the original is retained to settle any extraction dispute. */
-    storagePath: text('storage_path').notNull(),
+    sourceType: text('source_type').$type<KnowledgeSourceType>().notNull(),
+    /**
+     * The R2 object key of the **original file** — retained to settle any extraction dispute.
+     * NULL for an authored entry (migration 0022), which has no original: its text is the
+     * original. The extracted-text sidecar every row has is derived, not provenance, and is
+     * addressed by convention (`knowledge/{id}/extracted.txt`) rather than stored here.
+     */
+    storagePath: text('storage_path'),
+    /**
+     * What this entry is *about*, for the catalog auto-sync (migration 0022) — `career` or
+     * `program` plus that row's id, unique together. It is how a re-sync finds the entry it
+     * wrote last night and updates it, instead of adding a second one every run.
+     */
+    entityType: text('entity_type').$type<KnowledgeEntityType>(),
+    entityId: text('entity_id'),
+    /**
+     * SHA-256 of the text this entry was generated from (migration 0024).
+     *
+     * It exists so the catalog sync can answer "has this changed?" from the row it already read,
+     * instead of reading the text back from R2 — one binding call per career, on every run, is a
+     * subrequest bill the Free plan's 50-per-invocation ceiling cannot pay (§45). NULL means
+     * unknown, which compares unequal and causes one conservative rewrite.
+     */
+    contentHash: text('content_hash'),
     processingStatus: text('processing_status').$type<ProcessingStatus>().notNull(),
     visibility: text('visibility').$type<KnowledgeVisibility>().notNull(),
     /**
@@ -1150,6 +1184,8 @@ export const knowledgeDocuments = sqliteTable(
   (table) => [
     index('knowledge_documents_uploaded_by_index').on(table.uploadedBy),
     index('knowledge_documents_processing_status_index').on(table.processingStatus),
+    index('knowledge_documents_source_type_index').on(table.sourceType),
+    uniqueIndex('knowledge_documents_entity_unique').on(table.entityType, table.entityId),
   ],
 );
 
@@ -1165,10 +1201,23 @@ export const knowledgeChunks = sqliteTable(
     /** NULL until the embedding batch lands — the idempotency check for `GenerateEmbeddingJob`. */
     vectorId: text('vector_id'),
     tokenCount: integer('token_count'),
+    /**
+     * Denormalized from the parent document (migration 0023), and the same three values go into
+     * the Vectorize record's metadata at upsert.
+     *
+     * Denormalized because it has to be: the filtering that matters happens **inside Vectorize**,
+     * before any row is read, so a vector carries its own metadata or it cannot be filtered at
+     * all. Keeping the columns here as well means the keyword half of hybrid retrieval filters on
+     * exactly the same values as the vector half, rather than on a join that could disagree.
+     */
+    sourceType: text('source_type').$type<KnowledgeSourceType>(),
+    entityType: text('entity_type').$type<KnowledgeEntityType>(),
+    entityId: text('entity_id'),
     createdAt: createdAt(),
   },
   (table) => [
     index('knowledge_chunks_document_id_index').on(table.documentId),
+    index('knowledge_chunks_entity_index').on(table.entityType, table.entityId),
     uniqueIndex('knowledge_chunks_document_number_unique').on(
       table.documentId,
       table.chunkNumber,
@@ -1282,10 +1331,24 @@ export const chatMessages = sqliteTable(
      * the fallback is not model output and must not be recorded as one.
      */
     aiRequestId: text('ai_request_id').references(() => aiRequests.id, { onDelete: 'set null' }),
+    /**
+     * The titles of the knowledge entries behind this answer (migration 0025), shown under it.
+     * NULL on a user message, on a deterministic reply, and on any answer with nothing to name —
+     * where the absence is itself the signal that this is not a sourced fact.
+     */
+    sources: text('sources', { mode: 'json' }).$type<string[]>(),
+    /**
+     * A student saying *this answer was wrong* (migration 0026). `DOWN` or NULL — there is no
+     * `UP`, because a rating on an answer nobody questioned tells an admin nothing they can act
+     * on, while a thumbs-down leads straight to the passage that caused it via the chunk ids
+     * already recorded on this message's `ai_requests` row.
+     */
+    feedback: text('feedback').$type<'DOWN'>(),
     createdAt: createdAt(),
   },
   (table) => [
     index('chat_messages_conversation_id_index').on(table.conversationId),
+    index('chat_messages_feedback_index').on(table.feedback, table.createdAt),
     index('chat_messages_conversation_created_index').on(
       table.conversationId,
       table.createdAt,

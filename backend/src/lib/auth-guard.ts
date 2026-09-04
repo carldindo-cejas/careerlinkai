@@ -98,6 +98,43 @@ export const RECOMMENDATION_REGENERATE_WINDOW_SECONDS = 10 * 60;
  * The suppression is stated inside the notification itself rather than left implicit — a message
  * that says "3 jobs failed" when 300 did is a worse lie than silence.
  */
+/**
+ * **The daily generation budget** (AiNormalisation Phase 4).
+ *
+ * Workers AI allows 10,000 neurons a day on the Free plan and hard-fails afterwards. The platform
+ * exposes no neuron meter a Worker can read, so this counts the thing we *can* count — text
+ * generations — and treats it as the proxy. That is honest arithmetic rather than a guess: a chat
+ * turn at 500 max-tokens and an explanation at 400 are the only two generation shapes this system
+ * has, and 500 of them a day sits comfortably inside the allocation with room for the embeddings
+ * and reranks that ride alongside.
+ *
+ * ## Why a limit at all, when quota exhaustion already degrades gracefully
+ *
+ * Because of *when* it degrades. Hitting the real ceiling means every AI feature dies at once, at
+ * whatever hour the class that day happened to exhaust it — most likely mid-afternoon, with the
+ * next class getting nothing. Stopping at 85% instead keeps a reserve for the two paths that
+ * cost nothing (Gate 1's verbatim answers and Gate 2's computed replies) and for the explanations
+ * students will open tomorrow morning, and it fails *predictably*: the same students see the same
+ * deterministic replies they would have seen anyway, rather than a system that worked at 10am and
+ * did not at 3pm.
+ *
+ * The window resets at 00:00 UTC — 08:00 Manila, which is roughly when a school day starts, so the
+ * budget refills just before the load arrives.
+ */
+export const DAILY_GENERATION_BUDGET = 500;
+
+/** Past this fraction of the budget, only the zero-cost gates answer. */
+export const GENERATION_BUDGET_DEGRADE_AT = 0.85;
+
+/** Seconds remaining until the Workers AI allocation resets at 00:00 UTC. */
+export function secondsUntilUtcMidnight(atMs = Date.now()): number {
+  const midnight = new Date(atMs);
+
+  midnight.setUTCHours(24, 0, 0, 0);
+
+  return Math.max(1, Math.ceil((midnight.getTime() - atMs) / 1000));
+}
+
 export const DLQ_ALERT_LIMIT = 1;
 export const DLQ_ALERT_WINDOW_SECONDS = 15 * 60;
 
@@ -159,6 +196,17 @@ export function forgotPasswordGuard(env: Env, email: string): DurableObjectStub<
  * cannot escape their own limit by getting a counselor to press the button for them either. The
  * resource being protected is the work done per student, so the student is the correct key.
  */
+/**
+ * The one counter in this file that is **not** per-user: the whole account shares one daily
+ * generation budget, because the resource it protects — the Workers AI allocation — is shared.
+ * Keyed by UTC date so the object rolls over with the allocation it tracks.
+ */
+export function generationBudgetGuard(env: Env, atMs = Date.now()): DurableObjectStub<AuthGuardDO> {
+  const day = new Date(atMs).toISOString().slice(0, 10);
+
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`ai-generation-budget:${day}`));
+}
+
 export function recommendationRegenerateGuard(
   env: Env,
   studentId: string,

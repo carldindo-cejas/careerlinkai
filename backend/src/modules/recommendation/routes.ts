@@ -10,6 +10,7 @@ import {
   RECOMMENDATION_REGENERATE_WINDOW_SECONDS,
   recommendationRegenerateGuard,
 } from '@/lib/auth-guard';
+import { aiVerifierEnabled } from '@/lib/config';
 import { successEnvelope, ApiError } from '@/lib/envelope';
 import { parseBody } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
@@ -77,7 +78,13 @@ studentRecommendationRoutes.use('*', ensureRole('student'));
 async function chatServiceForAsync(db: Database, c: Context<AppEnv>): Promise<ChatService> {
   const policy = await new AiPolicyService(db).activeGlobal();
 
-  return new ChatService(db, aiGatewayFrom(db, c.env), retrievalFrom(db, c.env), policy);
+  return new ChatService(
+    db,
+    aiGatewayFrom(db, c.env),
+    retrievalFrom(db, c.env),
+    policy,
+    aiVerifierEnabled(c.env),
+  );
 }
 
 /**
@@ -387,6 +394,33 @@ studentRecommendationRoutes.post('/chat', async (c) => {
         : 'The assistant is unavailable right now — your computed results are shown instead.',
     ),
     201,
+  );
+});
+
+/**
+ * `POST /student/chat/messages/:id/feedback` — *this answer was wrong* (Phase 4).
+ *
+ * The one signal in this system that leads straight to a fix. The answer's retrieved chunk ids are
+ * already on its `ai_requests` row, so an admin can follow a flag to the passage that produced it
+ * and correct or archive that entry — both one click away since Phase 1 made every entry editable.
+ *
+ * 404 for a message that is not this student's assistant message: an id alone is not authority,
+ * and the same answer for "not yours" and "does not exist" is the same answer this module gives
+ * everywhere else.
+ */
+studentRecommendationRoutes.post('/chat/messages/:id/feedback', async (c) => {
+  const service = await chatServiceForAsync(createDatabase(c.env.DB), c);
+  const flagged = await service.flagAnswer(requireUser(c).id, c.req.param('id'));
+
+  if (!flagged) {
+    throw ApiError.notFound('Message not found.');
+  }
+
+  return c.json(
+    successEnvelope(
+      { message_id: c.req.param('id'), feedback: 'DOWN' },
+      'Thanks — a counselor will review this answer.',
+    ),
   );
 });
 

@@ -4,7 +4,9 @@
       "Bash(php -v)",
       "Bash(composer -V)",
       "Bash(npm -v)",
-      "Bash(php artisan *)"
+      "Bash(php artisan *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }

@@ -32,6 +32,7 @@ export const paths = {
   adminCanonicalPrograms: '/admin/canonical-programs',
   // Phase 5a (§33, §37): the knowledge base and the AI governance text.
   adminKnowledge: '/admin/knowledge',
+  adminAiInsights: '/admin/ai-insights',
   adminAiPolicy: '/admin/ai-policy',
   // Phase 6 (§20, §37): counselor management and the audit-log viewer.
   adminCounselors: '/admin/counselors',

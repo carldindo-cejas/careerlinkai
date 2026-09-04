@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  answerAll,
   api,
+  assignVersion,
   countTokensFor,
   createClass,
   createStaffUser,
@@ -10,6 +12,7 @@ import {
   findUser,
   joinClass,
   login,
+  seedInstruments,
 } from '../helpers';
 
 /**
@@ -307,6 +310,74 @@ describe('GET …/students', () => {
       'ana.reyes',
       'juan.delacruz',
     ]);
+  });
+
+  /**
+   * The counselor's "0/4, 1/4, 4/4" (§37), asserted through the three states it actually has:
+   * assigned-but-untouched, started, finished.
+   *
+   * The denominator is the *class's* assignment count, so it moves for every row the moment
+   * another assessment is assigned — which is the half of this that a client cannot compute for
+   * itself, since a student who never started an assessment has no attempt row to count.
+   */
+  it('reports each student’s standing on the class’s assessments', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const { token, classRoom } = await counselorWithClass();
+
+    const [enrolled] = await enrolStudents(token, classRoom.id, ['Juan Dela Cruz']);
+    const studentToken = await joinClass(classRoom.join_code, enrolled.username);
+
+    const seeded = await seedInstruments(admin);
+
+    const rosterRow = async () => {
+      const response = await api('GET', `/counselor/classes/${classRoom.id}/students`, { token });
+
+      return response.body.data[0];
+    };
+
+    // Nothing assigned yet: not "0/0 done", which would read as an accomplishment.
+    expect(await rosterRow()).toMatchObject({
+      assessments_assigned: 0,
+      assessments_completed: 0,
+      assessments_in_progress: 0,
+    });
+
+    const assignment = await assignVersion(token, classRoom.id, seeded.riasecVersionId!);
+
+    // Assigning moves the denominator on its own — the student has done nothing.
+    expect(await rosterRow()).toMatchObject({
+      assessments_assigned: 1,
+      assessments_completed: 0,
+      assessments_in_progress: 0,
+    });
+
+    const started = await api('POST', `/student/assignments/${assignment.id}/start`, {
+      token: studentToken,
+    });
+
+    expect(await rosterRow()).toMatchObject({
+      assessments_assigned: 1,
+      assessments_completed: 0,
+      assessments_in_progress: 1,
+    });
+
+    await answerAll(studentToken, started.body.data, () => 4);
+    await api('POST', `/student/attempts/${started.body.data.id}/submit`, { token: studentToken });
+
+    expect(await rosterRow()).toMatchObject({
+      assessments_assigned: 1,
+      assessments_completed: 1,
+      assessments_in_progress: 0,
+    });
+
+    // A second assignment turns 1/1 back into 1/2 for everyone, without anyone doing anything.
+    await assignVersion(token, classRoom.id, seeded.scctVersionId!);
+
+    expect(await rosterRow()).toMatchObject({
+      assessments_assigned: 2,
+      assessments_completed: 1,
+      assessments_in_progress: 0,
+    });
   });
 });
 

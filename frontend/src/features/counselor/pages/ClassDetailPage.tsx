@@ -1,9 +1,11 @@
-import { Loader2 } from 'lucide-react';
+import { Loader2, UserPlus } from 'lucide-react';
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { AssignmentPanel } from '@/features/counselor/components/AssignmentPanel';
 import { ClassRecommendationsPanel } from '@/features/counselor/components/ClassRecommendationsPanel';
 import { ClassResultsPanel } from '@/features/counselor/components/ClassResultsPanel';
@@ -21,6 +23,7 @@ import { useClass } from '@/features/counselor/hooks/useClasses';
 export function ClassDetailPage() {
   const { classId = '' } = useParams<{ classId: string }>();
   const [enrolled, setEnrolled] = useState<number | null>(null);
+  const [isAdding, setIsAdding] = useState(false);
 
   const { data: classRoom, isPending, isError, error } = useClass(classId);
 
@@ -41,18 +44,28 @@ export function ClassDetailPage() {
     <div className="flex flex-col gap-6">
       {/* "All classes" used to sit here and in the error branch above; the shell's back control
           (AppShell) now stands one step above every page, error state included. */}
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-foreground">{classRoom.name}</h1>
-          <Badge tone={classRoom.status === 'active' ? 'success' : 'neutral'}>
-            {classRoom.status}
-          </Badge>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-semibold text-foreground">{classRoom.name}</h1>
+            <Badge tone={classRoom.status === 'active' ? 'success' : 'neutral'}>
+              {classRoom.status}
+            </Badge>
+          </div>
+
+          <p className="text-sm text-muted-foreground">
+            {classRoom.academic_year}
+            {classRoom.grade_level ? ` · ${classRoom.grade_level}` : null}
+          </p>
         </div>
 
-        <p className="text-sm text-muted-foreground">
-          {classRoom.academic_year}
-          {classRoom.grade_level ? ` · ${classRoom.grade_level}` : null}
-        </p>
+        {/* Adding students is an occasional errand, not something the counselor reads on every
+            visit — so it is one button up here and a modal, rather than a permanent two-step
+            panel standing between the class code and the roster. */}
+        <Button onClick={() => setIsAdding(true)}>
+          <UserPlus className="size-4" aria-hidden="true" />
+          Add students
+        </Button>
       </div>
 
       {enrolled !== null ? (
@@ -65,9 +78,24 @@ export function ClassDetailPage() {
 
       <JoinCodeCard classRoom={classRoom} />
 
-      <RosterBuilder classId={classRoom.id} onConfirmed={setEnrolled} />
-
+      {/* Opening a class is nearly always "who is in this class?" — the roster now sits directly
+          under the code, with nothing between them. */}
       <RosterTable classId={classRoom.id} />
+
+      {/* Paste the names, review the generated usernames, confirm — all inside the modal, which
+          closes on success. It is unmounted while shut, so each open starts on a clean step 1. */}
+      <Dialog open={isAdding} onOpenChange={setIsAdding}>
+        <DialogContent title="Add students">
+          <RosterBuilder
+            classId={classRoom.id}
+            // The confirmation lands on the page behind, beside the roster it just changed.
+            onConfirmed={(count) => {
+              setEnrolled(count);
+              setIsAdding(false);
+            }}
+          />
+        </DialogContent>
+      </Dialog>
 
       {/* Phase 3: assign an assessment to this class, and watch results arrive (§37). Placed
           below the roster deliberately — there is no point assigning an assessment to a class
