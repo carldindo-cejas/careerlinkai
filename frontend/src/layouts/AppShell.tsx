@@ -128,23 +128,32 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
       </a>
 
       {/*
-        Desktop sidebar — a 4rem rail that grows to 16rem while pointed at.
+        Desktop sidebar — a 4rem rail that grows to 16rem while pointed at, **pushing the page**.
 
-        The rail is what sits *in flow*; the panel that grows is absolutely positioned on top of
-        it. That split is the whole trick: animating the width of an in-flow sidebar reflows the
-        entire page on every hover, which on a table-heavy admin screen means text rewrapping under
-        the cursor. Here the content column never moves.
+        The spacer below and the panel inside it are animated to the same width over the same
+        duration, so the drawer never covers the content: the page reflows to make room for it and
+        closes back up when the pointer leaves. That is a deliberate choice of one cost over the
+        other. An overlay leaves the layout still but hides the left of whatever you were reading;
+        reflowing keeps everything legible and pays for it in a relayout on every hover.
+
+        Keeping the two widths in step is the whole requirement. The panel is `fixed` — it has to
+        be, to sit above the sticky header and reach full viewport height — so nothing but matching
+        `w-*` classes and matching transitions holds it over its own spacer. Change one and the
+        drawer detaches from the gap it is supposed to fill.
 
         `focus-within` matters as much as hover — a keyboard user tabbing into the navigation must
         see where they are, and a rail that only ever opened for a mouse would be unusable without
         one.
+
+        The aside keeps the real navigation as its child, so it must NOT be `aria-hidden`.
       */}
-      {/*
-        4rem of reserved flex row. The panel inside is `fixed`, so this element contributes only
-        width — which is what stops the content column sliding under the collapsed rail. It keeps
-        the real navigation as its child, so it must NOT be `aria-hidden`.
-      */}
-      <aside className="hidden w-16 shrink-0 lg:block">
+      <aside
+        className={cn(
+          'hidden shrink-0 lg:block',
+          'transition-[width] duration-200 ease-out motion-reduce:transition-none',
+          railExpanded ? 'w-64' : 'w-16',
+        )}
+      >
         <div
           onMouseEnter={() => setRailExpanded(true)}
           onMouseLeave={() => setRailExpanded(false)}
@@ -164,10 +173,10 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
             // z-index than the sticky header the header painted straight over its top 70px —
             // which is what made an expanded drawer look severed from its own logo.
             'fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden bg-sidebar',
+            // These two must stay identical to the spacer's above, or the drawer stops covering
+            // the gap the page opened for it.
             'transition-[width] duration-200 ease-out motion-reduce:transition-none',
-            railExpanded
-              ? 'w-64 border-r border-sidebar-border shadow-2xl shadow-black/40'
-              : 'w-16',
+            railExpanded ? 'w-64 border-r border-sidebar-border' : 'w-16',
           )}
         >
           <SidebarBody
