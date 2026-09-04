@@ -2,7 +2,7 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { chatConversations, knowledgeChunks, knowledgeDocuments } from '@/db/schema';
+import { aiRequests, chatConversations, knowledgeChunks, knowledgeDocuments } from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { AiGatewayService, type WorkersAiClient } from '@/modules/ai/ai-gateway-service';
@@ -295,7 +295,65 @@ describe('Gate 3 — cite or refuse, and the claim check', () => {
     // somewhere other than the passages supplied, and that is not distinguishable from invention
     // by reading it.
     expect(turn.failure).toBe('NO_CITATION');
-    expect(turn.answer.content).toContain('your results already say');
+
+    /**
+     * What the student is told changed on 2026-09-05, and this assertion is the record of why.
+     *
+     * It used to be the deterministic reply, which opens *"the assistant is unavailable at the
+     * moment"* and closes *"try again in a moment"*. Measured against production, that was simply
+     * untrue: the assistant was working, the passages just did not support an answer, and a retry
+     * produces the same refusal. Telling a student to retry something that cannot succeed is the
+     * one failure this file exists to prevent, committed by the error message rather than by the
+     * model.
+     *
+     * The refusal now names the gap and routes to a person, and it is logged as a coverage
+     * failure so it reaches the admin's unanswered-questions report.
+     */
+    expect(turn.answer.content).toContain('guidance counselor can help');
+    expect(turn.answer.content).not.toContain('Try again in a moment');
+  });
+
+  /**
+   * The half of that fix which is not visible to the student, and matters more.
+   *
+   * Phase 4's unanswered-questions report reads `ai_requests` rows whose status is FAILED and
+   * whose reason starts `SKIPPED`. A chat rejection used to write neither: `generate()` had
+   * already recorded SUCCESS, the rejection happened afterwards in the service, and nothing
+   * recorded it. So the most common failure a student can actually hit was invisible to the one
+   * screen built to surface it, and the admin's weekly routine would have shown an empty list on
+   * exactly the weeks it mattered.
+   *
+   * A rejection is a coverage gap by definition — the passages did not support an answer — which
+   * is precisely the backlog item an admin closes with one Q&A entry.
+   */
+  it('records a rejected answer as a coverage failure the admin report can see', async () => {
+    await clearConversation();
+
+    const chunkId = await seedEntry(
+      'Admissions Handbook',
+      'Applicants to BS Nursing submit Form 138 and two ID photos before 30 April.',
+    );
+
+    const { service } = pipeline({
+      responses: ['Applicants submit Form 138 and two ID photos before 30 April.'],
+      matches: [{ id: chunkId, score: 0.8 }],
+    });
+
+    // Counted as a delta across the one call: earlier cases in this file leave their own skipped
+    // rows behind, so an absolute count would assert the fixture's history rather than this fix.
+    const coverageFailures = async () =>
+      (await db().select().from(aiRequests)).filter(
+        (row) =>
+          row.status === 'FAILED' &&
+          (row.failureReason ?? '').startsWith('SKIPPED') &&
+          (row.failureReason ?? '').includes('NO_CITATION'),
+      ).length;
+
+    const before = await coverageFailures();
+
+    await service.ask(studentId, 'what do I submit for nursing admission?', await currentSet());
+
+    expect(await coverageFailures()).toBe(before + 1);
   });
 
   /**

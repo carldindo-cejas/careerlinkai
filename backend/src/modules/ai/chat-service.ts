@@ -456,8 +456,13 @@ export class ChatService {
       const citations = validateCitations(text, retrieved.length);
 
       if (!citations.ok) {
+        await this.gateway.logSkipped(
+          { ...baseOptions, systemPrompt: '', userPrompt: question },
+          `Rejected by the grounding contract: ${citations.reason}.`,
+        );
+
         return {
-          text: this.deterministicReply(recommendations),
+          text: NO_COVERAGE_REPLY,
           aiRequestId: null,
           failure: citations.reason,
           sources: [],
@@ -477,8 +482,15 @@ export class ChatService {
     ]);
 
     if (unsupported.length > 0) {
+      await this.gateway.logSkipped(
+        { ...baseOptions, systemPrompt: '', userPrompt: question },
+        `Rejected by the grounding contract: UNSUPPORTED_CLAIM (${unsupported
+          .map((claim) => `${claim.kind}:${claim.token}`)
+          .join(', ')}).`,
+      );
+
       return {
-        text: this.deterministicReply(recommendations),
+        text: NO_COVERAGE_REPLY,
         aiRequestId: null,
         failure: 'UNSUPPORTED_CLAIM',
         sources: [],
@@ -497,8 +509,13 @@ export class ChatService {
       );
 
       if (!supported) {
+        await this.gateway.logSkipped(
+          { ...baseOptions, systemPrompt: '', userPrompt: question },
+          'Rejected by the grounding contract: UNSUPPORTED_CLAIM (verifier).',
+        );
+
         return {
-          text: this.deterministicReply(recommendations),
+          text: NO_COVERAGE_REPLY,
           aiRequestId: null,
           failure: 'UNSUPPORTED_CLAIM',
           sources: [],
@@ -547,6 +564,14 @@ export class ChatService {
    * It is a real answer, not an apology: their top matches with the §27 reasons already computed
    * for them. Those sentences are reproducible arithmetic (§26) and were going to be true whatever
    * the model did.
+   *
+   * **Reserved for the model actually being unavailable** — a failed call, or a reply so malformed
+   * that another attempt might genuinely produce a better one. It used to serve the grounding
+   * rejections too, and that was measured on production as a lie: a student who asked about
+   * tuition was told the assistant was *"unavailable at the moment"* and to *"try again in a
+   * moment"*, when the truth was that the corpus holds no tuition figure and never would on a
+   * retry. Those paths now answer with `NO_COVERAGE_REPLY`, which says what is missing and routes
+   * to someone who can fix it.
    */
   private deterministicReply(recommendations: RecommendationSet | null): string {
     if (recommendations === null) {

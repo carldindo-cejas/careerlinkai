@@ -131,6 +131,51 @@ describe('unsupportedClaims — the invented figure', () => {
   });
 });
 
+describe('unsupportedClaims — refusing the invention without refusing the paraphrase', () => {
+  /**
+   * All four cases below are drawn from one production run of **Explain more** across twenty
+   * recommendations (2026-09-05), in which eight explanations were refused and the student was
+   * shown the deterministic reason instead. Three of the four refusals were the assistant saying
+   * something true in slightly different words; the fourth was a fabricated percentage.
+   *
+   * They are pinned together on purpose. The fix for the first three is only correct if it leaves
+   * the fourth refused, and a test file that asserted the loosening without the catch would be
+   * evidence for exactly the wrong thing.
+   */
+  const sources = [
+    'Career: Civil Engineer. Designs and supervises infrastructure projects.',
+    'Your Realistic interest score (100%) aligns with Civil Engineer.',
+    '88.1',
+  ];
+
+  it('accepts the plural of a name the sources give in the singular', () => {
+    // Six of the eight production refusals were this exact word: the passage says "Civil
+    // Engineer", the model wrote "Civil Engineers", and the substring test called it unsourced.
+    expect(unsupportedClaims('Civil Engineers design infrastructure [1].', sources)).toEqual([]);
+  });
+
+  it('accepts a figure written with different precision', () => {
+    // The sources say "100%"; the model wrote "100.0%". One value, two spellings.
+    expect(unsupportedClaims('Your Realistic score is 100.0% [2].', sources)).toEqual([]);
+  });
+
+  it('still refuses a figure the sources do not hold', () => {
+    // The real refusal from that run. No recommendation in the database scores 97.3 — the highest
+    // is 93.4 — so this is the model inventing a number, and it must keep failing.
+    const problems = unsupportedClaims('You matched at 97.3% [1].', sources);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({ token: '97.3', kind: 'NUMBER' });
+  });
+
+  it('does not let the plural fold invent a source', () => {
+    // "Nurses" must not pass merely because it can be folded — nothing here mentions a nurse.
+    const problems = unsupportedClaims('Consider becoming one of the Nurses [1].', sources);
+
+    expect(problems.map((problem) => problem.token)).toContain('Nurses');
+  });
+});
+
 describe('offDomainKind — what this assistant declines', () => {
   it('declines schoolwork', () => {
     expect(offDomainKind('solve this equation for x please')).toBe('HOMEWORK');

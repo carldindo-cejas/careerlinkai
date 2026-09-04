@@ -161,6 +161,73 @@ export interface UnsupportedClaim {
 }
 
 /**
+ * Every number in the sources, as a numeric value.
+ *
+ * Measured on production: the model writes `100.0%` where the computed context says `100%`. Those
+ * are the same claim, and the substring test cannot see it — the characters `100.0` do not occur
+ * in `100%`. Comparing as numbers is what stops a difference in *formatting* reading as a
+ * difference in *fact*.
+ *
+ * The same defect class as migration 0027's tokenizer, arriving by a different road: two spellings
+ * of one value, compared as strings.
+ */
+function numericValuesOf(text: string): Set<number> {
+  const values = new Set<number>();
+
+  for (const raw of numbersIn(text)) {
+    const value = Number(raw);
+
+    if (Number.isFinite(value)) {
+      values.add(value);
+    }
+  }
+
+  return values;
+}
+
+/**
+ * Whether a written figure equals one the sources actually contain.
+ *
+ * Equality against the sources' own numbers, never a tolerance: this widens what counts as *the
+ * same* number and never what counts as a *supported* one. The distinction is not academic — the
+ * production run that motivated this also rejected `97.3` as a match score, and the highest score
+ * in the database is 93.4. That refusal was correct, it stays correct, and nothing here may accept
+ * a value the sources do not hold.
+ */
+function isNumericallyPresent(value: string, sourceNumbers: Set<number>): boolean {
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && sourceNumbers.has(parsed);
+}
+
+/**
+ * The singular of a regular English plural, or null when the word is not one.
+ *
+ * "Civil Engineers" is not a different entity from the "Civil Engineer" a passage names, but the
+ * substring test read the plural as an unsourced name and refused the whole explanation — six of
+ * the eight refusals measured on production were this one word.
+ *
+ * Only regular endings fold, and only ever to *find* a source. An irregular plural fails to fold
+ * and is then checked exactly as written, which is the conservative direction: the cost is a
+ * refusal that was already happening, never an unsupported name let through.
+ */
+function singularOf(word: string): string | null {
+  if (word.endsWith('ies') && word.length > 4) {
+    return word.slice(0, -3) + 'y';
+  }
+
+  if (word.endsWith('sses') || word.endsWith('shes') || word.endsWith('ches')) {
+    return word.slice(0, -2);
+  }
+
+  if (word.endsWith('s') && !word.endsWith('ss') && word.length > 3) {
+    return word.slice(0, -1);
+  }
+
+  return null;
+}
+
+/**
  * Every sentence asserting a figure or a name whose token appears in **no** source.
  *
  * This is the check that catches the invented tuition fee, and it is deliberately mechanical: a
@@ -179,6 +246,7 @@ export interface UnsupportedClaim {
 export function unsupportedClaims(text: string, sources: string[]): UnsupportedClaim[] {
   const haystack = sources.join('\n').toLowerCase();
   const haystackDigits = haystack.replace(/[,\s]/g, '');
+  const haystackNumbers = numericValuesOf(haystack);
   const problems: UnsupportedClaim[] = [];
 
   for (const sentence of sentencesOf(text)) {
@@ -192,13 +260,16 @@ export function unsupportedClaims(text: string, sources: string[]): UnsupportedC
         continue;
       }
 
-      if (!haystackDigits.includes(value)) {
+      if (!haystackDigits.includes(value) && !isNumericallyPresent(value, haystackNumbers)) {
         problems.push({ sentence, token: value, kind: 'NUMBER' });
       }
     }
 
     for (const noun of properNounsIn(claim)) {
-      if (!haystack.includes(noun.toLowerCase())) {
+      const lower = noun.toLowerCase();
+      const singular = singularOf(lower);
+
+      if (!haystack.includes(lower) && (singular === null || !haystack.includes(singular))) {
         problems.push({ sentence, token: noun, kind: 'NAME' });
       }
     }

@@ -1,4 +1,4 @@
-# AiNormalisation — Grounding the AI on admin-authored knowledge
+                                                                                          # AiNormalisation — Grounding the AI on admin-authored knowledge
 
 **Date:** 2026-09-04
 **Scope:** the whole AI surface — `backend/src/modules/ai/*`, the §30 explanation pipeline, the
@@ -8,7 +8,9 @@ answers, and **Explain more** on the recommendations page produces nothing usabl
 **Goal:** every answer a student reads is either arithmetic this system computed, text an admin
 wrote, or a cited paraphrase of retrieved text. Nothing else ships.
 **Status:** **Phases 0–4 deployed 2026-09-04. Migration 0027 (porter stemming) applied the same
-day, closing the last measured retrieval defect.** Phase checkboxes below are the tracker.
+day, closing the last measured retrieval defect. Verified end to end with a real student session
+on 2026-09-05 (§3c), which found and fixed three further defects.** Phase checkboxes below are the
+tracker.
 
 The diagnosis body is written evidence-first, in the style of `ASSESSMENT-FIX.md`: each finding
 carries the file and line that establishes it, so anyone can re-verify without redoing the search.
@@ -742,6 +744,90 @@ that is not measured is a guarantee that is not held.
 
 ---
 
+## 3c. First contact with a student (2026-09-05)
+
+The document opens with two reported symptoms. Four phases closed against them and nobody had ever
+checked whether either was gone — every measurement to this point, including Phase 0's acceptance,
+was the keyword half queried directly against D1. This is the first time the pipeline was driven
+the way a student drives it: a real class code, a real session, the real HTTP API.
+
+### Symptom 2 — *"Explain more produces nothing usable"*
+
+**Explain more works.** It returns a grounded, cited paragraph naming real programmes at real
+colleges. But driving it across all twenty of one student's recommendations found it working only
+**twelve times in twenty**, and the eight refusals are the finding:
+
+| Rejected token | Occurrences | Verdict |
+| --- | --- | --- |
+| `NAME:Engineers` | 6 | **False refusal.** The passage says *Civil Engineer*; the model wrote *Civil Engineers*. |
+| `NUMBER:100.0` | 1 | **False refusal.** The context says `100%`; the model wrote `100.0%`. |
+| `NUMBER:97.3` | 2 | **Correct refusal.** No recommendation in the database scores 97.3 — the highest is 93.4. |
+
+That third row is why none of this was loosened by feel. The claim check was catching a fabricated
+percentage, in production, on a live student's screen — the exact failure §1 was written to
+prevent. Any fix had to leave it caught.
+
+So both false refusals were repaired the same way: **widen what counts as the same value, never
+what counts as a supported one.**
+
+* Numbers are compared numerically as well as by substring, so `100.0` and `100` are one figure.
+  `97.3` still equals nothing the sources hold, and still fails.
+* A regular English plural folds to its singular *to find a source*. An irregular plural does not
+  fold and is checked as written — the conservative direction.
+
+Re-measured on production immediately after deploying: **nineteen of nineteen.** The same defect
+class as migration 0027, arriving by a different road — two spellings of one thing, compared as
+strings.
+
+### Symptom 1 — *"the chat gives vague, occasionally invented answers"*
+
+Not invented. The grounding contract holds. But the refusal *lied about itself*, and that turned
+out to be the more serious half.
+
+A student asking **"How much is tuition for BS Civil Engineering?"** was told:
+
+> The assistant is unavailable at the moment, so here is what your results already say… Try again
+> in a moment.
+
+Every clause of that is false. The assistant was working. The generation succeeded. What actually
+happened is that the answer failed the grounding contract, because the corpus holds no tuition
+figure — and it never will on a retry. `deterministicReply` was serving five different failures,
+only one of which is the model being unavailable.
+
+Worse, and invisible: **that rejection was recorded nowhere.** `generate()` had already written its
+`SUCCESS` row, the rejection happened afterwards in the service, and nothing logged it. Phase 4's
+unanswered-questions report reads rows that are `FAILED` with a reason beginning `SKIPPED`, so the
+single most common failure a student can hit **could not appear on the one screen built to surface
+it.** The admin's weekly routine would have shown an empty list on precisely the weeks it mattered,
+and §4's flywheel would never have turned.
+
+Both halves are fixed. A citation or claim rejection is a coverage gap by definition — the passages
+did not support an answer — so it now answers with `NO_COVERAGE_REPLY`, which names the gap and
+routes to a person, and it writes the `SKIPPED` row that puts the question in front of an admin.
+The deterministic *"try again"* reply is reserved for the model genuinely being unavailable.
+
+Verified on production after the deploy — the student now gets the honest refusal, and the row
+behind it reads:
+
+```
+FAILED · SKIPPED: Rejected by the grounding contract: NO_CITATION.
+retrieval_query: "How much is the tuition fee for BS Civil Engineering?"
+```
+
+That is the flywheel closing for the first time: an unanswerable question becomes a logged gap,
+which becomes a row in the admin's report, which becomes one Q&A entry, after which Gate 1 answers
+it for free forever.
+
+### What this says about the tests, again
+
+§3b's lesson repeats and sharpens. All 1,040 tests were green through every one of these defects.
+One of them — the misleading refusal — was *asserted* by a passing test, which pinned the exact
+copy that was lying to students. A test suite cannot tell you that the thing it verifies is the
+wrong thing; only running the product can. The stemming defect, the plural refusal and the
+unlogged rejection share one shape: each was invisible to every check except using it.
+
+---
+
 ## 4. How reliability compounds
 
 1. **Student asks.** The question hits the four gates. If nothing covers it, the system refuses
@@ -785,7 +871,26 @@ questions students repeat most are exactly the ones that never reach the model.
 index plus a full re-embed — index dimensions cannot be changed — so do it once, after chunk sizes
 and metadata are settled. Until then D8 stands: students must ask in English to be understood.
 
-- [ ] Decided: …
+- [x] Decided: **defer — and this reverses the recommendation above, on evidence that did not
+      exist when it was written.**
+
+The recommendation said "at the end of Phase 2", which has now passed, so the honest thing is to
+say why it still should not happen yet. Two measurements from 2026-09-04 changed the picture:
+
+* **The corpus contains no Filipino at all.** All 372 chunks are machine-generated English prose
+  composed from catalog fields. A multilingual embedder puts *query* and *passage* in one space —
+  but here the passage side is English no matter which model embeds it, so `bge-m3` would buy only
+  the query half of its own benefit.
+* **The student it is meant to help is blocked by something else first.** `magkano`, `tuition` and
+  `scholarship` return zero chunks on production, and not for want of a multilingual embedder: the
+  corpus has no cost or requirements text in *any* language (see the coverage note in Phase 0's
+  acceptance). Re-embedding 372 English passages into a 1024-dimension index would leave that
+  question exactly as unanswerable as it is today.
+
+So the sequence inverts: get admin-authored content in — where Filipino text will actually first
+appear, because that is what a person writes and a generator does not — and re-evaluate `bge-m3`
+against a corpus that has something for it to do. Porter stemming (0027) also just changed the
+keyword half, and re-platforming the vector half in the same week would make both unmeasurable.
 
 ### Move to Cloudflare AI Search (formerly AutoRAG) instead of this pipeline?
 
@@ -794,7 +899,10 @@ and would replace real work, but it costs the per-chunk provenance in `ai_reques
 archive-not-delete guarantee (§13.7), and the audit trail — all ratified requirements here. This
 pipeline is 90% built; finish it.
 
-- [ ] Decided: …
+- [x] Decided: **no**, as recommended. Recorded rather than reconsidered — the pipeline is now
+      finished and deployed, so the trade the recommendation describes has only moved further in
+      its favour: what AI Search would replace is no longer "real work remaining" but working code
+      with four gates, per-chunk provenance and an audit trail already in production.
 
 ### A larger text model for explanations?
 
@@ -803,7 +911,12 @@ forever, so their neuron cost is negligible; a larger instruct model there would
 paragraph students actually read at almost no budget cost. Keep the 8B model for chat, where the
 volume lives.
 
-- [ ] Decided: …
+- [x] Decided: **worth testing, but not before the pipeline has been watched end to end with real
+      students on it.** The reasoning above is sound and the budget argument is unchanged. What
+      makes it premature is that no one has yet seen an explanation this system generated *in
+      production* — so there is no baseline to judge a larger model against, and "it reads better"
+      would be an impression rather than a comparison. Swapping the model first would also make any
+      later disappointment ambiguous between the model and the grounding.
 
 ---
 
