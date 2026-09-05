@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import packageJson from '../../package.json';
 
 /**
- * **`db:seed` must never reach seed 0002** (plan P1-3, guarding P1-0).
+ * **`db:seed` must never reach a superseded catalog seed** (plan P1-3, guarding P1-0; extended to
+ * seed 0004 when 0005 reset the catalog to Region VII).
  *
  * Seeds 0002 and 0004 both contain "UP Diliman", "Software Engineer", "Teacher" and a dozen more
  * of the same names under *different ids*, and neither `colleges.name` nor `careers.title` carries
@@ -67,34 +68,50 @@ function resolveSeedFiles(name: string, seen: string[] = []): string[] {
   return files;
 }
 
+/**
+ * The superseded catalogs. Both are kept on disk and both are reachable by an explicit local
+ * runner; neither may be chained into `db:seed` or pointed at a deployed database.
+ *
+ * 0002 is the pre-audit ten-career fixture (P1-0). 0004 joined it when seed 0005 reset the catalog
+ * to Region VII: it seeds 20 institutions from Diliman to Iligan, and one of them — Silliman
+ * University, in Dumaguete — is not in Region VII at all any more, RA 12000 having moved Negros
+ * Oriental into the Negros Island Region. Running 0004 after 0005 does not merge the two catalogs;
+ * it puts the nationwide one back on top of the regional one, and because 0005's institutions do
+ * not overlap 0004's by name, `INSERT OR IGNORE` collides on nothing and every row survives.
+ */
+const SUPERSEDED_SEEDS = ['0002_', '0004_'];
+
 describe('db:seed chain (P1-0 regression guard)', () => {
-  it('runs staff → 0004 → ai-policy, and never seed 0002', () => {
+  it('runs staff → 0005 → ai-policy, and never a superseded catalog', () => {
     expect(resolveSeedFiles('db:seed')).toEqual([
       '0001_staff_accounts.sql',
-      '0004_academic_catalog_expansion.sql',
+      '0005_region7_catalog_reset.sql',
       '0003_ai_policy.sql',
     ]);
   });
 
-  it('keeps 0002 reachable on its own, so the pre-audit fixture is still reproducible', () => {
-    // The fix for P1-0 was to unchain 0002, not to delete it. If a future change removes the
-    // script entirely, the first assertion above would still pass while this documented
-    // capability quietly disappeared — so the guard states both halves.
+  it('keeps both superseded catalogs reachable on their own', () => {
+    // The fix for P1-0 was to unchain 0002, not to delete it, and 0005 treats 0004 the same way.
+    // If a future change removed these scripts entirely, the assertion above would still pass
+    // while a documented capability quietly disappeared — so the guard states both halves.
     expect(resolveSeedFiles('db:seed:catalog')).toEqual(['0002_academic_catalog.sql']);
+    expect(resolveSeedFiles('db:seed:catalog:full')).toEqual([
+      '0004_academic_catalog_expansion.sql',
+    ]);
   });
 
-  it('exposes no runner that applies seed 0002 to a deployed database', () => {
+  it('exposes no runner that applies a superseded catalog to a deployed database', () => {
     // `--local` targets a Miniflare SQLite file you can delete; `--remote` targets staging or
     // production, where P2-2 had to archive duplicate "Data Scientist" and "TEACHER"/"Teacher"
-    // rows by hand. Reproducing pre-audit behaviour is a local activity, so the remote runners
-    // must all point at 0004.
-    const remote0002 = Object.entries(scripts)
+    // rows by hand. Reproducing a superseded catalog is a local activity, so every remote runner
+    // must point at 0005.
+    const remoteSuperseded = Object.entries(scripts)
       .filter(([name]) => name.startsWith('db:seed'))
       .filter(([, command]) => command.includes('--remote'))
-      .filter(([, command]) => command.includes('0002_'))
+      .filter(([, command]) => SUPERSEDED_SEEDS.some((seed) => command.includes(seed)))
       .map(([name]) => name);
 
-    expect(remote0002).toEqual([]);
+    expect(remoteSuperseded).toEqual([]);
   });
 
   it('applies the staff seed before the catalog', () => {

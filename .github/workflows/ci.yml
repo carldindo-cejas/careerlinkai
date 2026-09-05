@@ -53,6 +53,15 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # seeds/0005_region7_catalog_reset.sql is generated from scripts/build-region7-seed.mjs.
+      # A hand-edit to the .sql applies once and is then silently reverted by the next
+      # regeneration, so the two are asserted to agree. The generator also re-runs its own
+      # cross-reference checks here — a mapping naming a career that was renamed, a canonical
+      # programme no institution offers, nine careers sharing one Holland code — which is the
+      # point of it: those are data bugs whose only symptom is a wrong recommendations screen.
+      - name: Region VII catalog seed is current
+        run: npm run seed:region7:check
+
       # Phase 4.5 Step 2 — the Miniflare-blind limits, asserted statically: no [limits] block
       # (Free rejects it, code 100328), every environment carries the full binding set including
       # AUTH_DO, and deriveBits is called nowhere outside the Durable Object.

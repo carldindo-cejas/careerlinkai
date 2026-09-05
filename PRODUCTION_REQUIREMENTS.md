@@ -10,9 +10,9 @@
 >    always right; the prose would have led someone to stop verifying six migrations early.
 > 2. **The catalog seed named here was the demo fixture.** `seeds/0002_academic_catalog.sql` holds
 >    5 colleges, 10 careers and 16 programs, and §27 keeps a top **ten** — so seeding production
->    with it gives every student the entire career catalog, reordered. Production must be seeded
->    with **`seeds/0004_academic_catalog_expansion.sql`** (20 HEIs, 68 careers, 48 canonical
->    programs, 309 offerings, 933 mappings). See audit finding C1.
+>    with it gives every student the entire career catalog, reordered. See audit finding C1.
+>    *(Superseded 2026-09-05: the fix was seed 0004, and the live catalog is now
+>    `seeds/0005_region7_catalog_reset.sql` — Region VII only. See §3a.)*
 > 3. **Installing RIASEC and SCCT was not listed at all.** A freshly migrated database has **no
 >    assessments**. The instruments arrive only via
 >    `POST /api/v1/admin/assessment-templates/seed-instruments`, which now has an
@@ -65,16 +65,32 @@ After migrating: staff accounts, academic catalog, AI policy.
 Staff **must** go through the bootstrap script (it derives PBKDF2 hashes at run time — never the
 committed `seeds/0001_staff_accounts.sql`, which publishes the password it encodes).
 
-The catalog seed is **0004, not 0002**. `0002` is the 10-career demo fixture; because §27 keeps a
-top ten, seeding production with it hands every student the whole catalog in a different order and
-the recommendation engine appears to do nothing (audit C1). `0004` is the real catalog and is
-idempotent, so re-running it is safe.
+The catalog seed is **0005**. `0002` is the 10-career demo fixture; because §27 keeps a top ten,
+seeding production with it hands every student the whole catalog in a different order and the
+recommendation engine appears to do nothing (audit C1). `0004` was the nationwide catalog that
+fixed C1 and has now been superseded by **`seeds/0005_region7_catalog_reset.sql`** — Region VII
+(Bohol and Cebu) only, 9 institutions, 49 canonical programmes, 140 offerings, 71 careers, 478
+mappings. Both 0002 and 0004 are local-only now and have no `:production` runner at all.
+
+0005 is idempotent, so re-running it is safe. It is also a **reset**: it deletes every college,
+programme, career and mapping before inserting, which cascades to every student's stored
+recommendations. On a first cutover there are none. On a re-seed of a live database, see
+[the re-seed note](#re-seeding-a-live-catalog) below.
 
 ```bash
 node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
-npm run db:seed:catalog:full:production    # seeds/0004 — 20 HEIs, 68 careers, 48 programs
-npm run db:seed:ai-policy:production       # seeds/0003
+npm run db:seed:catalog:region7:production  # seeds/0005 — 9 HEIs, 49 programmes, 71 careers
+npm run db:seed:ai-policy:production        # seeds/0003
 ```
+
+<a id="re-seeding-a-live-catalog"></a>
+**Re-seeding a live catalog.** Because 0005 replaces the catalog rather than adding to it, every
+`recommendations` row is deleted — each one targets a career or programme that is about to stop
+existing, and the foreign keys are `ON DELETE CASCADE`. Nothing a student authored is affected:
+assessment attempts, results, answers and chat conversations are untouched, and §27 recomputes a
+ranking from the stored result on demand. A student who opens the recommendations page after a
+re-seed sees the empty state with its **Regenerate** action (audit C4), not an error. Tell students
+before re-seeding a live term, or regenerate on their behalf from the counselor screen.
 
 Bootstrap prints the temp password **once**; accounts land with `must_change_password = 1` so first
 login forces rotation.
@@ -161,7 +177,7 @@ single-Worker consolidation removed the separate frontend artifact entirely.
 3. npx wrangler d1 migrations list CareerLinkAI_Main --remote --env production   # expect none pending
 4. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
                                                    # prints the temp password ONCE — capture it
-5. npm run db:seed:catalog:full:production         # seeds/0004 (NOT 0002 — see blocker 3)
+5. npm run db:seed:catalog:region7:production      # seeds/0005 (NOT 0002 or 0004 — see blocker 3)
 6. npm run db:seed:ai-policy:production
 7. npm run deploy:production                       # publishes SPA + API in one versioned deploy
 8. curl https://careerlinkai.online/api/v1/health  # expect {"environment":"production"}
