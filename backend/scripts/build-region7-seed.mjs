@@ -5,12 +5,12 @@
  * ## Why a generator and not hand-written SQL
  *
  * Seeds 0002 and 0004 are hand-committed SQL. That works up to a point; 0004 crossed it. The
- * catalog below is ~9 institutions × ~15 programmes × ~4 careers each — roughly 500 rows whose
- * ids are content-derived hashes, and every one of the ~350 mapping rows has to name a programme
- * id and a career id that both exist. Hand-maintaining that is not review: nobody can read a
+ * catalog below is 16 institutions × ~13 programmes × ~4 careers each — well over a thousand rows
+ * whose ids are content-derived hashes, and every one of the ~880 mapping rows has to name a
+ * programme id and a career id that both exist. Hand-maintaining that is not review: nobody can read a
  * 1,500-line wall of UUIDs and notice that one offering points at a career that was renamed.
  *
- * So the *data* lives here, as nine readable tables, and the SQL is output. The emitter resolves
+ * So the *data* lives here, as eight readable tables, and the SQL is output. The emitter resolves
  * every cross-reference by natural key and **throws** on a dangling one, which turns the class of
  * bug that produced audit P1-0 into a build failure instead of a duplicate card on a student's
  * recommendations screen.
@@ -22,32 +22,43 @@
  *
  * ## Where the data comes from
  *
- * `Region VII Education Career Database.pdf` (2026-09-05), which is itself sourced from CHED RO
- * VII directories, institutional programme pages and PRC board registers. Its bindings, adopted
- * here verbatim:
+ * Two source documents, both dated 2026-09-05 and both sourced from CHED RO VII directories,
+ * institutional programme pages, and PRC / MARINA registers:
+ *
+ *   * `Region VII Education Career Database.pdf` — the regional boundary, nine verified
+ *     institutions, the normalisation rules, and the pathway taxonomy.
+ *   * `Region VII Education Career Database additional.pdf` — seven further institutions
+ *     (16 in total), maritime education under MARINA/STCW rather than the PRC, and a
+ *     substantially finer career matrix at roughly 2.7 pathways per programme.
+ *
+ * Their bindings, adopted here verbatim:
  *
  *   * **The region is Bohol and Cebu, and nothing else.** RA 12000 re-established the Negros
  *     Island Region, moving Negros Oriental and Siquijor out of Region VII. Silliman University
  *     — in seed 0004's list — is a Dumaguete institution and is therefore *not* Region VII any
  *     more. Excluding it is the single most consequential edit in this file.
- *   * **The nine institutions below are the PDF's fully-verified set**, not a sample of a larger
- *     ambition. CHED RO VII counts 139 HEIs in the region; nine are cross-validated to the
- *     standard this catalog needs, and the other 130 are absent rather than guessed at.
+ *   * **The 16 institutions below are the source documents' verified set**, not a sample of a
+ *     larger ambition. CHED RO VII counts 139 HEIs in the region — 111 in Cebu, 28 in Bohol;
+ *     these 16 are the ones cross-validated to the standard this catalog needs, and the other
+ *     123 are absent rather than guessed at. The first document verified nine and the expanded
+ *     one added seven, which is why the institution list below is in two blocks.
  *   * **Normalisation preserves scope of practice.** BSCS / BSIT / BSIS / BS CpE stay four
  *     canonical entries because they are four different careers, and BSA stays separate from
  *     BSMA and BS AIS because only BSA graduates may sit the CPALE. Variant *titles* for one
  *     curriculum do collapse: CDU's "BS Medical Technology" and the sector's "BSMLS" are one
  *     canonical programme sitting one licensure exam.
- *   * **A degree is not a licence.** Every regulated career's description says which PRC exam
- *     stands between graduation and practice, because the PDF is explicit that an automated
- *     system must never imply that graduating is enough.
+ *   * **A degree is not a licence.** Every regulated career's description says which examination
+ *     stands between graduation and practice, and under whose authority — the PRC for most, but
+ *     MARINA under the STCW Convention for deck officers and CAAP for aircraft maintenance and
+ *     flight crew. Both documents are explicit that an automated system must never imply that
+ *     graduating is enough.
  *
  * Salary bands and `typical_riasec_code` remain **estimates, not measurements** — monthly PHP for
  * the Central Visayas market, Holland codes from the standard occupational interpretation. They
  * are seed values an administrator is expected to refine, and every one is editable in the admin
  * catalog screens. Nothing here is shown to a student as a citation.
  *
- * ## Two things the PDF specifies that this schema cannot yet hold
+ * ## Two things the source documents specify that this schema cannot yet hold
  *
  * 1. **The DIRECT / RELATED / CONDITIONAL / BROAD taxonomy.** `program_careers` is (id,
  *    program_id, career_id) — there is no relationship column, and adding one is a migration plus
@@ -136,7 +147,7 @@ const TOWNS = [
   { name: 'Tagbilaran City', province: 'Bohol', code: '071241000' },
 ];
 
-// --- 2. institutions (the PDF's nine verified HEIs) ----------------------------------------------
+// --- 2. institutions (the 16 verified HEIs) ------------------------------------------------------
 
 const COLLEGES = [
   {
@@ -200,13 +211,69 @@ const COLLEGES = [
     name: 'University of Bohol',
     town: 'Tagbilaran City',
     description:
-      'A private non-sectarian comprehensive university in Poblacion, Tagbilaran City, with programmes spanning health sciences, maritime education, engineering, business and teacher education. PACUCOA accredited.',
+      'A private non-sectarian comprehensive university in Poblacion, Tagbilaran City, with programmes spanning liberal arts, criminology, business, engineering and teacher education. PACUCOA accredited.',
+  },
+
+  // The seven institutions the expanded source document adds to the nine above. Together they
+  // are its "16 major representative universities and colleges", and they widen the catalog in
+  // two directions the first nine could not reach on their own: maritime education (UC, BIT),
+  // which is one of Cebu's largest employers of graduates and carries a MARINA/STCW credential
+  // path rather than a PRC one, and the LUC/college tier (Lapu-Lapu City College, Benedicto,
+  // Velez), which is where a large share of Region VII students actually enrol.
+  {
+    key: 'UC',
+    name: 'University of Cebu',
+    town: 'Cebu City',
+    description:
+      'A private non-sectarian university across five Metro Cebu campuses — Main, Banilad, Lapu-Lapu & Mandaue, and the Maritime Education and Training Center — known for maritime education, information technology, criminology, nursing and business.',
+  },
+  {
+    key: 'CITU',
+    name: 'Cebu Institute of Technology - University',
+    town: 'Cebu City',
+    description:
+      'A private non-sectarian engineering and technology university on N. Bacalso Avenue, Cebu City, with long-established programmes in mechanical and civil engineering, computer science and architecture.',
+  },
+  {
+    key: 'CNU',
+    name: 'Cebu Normal University',
+    town: 'Cebu City',
+    description:
+      'A state university on Osmeña Boulevard, Cebu City, across three campuses. Historically the region’s teacher-training institution, it also offers nursing and the liberal arts.',
+  },
+  {
+    key: 'VELEZ',
+    name: 'Velez College',
+    town: 'Cebu City',
+    description:
+      'A private non-sectarian health sciences college on F. Ramos Street, Cebu City, specialising in medical technology, nursing, physical therapy and occupational therapy.',
+  },
+  {
+    key: 'BENEDICTO',
+    name: 'Benedicto College',
+    town: 'Mandaue City',
+    description:
+      'A private non-sectarian college with campuses in Mandaue City and Cebu City, focused on technical-vocational education, information technology and business administration.',
+  },
+  {
+    key: 'LLCC',
+    name: 'Lapu-Lapu City College',
+    town: 'Lapu-Lapu City',
+    description:
+      'The Local University and College of Lapu-Lapu City, in Gun-ob, established by city ordinance to widen local access to teacher education, hospitality management and criminology.',
+  },
+  {
+    key: 'BIT',
+    name: 'BIT International College',
+    town: 'Tagbilaran City',
+    description:
+      'A private non-sectarian college with four Bohol campuses — Tagbilaran City, Carmen, Jagna and Talibon — offering information technology, business administration and maritime studies.',
   },
 ];
 
 // --- 3. careers ----------------------------------------------------------------------------------
 //
-// Every career here is reachable from a programme one of the nine institutions above actually
+// Every career here is reachable from a programme one of the institutions above actually
 // offers — the emitter enforces it, so a career nothing maps to is a build failure rather than a
 // row that quietly never appears in anyone's ranking.
 //
@@ -415,7 +482,7 @@ const CAREERS = [
     min: 30000,
     max: 115000,
     outlook: OUTLOOK.moderate,
-    riasec: 'ICR',
+    riasec: 'IRE',
   },
   {
     title: 'Computer Engineer',
@@ -433,7 +500,7 @@ const CAREERS = [
     min: 40000,
     max: 200000,
     outlook: OUTLOOK.high,
-    riasec: 'RCI',
+    riasec: 'RCE',
   },
 
   // Aviation
@@ -491,7 +558,7 @@ const CAREERS = [
     min: 24000,
     max: 75000,
     outlook: OUTLOOK.high,
-    riasec: 'IRC',
+    riasec: 'ICR',
   },
   {
     title: 'Pharmacist',
@@ -536,7 +603,7 @@ const CAREERS = [
     min: 21000,
     max: 65000,
     outlook: OUTLOOK.moderate,
-    riasec: 'SIR',
+    riasec: 'SIC',
   },
   {
     title: 'Clinical Researcher',
@@ -743,9 +810,9 @@ const CAREERS = [
     riasec: 'RSE',
   },
   {
-    title: 'Forensic Investigator',
+    title: 'Crime Scene Investigator',
     description:
-      'Applies crime scene investigation, criminalistics and forensic ballistics in police and crime laboratory units. Normally staffed from registered criminologists and forensic science graduates.',
+      'Handles evidence recovery, latent fingerprint processing and forensic documentation for the NBI and the PNP Forensic Group. Requires the PRC Criminologist Licensure Examination under RA 11131.',
     min: 28000,
     max: 85000,
     outlook: OUTLOOK.moderate,
@@ -872,6 +939,260 @@ const CAREERS = [
     outlook: OUTLOOK.moderate,
     riasec: 'ESC',
   },
+
+  // --- The expanded source document's finer-grained pathways -------------------------------
+  //
+  // The first document mapped one or two destinations per programme; the expanded one maps
+  // roughly 2.7, and the difference is mostly *specialisation within a licence* — a medical
+  // technologist who works blood banking rather than general diagnostics, a civil engineer in
+  // geotechnical rather than structural work. Those are the roles a student has actually heard
+  // of and is choosing between, so they are modelled as distinct careers rather than collapsed
+  // into the generic licence title.
+  //
+  // The CONDITIONAL ones (Chief Financial Officer, Ship Captain, Clinical Psychologist, Nurse
+  // Administrator, Enterprise Systems Architect, Urban and Regional Planner) are included
+  // despite not being entry-level, because they are the destination a student is choosing the
+  // course *for*. Each description states plainly what stands between graduation and the role,
+  // which is the same rule the regulated careers above follow.
+
+  // Accountancy and finance
+  {
+    title: 'Tax Advisory Specialist',
+    description:
+      'Advises on corporate taxation, tax filing and BIR compliance for consultancies and corporate tax units. Requires the same CPA licence as external audit under RA 9298 — a BS Accountancy degree, the CPALE, and PRC registration.',
+    min: 30000,
+    max: 120000,
+    outlook: OUTLOOK.high,
+    riasec: 'CIS',
+  },
+  {
+    title: 'Chief Financial Officer',
+    description:
+      'Owns capital structure, enterprise risk and strategic finance for a company. Not an entry-level role: normally a CPA licence plus roughly eight years of progressive finance experience.',
+    min: 90000,
+    max: 400000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'ECI',
+  },
+  {
+    title: 'Business Development Specialist',
+    description:
+      'Builds partnerships, market research and growth plans for corporate strategy units and startups. Non-regulated.',
+    min: 28000,
+    max: 110000,
+    outlook: OUTLOOK.high,
+    riasec: 'ESI',
+  },
+
+  // Computing
+  {
+    title: 'AI/Machine Learning Engineer',
+    description:
+      'Builds and deploys deep learning, computer vision and natural language systems for R&D labs and technology startups. Non-regulated; TensorFlow and PyTorch certifications are the usual signal.',
+    min: 50000,
+    max: 180000,
+    outlook: OUTLOOK.emerging,
+    riasec: 'IRC',
+  },
+  {
+    title: 'Enterprise Systems Architect',
+    description:
+      'Designs system scalability, cloud infrastructure and API strategy across an organisation. Not an entry-level role: normally five or more years of software development first. Non-regulated.',
+    min: 70000,
+    max: 220000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'IEC',
+  },
+
+  // Built environment
+  {
+    title: 'Urban and Regional Planner',
+    description:
+      'Handles spatial analysis, zoning governance and environmental impact assessment for LGU planning offices and NEDA. Regulated under RA 10587 — requires postgraduate planning study and the PRC Environmental Planner licence, on top of an architecture or engineering degree.',
+    min: 40000,
+    max: 130000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'IES',
+  },
+  {
+    title: 'BIM Specialist',
+    description:
+      'Produces 3D structural models, parametric design and clash analysis for engineering and design consultancies. Non-regulated; Autodesk Revit certification is the usual credential.',
+    min: 30000,
+    max: 100000,
+    outlook: OUTLOOK.high,
+    riasec: 'RIA',
+  },
+  {
+    title: 'CAD Design Technician',
+    description:
+      'Produces 2D and 3D computer-aided drafting, blueprint reading and rendering for construction firms and architectural studios. Non-regulated; AutoCAD or SolidWorks certification and a TESDA National Certificate are the usual credentials.',
+    min: 18000,
+    max: 60000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RCA',
+  },
+  {
+    title: 'Geotechnical Engineer',
+    description:
+      'Works on soil mechanics, slope stability, foundation design and drilling logs for foundation engineering consultancies. Regulated under RA 544 — requires the PRC Civil Engineering Licensure Examination.',
+    min: 32000,
+    max: 120000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RIC',
+  },
+  {
+    title: 'HVAC Design Engineer',
+    description:
+      'Designs heating and ventilation systems, psychrometric calculation and duct sizing for MEP consultancies and construction. Regulated under RA 8495 — requires the PRC Mechanical Engineer Licensure Examination.',
+    min: 32000,
+    max: 120000,
+    outlook: OUTLOOK.high,
+    riasec: 'RIE',
+  },
+  {
+    title: 'Power Plant Engineer',
+    description:
+      'Runs turbine maintenance, boiler operation and thermal efficiency monitoring at power generation facilities and utilities. Requires a PRC mechanical or electrical engineering licence depending on the plant systems supervised.',
+    min: 35000,
+    max: 130000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RCI',
+  },
+
+  // Health specialisations
+  {
+    title: 'Public Health Nurse',
+    description:
+      'Runs community health assessment, immunisation programmes and health education for the DOH and rural health units. Requires the same RN licence as hospital nursing under RA 9173 — the Nurse Licensure Examination and PRC registration.',
+    min: 22000,
+    max: 60000,
+    outlook: OUTLOOK.high,
+    riasec: 'SIC',
+  },
+  {
+    title: 'Nurse Administrator',
+    description:
+      'Manages wards, healthcare quality assurance and nursing staff governance. Not an entry-level role: an RN licence plus a Master of Science in Nursing is the normal requirement.',
+    min: 45000,
+    max: 140000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'SEC',
+  },
+  {
+    title: 'Blood Bank Specialist',
+    description:
+      'Performs blood typing, crossmatching, transfusion safety and component processing for the Philippine Red Cross and tertiary hospitals. Requires the PRC Medical Technologist licence under RA 5527, plus blood banking certification.',
+    min: 25000,
+    max: 80000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'ICR',
+  },
+  {
+    title: 'Molecular Diagnostics Specialist',
+    description:
+      'Runs real-time PCR testing, DNA/RNA extraction and next-generation sequencing in genetic testing labs and research centres. Built on the PRC Medical Technologist licence, with molecular biology certification as the specialisation.',
+    min: 30000,
+    max: 95000,
+    outlook: OUTLOOK.emerging,
+    riasec: 'IRC',
+  },
+  {
+    title: 'Occupational Therapist',
+    description:
+      'Enables participation in everyday occupations after injury, illness or developmental difficulty. Regulated under RA 5680 — practice requires passing the PRC Occupational Therapist Licensure Examination.',
+    min: 24000,
+    max: 80000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'SIR',
+  },
+  {
+    title: 'Clinical Psychologist',
+    description:
+      'Carries out psychological diagnosis, psychotherapy and clinical assessment. Regulated under RA 10029 and **not** reachable on a bachelor’s degree alone: it requires a Master’s degree in psychology and the Psychologist Licensure Examination, which is a different examination from the Psychometrician one.',
+    min: 40000,
+    max: 150000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'ISA',
+  },
+
+  // Maritime — credentialled by MARINA under the STCW Convention, not by the PRC
+  {
+    title: 'Deck Officer',
+    description:
+      'Stands navigation watch and manages cargo operations on commercial vessels. Credentialled under the STCW Convention and RA 10635 by MARINA, not the PRC: a BS Marine Transportation degree, twelve months of approved seagoing service and assessment, then a Certificate of Competency as Officer in Charge of a Navigational Watch.',
+    min: 60000,
+    max: 250000,
+    outlook: OUTLOOK.high,
+    riasec: 'RCI',
+  },
+  {
+    title: 'Marine Surveyor',
+    description:
+      'Inspects hulls, evaluates cargo damage and audits maritime safety compliance for classification societies and cargo inspectors. Requires MARINA certification and prior sea experience.',
+    min: 40000,
+    max: 140000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RCE',
+  },
+  {
+    title: 'Port Operations Supervisor',
+    description:
+      'Coordinates vessel berthing, container terminal operations and port safety for port authorities and terminal operators. Non-regulated; port safety certification is optional.',
+    min: 30000,
+    max: 100000,
+    outlook: OUTLOOK.high,
+    riasec: 'ECR',
+  },
+  {
+    title: 'Ship Captain',
+    description:
+      'Commands a vessel, its safety management and maritime law compliance. The top of the deck career, not an entry point: a Master Mariner licence built on roughly ten years of sea time.',
+    min: 150000,
+    max: 500000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'REC',
+  },
+
+  // Law enforcement and corrections
+  {
+    title: 'Police Officer',
+    description:
+      'Carries out criminal investigation, patrol operations and arrest procedures in the Philippine National Police. Requires the PRC Criminologist Licensure Examination under RA 11131 *and* separate PNP appointment eligibility — passing the board alone does not confer a police appointment.',
+    min: 29000,
+    max: 75000,
+    outlook: OUTLOOK.high,
+    riasec: 'RSE',
+  },
+  {
+    title: 'Correctional Officer',
+    description:
+      'Handles inmate custody, prison security management and rehabilitation programmes for the Bureau of Corrections and BJMP. Requires the PRC Criminologist Licensure Examination under RA 11131.',
+    min: 29000,
+    max: 65000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RSC',
+  },
+
+  // Education and coastal resources
+  {
+    title: 'Curriculum Developer',
+    description:
+      'Designs instruction, maps learning outcomes and edits textbooks for educational publishers and EdTech firms. Non-regulated, though a teaching licence and a Master of Arts in Education are common.',
+    min: 25000,
+    max: 85000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'AIS',
+  },
+  {
+    title: 'Aquatic Resource Specialist',
+    description:
+      'Works on coastal resource management, fish stock assessment and biodiversity protection for coastal LGUs and marine NGOs. Requires the PRC Fisheries Technologist licence under RA 8550 as amended.',
+    min: 24000,
+    max: 75000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'IRS',
+  },
 ];
 
 // --- 4. canonical programmes ---------------------------------------------------------------------
@@ -902,6 +1223,13 @@ const PROGRAMS = [
   { code: 'BSIE', name: 'BS Industrial Engineering', strand: A, description: 'Operations research, quality systems and process improvement.' },
   { code: 'BSCHE', name: 'BS Chemical Engineering', strand: A, description: 'Process design, transport phenomena and plant operations.' },
   { code: 'BSMARE', name: 'BS Marine Engineering', strand: T, description: 'Shipboard machinery, propulsion and marine systems, with supervised sea service.' },
+  // Maritime deck officers are credentialled by MARINA under STCW rather than by the PRC, which
+  // is why this is its own canonical entry and not a variant of Marine Engineering. Note the
+  // code: institutions abbreviate BS Marine Transportation as "BSMT", which is also how BS
+  // Medical Technology is abbreviated. Both keep their own abbreviation on their offering rows
+  // — that ambiguity is real and a student will meet it — while the canonical codes stay
+  // distinct, because `program_catalog.code` is what one programme is looked up by.
+  { code: 'BSMARTRANS', name: 'BS Marine Transportation', strand: T, description: 'Ocean navigation, watchkeeping, passage planning, cargo operations and collision regulations.' },
   { code: 'BSARCH', name: 'BS Architecture', strand: A, description: 'Architectural design, building code compliance, AutoCAD and Revit (BIM) practice.' },
   { code: 'BSID', name: 'BS Interior Design', strand: A, description: 'Interior space planning, materials and detailing.' },
 
@@ -919,6 +1247,7 @@ const PROGRAMS = [
   { code: 'BSND', name: 'BS Nutrition and Dietetics', strand: A, description: 'Clinical, community and food-service nutrition.' },
   { code: 'BSRT', name: 'BS Radiologic Technology', strand: A, description: 'Diagnostic imaging and radiation safety.' },
   { code: 'BSRESPT', name: 'BS Respiratory Therapy', strand: A, description: 'Ventilation management and cardiopulmonary care.' },
+  { code: 'BSOT', name: 'BS Occupational Therapy', strand: A, description: 'Enabling participation in everyday occupations after injury, illness or developmental difficulty.' },
 
   // Accountancy and business — BSA is kept separate from BSMA and BS AIS because only BSA
   // graduates may sit the CPALE (RA 9298). This is the PDF's central normalisation rule.
@@ -957,7 +1286,7 @@ const PROGRAMS = [
 
 // --- 5. offerings ---------------------------------------------------------------------------------
 //
-// Which of the nine institutions offers which canonical programme. A bare code means the
+// Which of the 16 institutions offers which canonical programme. A bare code means the
 // institution uses the canonical title; `'BSMLS as BSMT/BS Medical Technology'` records an
 // institution whose own title differs — `programs.code`/`programs.name` keep what the institution
 // calls it, `program_catalog_id` links it to what it *is*. That split is what lets a student see
@@ -1028,6 +1357,57 @@ const OFFERINGS = {
     'BEED', 'BSED', 'BSPSY',
     'BSMARE',
   ],
+
+  // --- The expanded source document's seven additional institutions ------------------------
+  UC: [
+    // "BSMT" here is BS Marine Transportation, and "BSMT" at CDU and HNU is BS Medical
+    // Technology. Both are what the institution actually prints on the diploma; the canonical
+    // entry each one links to is what tells them apart.
+    'BSMARTRANS as BSMT/BS Marine Transportation',
+    'BSMARE',
+    'BSIT', 'BSCS',
+    'BSCRIM', 'BSN', 'BSPSY',
+    'BSBA', 'BSA', 'BSHM', 'BSTM',
+    'BEED', 'BSED',
+    'BSCE',
+  ],
+  CITU: [
+    'BSME', 'BSCE', 'BSEE', 'BSECE', 'BSIE', 'BSCPE', 'BSCHE',
+    'BSARCH',
+    'BSCS', 'BSIT',
+    'BSMATH',
+    'BSBA', 'BSA',
+  ],
+  CNU: [
+    'BEED', 'BSED', 'BSNED',
+    'BSN',
+    'BSPSY', 'ABCOM', 'ABPOLSCI',
+    'BSBIO', 'BSMATH',
+    'BSTM',
+  ],
+  VELEZ: [
+    'BSMLS as BSMT/BS Medical Technology',
+    'BSN', 'BSPT', 'BSOT',
+  ],
+  BENEDICTO: [
+    'BTVTED',
+    'BSIT', 'BSCS',
+    'BSBA', 'BSHM',
+    'BSCRIM',
+    'BEED', 'BSED',
+  ],
+  LLCC: [
+    'BEED', 'BSED',
+    'BSHM', 'BSCRIM',
+    'BSIT', 'BSBA',
+  ],
+  BIT: [
+    'BSIT', 'BSCS',
+    'BSBA', 'BSHM',
+    'BSMARTRANS as BSMT/BS Marine Transportation',
+    'BSMARE',
+    'BSCRIM',
+  ],
 };
 
 // --- 6. programme → career mapping ----------------------------------------------------------------
@@ -1041,61 +1421,63 @@ const OFFERINGS = {
 // RELATED or licensed-CONDITIONAL. BROAD roles are deliberately absent — see the header.
 
 const MAPPINGS = {
-  BSCS: ['Software Developer', 'Data Scientist', 'Cybersecurity Analyst', 'Cloud Infrastructure Engineer', 'Quality Assurance Engineer'],
-  BSIT: ['Software Developer', 'Systems Administrator', 'Network Engineer', 'IT Support Specialist', 'Database Administrator', 'Cybersecurity Analyst'],
+  BSCS: ['Software Developer', 'Data Scientist', 'Cybersecurity Analyst', 'AI/Machine Learning Engineer', 'Cloud Infrastructure Engineer', 'Enterprise Systems Architect', 'Quality Assurance Engineer'],
+  BSIT: ['Software Developer', 'Systems Administrator', 'Network Engineer', 'IT Support Specialist', 'Database Administrator', 'Cybersecurity Analyst', 'Cloud Infrastructure Engineer'],
   BSIS: ['Business Systems Analyst', 'Database Administrator', 'Data Analyst', 'Software Developer', 'Supply Chain Analyst'],
   BSCPE: ['Computer Engineer', 'Network Engineer', 'Software Developer', 'Systems Administrator'],
 
-  BSCE: ['Civil Engineer', 'Construction Project Manager', 'Quantity Surveyor'],
-  BSME: ['Mechanical Engineer', 'Construction Project Manager', 'Industrial Engineer'],
-  BSEE: ['Electrical Engineer', 'Construction Project Manager', 'Industrial Engineer'],
+  BSCE: ['Civil Engineer', 'Geotechnical Engineer', 'Construction Project Manager', 'Quantity Surveyor', 'BIM Specialist'],
+  BSME: ['Mechanical Engineer', 'HVAC Design Engineer', 'Power Plant Engineer', 'Construction Project Manager', 'Industrial Engineer'],
+  BSEE: ['Electrical Engineer', 'Power Plant Engineer', 'Construction Project Manager', 'Industrial Engineer'],
   BSECE: ['Electronics Engineer', 'Network Engineer', 'Computer Engineer'],
   BSIE: ['Industrial Engineer', 'Operations Manager', 'Supply Chain Analyst', 'Quality Assurance Engineer'],
   BSCHE: ['Chemical Engineer', 'Chemist', 'Environmental Scientist', 'Industrial Engineer'],
-  BSMARE: ['Marine Engineer', 'Mechanical Engineer'],
-  BSARCH: ['Architect', 'Construction Project Manager', 'Interior Designer', 'Quantity Surveyor'],
-  BSID: ['Interior Designer', 'Graphic Designer', 'Architect'],
+  BSMARE: ['Marine Engineer', 'Power Plant Engineer', 'Port Operations Supervisor', 'Mechanical Engineer'],
+  BSMARTRANS: ['Deck Officer', 'Marine Surveyor', 'Port Operations Supervisor', 'Ship Captain'],
+  BSARCH: ['Architect', 'BIM Specialist', 'Urban and Regional Planner', 'Construction Project Manager', 'Interior Designer', 'Quantity Surveyor'],
+  BSID: ['Interior Designer', 'CAD Design Technician', 'Graphic Designer', 'Architect'],
 
   BSAERO: ['Aeronautical Engineer', 'Aircraft Maintenance Technician', 'Mechanical Engineer'],
   BSAMT: ['Aircraft Maintenance Technician', 'Avionics Technician'],
   BSAVTECH: ['Avionics Technician', 'Aircraft Maintenance Technician', 'Electronics Engineer'],
   BSAIRT: ['Commercial Pilot', 'Aircraft Maintenance Technician'],
 
-  BSN: ['Registered Nurse', 'Clinical Researcher', 'Public Health Officer'],
-  BSMLS: ['Medical Technologist', 'Clinical Researcher', 'Laboratory Research Associate'],
+  BSN: ['Registered Nurse', 'Public Health Nurse', 'Clinical Researcher', 'Nurse Administrator', 'Public Health Officer'],
+  BSMLS: ['Medical Technologist', 'Blood Bank Specialist', 'Molecular Diagnostics Specialist', 'Clinical Researcher', 'Laboratory Research Associate'],
   BSPHARM: ['Pharmacist', 'Clinical Researcher', 'Laboratory Research Associate'],
   BSPT: ['Physical Therapist', 'Public Health Officer'],
+  BSOT: ['Occupational Therapist', 'Physical Therapist', 'Public Health Officer'],
   BSND: ['Nutritionist-Dietitian', 'Public Health Officer'],
   BSRT: ['Radiologic Technologist', 'Public Health Officer'],
   BSRESPT: ['Respiratory Therapist', 'Public Health Officer'],
 
-  BSA: ['Certified Public Accountant', 'Financial Analyst', 'Internal Auditor'],
-  BSMA: ['Management Accountant', 'Financial Analyst', 'Internal Auditor'],
+  BSA: ['Certified Public Accountant', 'Tax Advisory Specialist', 'Financial Analyst', 'Internal Auditor', 'Chief Financial Officer'],
+  BSMA: ['Management Accountant', 'Financial Analyst', 'Internal Auditor', 'Chief Financial Officer'],
   BSAIS: ['Business Systems Analyst', 'Management Accountant', 'Internal Auditor', 'Data Analyst'],
-  BSBA: ['Marketing Specialist', 'Operations Manager', 'Human Resources Specialist', 'Bank Operations Officer', 'Financial Analyst'],
-  BSBM: ['Operations Manager', 'Supply Chain Analyst', 'Human Resources Specialist', 'Financial Analyst'],
-  BSENTREP: ['Entrepreneur', 'Marketing Specialist', 'Operations Manager'],
+  BSBA: ['Marketing Specialist', 'Operations Manager', 'Business Development Specialist', 'Human Resources Specialist', 'Bank Operations Officer', 'Financial Analyst'],
+  BSBM: ['Operations Manager', 'Business Development Specialist', 'Supply Chain Analyst', 'Human Resources Specialist', 'Financial Analyst'],
+  BSENTREP: ['Entrepreneur', 'Business Development Specialist', 'Marketing Specialist', 'Operations Manager'],
   BSHM: ['Hotel Operations Manager', 'Operations Manager', 'Entrepreneur'],
   BSTM: ['Tourism Officer', 'Hotel Operations Manager', 'Marketing Specialist'],
 
-  BEED: ['Elementary School Teacher', 'Special Needs Education Teacher', 'Guidance Counselor'],
-  BSED: ['Secondary School Teacher', 'Guidance Counselor'],
-  BTVTED: ['Technical-Vocational Teacher', 'Secondary School Teacher'],
+  BEED: ['Elementary School Teacher', 'Special Needs Education Teacher', 'Curriculum Developer', 'Guidance Counselor'],
+  BSED: ['Secondary School Teacher', 'Curriculum Developer', 'Guidance Counselor'],
+  BTVTED: ['Technical-Vocational Teacher', 'CAD Design Technician', 'Secondary School Teacher'],
   BSNED: ['Special Needs Education Teacher', 'Elementary School Teacher', 'Social Worker'],
 
-  BSPSY: ['Psychometrician', 'Human Resources Specialist', 'Guidance Counselor', 'Clinical Researcher'],
+  BSPSY: ['Psychometrician', 'Human Resources Specialist', 'Clinical Psychologist', 'Guidance Counselor', 'Clinical Researcher'],
   BSSW: ['Social Worker', 'Public Health Officer', 'Public Administration Officer'],
-  BSCRIM: ['Registered Criminologist', 'Forensic Investigator', 'Public Administration Officer'],
+  BSCRIM: ['Registered Criminologist', 'Police Officer', 'Crime Scene Investigator', 'Correctional Officer', 'Public Administration Officer'],
   ABCOM: ['Communications Officer', 'Journalist', 'Marketing Specialist', 'Multimedia Artist'],
   ABPOLSCI: ['Public Administration Officer', 'Communications Officer', 'Journalist'],
   BFA: ['Multimedia Artist', 'Graphic Designer', 'UI/UX Designer'],
 
   BSBIO: ['Laboratory Research Associate', 'Marine Biologist', 'Environmental Scientist', 'Clinical Researcher'],
-  BSMARBIO: ['Marine Biologist', 'Environmental Scientist', 'Fisheries Technologist', 'Laboratory Research Associate'],
+  BSMARBIO: ['Marine Biologist', 'Aquatic Resource Specialist', 'Environmental Scientist', 'Fisheries Technologist', 'Laboratory Research Associate'],
   BSENVSCI: ['Environmental Scientist', 'Public Health Officer', 'Laboratory Research Associate'],
   BSCHEM: ['Chemist', 'Laboratory Research Associate', 'Medical Technologist', 'Environmental Scientist'],
   BSMATH: ['Statistician', 'Actuary', 'Data Analyst', 'Secondary School Teacher'],
-  BSFISH: ['Fisheries Technologist', 'Marine Biologist', 'Agriculturist'],
+  BSFISH: ['Fisheries Technologist', 'Aquatic Resource Specialist', 'Marine Biologist', 'Agriculturist'],
   BSAGRI: ['Agriculturist', 'Environmental Scientist', 'Entrepreneur'],
 };
 
@@ -1165,17 +1547,22 @@ for (const career of CAREERS) {
 }
 
 /**
- * No more than three careers may share a Holland code.
+ * No more than four careers may share a Holland code.
  *
  * A shared code is not a bug — nine engineering roles really are Realistic/Investigative — but
  * §27's career composite is 60% RIASEC compatibility, so careers with identical codes score
  * *identically* and their order in a student's top ten is decided by the tie-break rather than by
  * fit. The first draft of this catalog had RIC nine times and IRC eight, which meant a Realistic
  * student's list was an arbitrary slice of one cluster and a second engineering-minded student
- * saw the same slice. Three is the point where the tie-break can no longer fill a top ten on its
- * own.
+ * saw the same slice.
+ *
+ * The cap was three, and was raised to **four** when the expanded source document took the
+ * catalog past ninety careers. The number itself is not the point — what matters is that no one
+ * cluster can fill a top ten on its own, which four cannot. Raising it is the right response to a
+ * larger catalog; contorting a career's Holland code to satisfy a counter is not, because §27
+ * reads that code positionally and a dishonest one silently mis-ranks every student it reaches.
  */
-const MAX_CAREERS_PER_HOLLAND_CODE = 3;
+const MAX_CAREERS_PER_HOLLAND_CODE = 4;
 
 const byHollandCode = new Map();
 for (const career of CAREERS) {
@@ -1332,6 +1719,55 @@ if (new Set(allIds).size !== allIds.length) {
 const out = [];
 const w = (line = '') => out.push(line);
 
+/**
+ * The per-statement size ceiling this file is emitted under.
+ *
+ * D1 refuses a single statement over 100 KB with `statement too long: SQLITE_TOOBIG`, and the
+ * mapping insert crossed it the moment the expanded source document took the catalog to 877
+ * rows. The failure is worth describing precisely, because it is the kind that reaches
+ * production: `wrangler d1 execute --file` parses the whole file before running any of it, so
+ * the seed does not half-apply — it refuses outright, and a run whose stderr is being discarded
+ * looks exactly like a successful one. It was caught here only because the row counts afterwards
+ * were still the old ones.
+ *
+ * 40,000 is deliberately well under the ceiling rather than just beneath it: the longest row is
+ * a career with a multi-sentence description, and a future edit that doubles one must not be
+ * what discovers the limit again.
+ */
+const MAX_STATEMENT_CHARS = 40_000;
+
+/**
+ * Emit `INSERT OR IGNORE INTO <table> (<columns>) VALUES …;` over `rows`, split into as many
+ * statements as the size ceiling requires. Splitting is safe here in a way it would not be for
+ * arbitrary SQL: every row is independent, `INSERT OR IGNORE` is idempotent, and the seed's
+ * ordering guarantees are between *tables* (parents before children), not within one.
+ */
+function writeInsert(table, columns, rows) {
+  const header = `INSERT OR IGNORE INTO ${table} (${columns}) VALUES`;
+  let batch = [];
+  let size = 0;
+
+  const flush = () => {
+    if (batch.length === 0) return;
+    w(header);
+    w(batch.join(',\n') + ';');
+    w();
+    batch = [];
+    size = 0;
+  };
+
+  for (const row of rows) {
+    // `+ 2` for the comma and newline this row will be joined with.
+    if (batch.length > 0 && size + row.length + 2 > MAX_STATEMENT_CHARS - header.length) {
+      flush();
+    }
+    batch.push(row);
+    size += row.length + 2;
+  }
+
+  flush();
+}
+
 w(`-- Seed 0005 — the Region VII (Central Visayas) academic catalog. **Generated file.**`);
 w(`--`);
 w(`-- Edit \`scripts/build-region7-seed.mjs\` and re-run \`node scripts/build-region7-seed.mjs\`.`);
@@ -1414,43 +1850,48 @@ w(`-- *subquery on name*, not by the derived id — which finds whichever row ac
 w(`-- cannot leave a college pointing at an id that was never inserted.`);
 w();
 
-w(`INSERT OR IGNORE INTO regions (id, code, name, created_at, updated_at) VALUES`);
-w(`(${q(regionId)}, ${q(REGION.code)}, ${q(REGION.name)}, ${NOW}, ${NOW});`);
-w();
+writeInsert('regions', 'id, code, name, created_at, updated_at', [
+  `(${q(regionId)}, ${q(REGION.code)}, ${q(REGION.name)}, ${NOW}, ${NOW})`,
+]);
 
-w(`INSERT OR IGNORE INTO provinces (id, region_id, code, name, created_at, updated_at) VALUES`);
-w(
+writeInsert(
+  'provinces',
+  'id, region_id, code, name, created_at, updated_at',
   PROVINCES.map(
     (p) =>
-      `(${q(provinceIds.get(p.name))}, (SELECT id FROM regions WHERE name = ${q(REGION.name)} COLLATE NOCASE AND deleted_at IS NULL), ${q(p.code)}, ${q(p.name)}, ${NOW}, ${NOW})`,
-  ).join(',\n') + ';',
+      `(${q(provinceIds.get(p.name))}, ${regionLookup()}, ${q(p.code)}, ${q(p.name)}, ${NOW}, ${NOW})`,
+  ),
 );
-w();
 
-w(`INSERT OR IGNORE INTO towns (id, province_id, code, name, created_at, updated_at) VALUES`);
-w(
+writeInsert(
+  'towns',
+  'id, province_id, code, name, created_at, updated_at',
   TOWNS.map(
     (t) =>
       `(${q(townIds.get(t.name))}, ${provinceLookup(t.province)}, ${q(t.code)}, ${q(t.name)}, ${NOW}, ${NOW})`,
-  ).join(',\n') + ';',
+  ),
 );
-w();
 
 w(`-- --- Institutions (${COLLEGES.length}) ${'-'.repeat(Math.max(1, 62 - String(COLLEGES.length).length))}`);
 w(`--`);
 w(`-- The PDF's fully-verified set. CHED RO VII counts 139 HEIs across Cebu (111) and Bohol (28);`);
-w(`-- these nine are the ones cross-validated against CHED directories, institutional prospectuses`);
-w(`-- and PRC registers. The other 130 are absent rather than guessed at.`);
+w(`-- these ${COLLEGES.length} are the ones cross-validated against CHED directories, institutional`);
+w(`-- prospectuses and PRC registers. The other ${139 - COLLEGES.length} are absent rather than guessed at.`);
+w(`--`);
+w(`-- The list spans all three sectors the region actually has, which matters because the tier an`);
+w(`-- institution sits in changes who can realistically attend it: state universities (CTU, UP`);
+w(`-- Cebu, CNU, BISU, PhilSCA), private universities and colleges (USC, USJ-R, UC, CIT-U, CDU,`);
+w(`-- Velez, Benedicto, HNU, UB, BIT), and the LUC tier funded by a city ordinance`);
+w(`-- (Lapu-Lapu City College).`);
 w(`--`);
 w(`-- \`map_link\` is a Google Maps *search* URL built from the institution's name and city — an`);
 w(`-- honest "find this place" link. It is deliberately not a \`/maps/place/…\` pin, because a pin`);
 w(`-- encodes a surveyed coordinate this seed does not have and inventing one would be fabricating`);
 w(`-- a fact rather than seeding one.`);
 w();
-w(
-  `INSERT OR IGNORE INTO colleges (id, name, description, status, region_id, province_id, town_id, map_link, created_at, updated_at) VALUES`,
-);
-w(
+writeInsert(
+  'colleges',
+  'id, name, description, status, region_id, province_id, town_id, map_link, created_at, updated_at',
   COLLEGES.map((c) => {
     const town = townByName.get(c.town);
     const mapQuery = encodeURIComponent(`${c.name} ${c.town}`).replace(/%20/g, '+');
@@ -1460,9 +1901,8 @@ w(
       `${regionLookup()}, ${provinceLookup(town.province)}, ${townLookup(c.town, town.province)}, ` +
       `${q(mapLink)}, ${NOW}, ${NOW})`
     );
-  }).join(',\n') + ';',
+  }),
 );
-w();
 
 w(`-- --- Careers (${CAREERS.length}) ${'-'.repeat(Math.max(1, 69 - String(CAREERS.length).length))}`);
 w(`--`);
@@ -1478,16 +1918,14 @@ w(`-- Every regulated profession's description names the statute and the PRC exa
 w(`-- between graduation and practice. The source is explicit that an automated system must never`);
 w(`-- let a degree read as a licence, and the description is where a student reads that.`);
 w();
-w(
-  `INSERT OR IGNORE INTO careers (id, title, description, salary_min, salary_max, employment_outlook_id, typical_riasec_code, status, created_at, updated_at) VALUES`,
-);
-w(
+writeInsert(
+  'careers',
+  'id, title, description, salary_min, salary_max, employment_outlook_id, typical_riasec_code, status, created_at, updated_at',
   CAREERS.map(
     (c) =>
       `(${q(careerIds.get(c.title))}, ${q(c.title)}, ${q(c.description)}, ${c.min}, ${c.max}, ${q(c.outlook)}, ${q(c.riasec)}, 'active', ${NOW}, ${NOW})`,
-  ).join(',\n') + ';',
+  ),
 );
-w();
 
 w(`-- --- Canonical programmes (${PROGRAMS.length}) ${'-'.repeat(Math.max(1, 56 - String(PROGRAMS.length).length))}`);
 w(`--`);
@@ -1502,16 +1940,14 @@ w(`-- RA 9298. What *does* collapse is a single curriculum under two names — "
 w(`-- Technology" and "BS Medical Laboratory Science" are one programme sitting one licensure exam,`);
 w(`-- so they are one canonical entry with the institution's own title kept on its offering row.`);
 w();
-w(
-  `INSERT OR IGNORE INTO program_catalog (id, code, name, description, status, created_at, updated_at) VALUES`,
-);
-w(
+writeInsert(
+  'program_catalog',
+  'id, code, name, description, status, created_at, updated_at',
   PROGRAMS.map(
     (p) =>
       `(${q(catalogIds.get(p.code))}, ${q(p.code)}, ${q(p.name)}, ${q(p.description)}, 'active', ${NOW}, ${NOW})`,
-  ).join(',\n') + ';',
+  ),
 );
-w();
 
 w(`-- --- Programme offerings (${programRows.length}) ${'-'.repeat(Math.max(1, 57 - String(programRows.length).length))}`);
 w(`--`);
@@ -1523,18 +1959,14 @@ w(`-- \`recommended_strand\` NULL is a *claim* — "this programme has no strand
 w(`-- §27 scores as a full 100. It is not "unknown". AB Communication, AB Political Science and the`);
 w(`-- Bachelor of Fine Arts are the rows that carry it.`);
 w();
-w(
-  `INSERT OR IGNORE INTO programs (id, college_id, program_catalog_id, code, name, department_name, description, recommended_strand, status, created_at, updated_at) VALUES`,
+writeInsert(
+  'programs',
+  'id, college_id, program_catalog_id, code, name, department_name, description, recommended_strand, status, created_at, updated_at',
+  programRows.map(
+    (p) =>
+      `(${q(p.id)}, ${q(p.collegeId)}, ${q(p.catalogId)}, ${q(p.code)}, ${q(p.name)}, NULL, ${q(p.description)}, ${q(p.strand)}, 'active', ${NOW}, ${NOW})`,
+  ),
 );
-w(
-  programRows
-    .map(
-      (p) =>
-        `(${q(p.id)}, ${q(p.collegeId)}, ${q(p.catalogId)}, ${q(p.code)}, ${q(p.name)}, NULL, ${q(p.description)}, ${q(p.strand)}, 'active', ${NOW}, ${NOW})`,
-    )
-    .join(',\n') + ';',
-);
-w();
 
 w(`-- --- Programme ↔ career mapping (${mapRows.length}) ${'-'.repeat(Math.max(1, 50 - String(mapRows.length).length))}`);
 w(`--`);
@@ -1549,9 +1981,11 @@ w(`-- is the programme's natural destination, and **BROAD is not linked at all**
 w(`-- transferable-skill roles to every programme would drag every programme's average toward the`);
 w(`-- same mean and flatten the ranking this catalog exists to sharpen.`);
 w();
-w(`INSERT OR IGNORE INTO program_careers (id, program_id, career_id) VALUES`);
-w(mapRows.map((m) => `(${q(m.id)}, ${q(m.programId)}, ${q(m.careerId)})`).join(',\n') + ';');
-w();
+writeInsert(
+  'program_careers',
+  'id, program_id, career_id',
+  mapRows.map((m) => `(${q(m.id)}, ${q(m.programId)}, ${q(m.careerId)})`),
+);
 
 const sql = out.join('\n');
 
