@@ -3,7 +3,9 @@ import type { Env } from '@/env';
 import { dispatch, type AssessmentDraftGeneratedEvent } from '@/events/dispatcher';
 import { notifyAssessmentDraftGenerated } from '@/events/send-notifications';
 import { assessmentGenerationMaxQuestions } from '@/lib/config';
+import { log } from '@/lib/logger';
 import { AiPolicyService } from '@/modules/ai/ai-policy-service';
+import { syncCatalogKnowledge } from '@/modules/ai/catalog-knowledge-service';
 import { AssessmentGenerationService } from '@/modules/ai/assessment-generation-service';
 import { ExplanationService } from '@/modules/ai/explanation-service';
 import { aiGatewayFrom, ingestionFrom, retrievalFrom } from '@/modules/ai/factory';
@@ -128,9 +130,102 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
       return true;
     }
 
+    /**
+     * `SyncCatalogKnowledgeJob` — the continuation that `CATALOG_SYNC_BATCH` always promised.
+     *
+     * ## The defect this closes
+     *
+     * `syncCatalogKnowledge` rewrites at most `CATALOG_SYNC_BATCH` (20) entries per invocation,
+     * because every rewrite costs two subrequests against a free Worker's 50 (§45). That cap is
+     * correct. What was missing is the other half of it: the constant's own comment says "the run
+     * reports `remaining` and **the caller queues the next page** — so the initial seed finishes
+     * on its own, rather than needing somebody to press a button four times", and *neither caller
+     * did*. The cron recorded `remaining` into its return value and stopped; the admin route told
+     * the human "run this again".
+     *
+     * With the 68-career catalog that was a four-night lag nobody noticed. The Region VII reset
+     * made it a 15-night one — 96 careers plus 202 programme offerings is 298 entries at 20 a
+     * night — and it is worse than a lag, because retirement is deliberately *not* budget-capped:
+     * the first run archives every stale entry at once. So the corpus goes to nearly empty on
+     * night one and refills at 20 a night, which is exactly the dead **Explain more** that
+     * AiNormalisation was written to fix, re-created by a catalog change.
+     *
+     * ## Why a queue message and not a loop
+     *
+     * Looping inside one invocation is the thing the budget forbids — that is what the cap is for.
+     * A fresh message is a fresh invocation with a fresh 50, and the queue already exists for
+     * precisely this shape of work.
+     *
+     * Progress is guaranteed rather than hoped for: `remaining` is only ever incremented after
+     * `changed >= budget`, so a message that reports work left has necessarily done a full batch.
+     * `page` is still carried and capped — a queue that can re-arm itself should not be able to do
+     * so forever if some future edit breaks that invariant, and 200 pages is 4,000 entries, far
+     * past any real catalog.
+     */
+    case 'SyncCatalogKnowledge': {
+      const page = typeof message.payload.page === 'number' ? message.payload.page : 1;
+
+      await continueCatalogSync(env, db, page);
+
+      return true;
+    }
+
     default:
       return false;
   }
+}
+
+/** How many continuation messages one catalog sync may chain before it stops on principle. */
+const MAX_CATALOG_SYNC_PAGES = 200;
+
+/**
+ * Run one catalog-sync page and queue the next if there is one.
+ *
+ * Shared by the queue handler above and by the two entry points that *start* a sync (the nightly
+ * cron and the admin button), so "what happens when a batch fills up" is written once.
+ */
+export async function continueCatalogSync(
+  env: Env,
+  db: ReturnType<typeof createDatabase>,
+  page: number,
+): Promise<void> {
+  if (page > MAX_CATALOG_SYNC_PAGES) {
+    log('error', 'catalog_knowledge.sync_page_cap', {
+      pipeline: 'knowledge_ingestion',
+      stage: 'catalog_sync_page_cap',
+      page,
+    });
+
+    return;
+  }
+
+  const result = await syncCatalogKnowledge(db, env);
+
+  await queueCatalogSyncContinuation(env, result, page);
+}
+
+/**
+ * Queue the next page, if the run that just finished left one.
+ *
+ * Exported so the cron and the admin route can call it with the result they already have, instead
+ * of re-running a batch to discover the same `remaining` a second time.
+ */
+export async function queueCatalogSyncContinuation(
+  env: Env,
+  result: { changed: number; remaining: number },
+  page: number,
+): Promise<void> {
+  // `changed > 0` as well as `remaining > 0`: the two always travel together today, and requiring
+  // both means a future change that breaks that invariant stalls the sync instead of arming an
+  // infinite chain of no-op messages.
+  if (result.remaining <= 0 || result.changed <= 0) {
+    return;
+  }
+
+  await env.QUEUE_AI.send({
+    type: 'SyncCatalogKnowledge',
+    payload: { page: page + 1 },
+  });
 }
 
 /**

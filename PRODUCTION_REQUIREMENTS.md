@@ -79,9 +79,20 @@ recommendations. On a first cutover there are none. On a re-seed of a live datab
 
 ```bash
 node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
-npm run db:seed:catalog:region7:production  # seeds/0005 — 9 HEIs, 49 programmes, 71 careers
+npm run db:seed:catalog:region7:production  # seeds/0005 — 16 HEIs, 51 programmes, 96 careers
 npm run db:seed:ai-policy:production        # seeds/0003
 ```
+
+**Then sync the AI knowledge base.** The assistant does not read the catalog tables; it reads a
+corpus derived from them, and SQL cannot update that. Press **Sync catalog** on
+`/admin/knowledge` (or `POST /api/v1/admin/knowledge-catalog-sync`) after seeding. One press is
+now enough — the run does a batch inline and queues the rest, which finishes on its own.
+
+Skipping it fails quietly and looks like an AI problem. Measured on production on 2026-09-05,
+after the seed and before any sync: **Explain more** cited *"BS Chemical Engineering at De La
+Salle University"* and *"at Mapúa University"*, both already deleted, and the chat assistant said
+*"I don't have that information"* when asked where to study Chemical Engineering in Cebu — while
+USC, USJ-R and CIT-U all offer it.
 
 <a id="re-seeding-a-live-catalog"></a>
 **Re-seeding a live catalog.** Because 0005 replaces the catalog rather than adding to it, every
@@ -183,7 +194,10 @@ single-Worker consolidation removed the separate frontend artifact entirely.
 8. curl https://careerlinkai.online/api/v1/health  # expect {"environment":"production"}
 9. Sign in as admin → forced password rotation → /admin/assessment-templates →
    "Install RIASEC & SCCT"                         # without this there are no assessments at all
-10. End-to-end smoke: create a class, join as a student, complete RIASEC + SCCT,
+10. /admin/knowledge → "Sync catalog"              # the AI reads a corpus derived from the
+                                                   # catalog, not the catalog. Skip it and the
+                                                   # assistant describes the catalog you replaced.
+11. End-to-end smoke: create a class, join as a student, complete RIASEC + SCCT,
     confirm recommendations appear and differ from another student's profile
 ```
 

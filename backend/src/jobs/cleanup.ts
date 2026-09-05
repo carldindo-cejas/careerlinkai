@@ -3,6 +3,7 @@ import { lt } from 'drizzle-orm';
 import { createDatabase } from '@/db/client';
 import { apiTokens, passwordResetTokens } from '@/db/schema';
 import type { Env } from '@/env';
+import { queueCatalogSyncContinuation } from '@/jobs/ai-jobs';
 import { now } from '@/lib/datetime';
 import { log } from '@/lib/logger';
 import { reapStaleAiRequests } from '@/modules/ai/assessment-generation-service';
@@ -101,6 +102,20 @@ export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
     catalogEntriesSynced = sync.changed;
     catalogEntriesRetired = sync.retired;
     catalogEntriesRemaining = sync.remaining;
+
+    /**
+     * Finish the job instead of reporting that it is unfinished.
+     *
+     * `remaining` used to be recorded here and nowhere else, so a catalog larger than one 20-entry
+     * batch caught up at 20 entries **per night** — four nights for the original 68-career
+     * catalog, fifteen for the Region VII one. Retirement is not budget-capped, so night one
+     * archives every stale entry and the corpus is nearly empty while it refills: a dead
+     * "Explain more" for a fortnight, which is the exact symptom AiNormalisation existed to fix.
+     *
+     * The continuation runs on the queue rather than in a loop here, because the 20-entry cap is a
+     * subrequest budget (§45) and a loop would spend the same invocation's. See `ai-jobs.ts`.
+     */
+    await queueCatalogSyncContinuation(env, sync, 1);
   } catch (error) {
     log('error', 'catalog_knowledge.sync_failed', {
       pipeline: 'knowledge_ingestion',

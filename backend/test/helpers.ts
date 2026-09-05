@@ -590,17 +590,55 @@ export async function assignVersion(
 }
 
 /**
+ * How many answer requests this fixture keeps in flight at once.
+ *
+ * Eight rather than "all of them": the point is to stop *serialising* 90 round trips, not to fire
+ * 60 simultaneous requests at a single-threaded local D1 and measure something other than the
+ * feature. Beyond a handful the wall-clock stops improving and the contention starts showing up
+ * as variance in other files sharing the machine.
+ */
+const ANSWER_CONCURRENCY = 8;
+
+/**
  * Answer every question in an attempt with the option at `optionIndex` (0 = "Strongly Disagree",
  * 4 = "Strongly Agree"), or with a per-section score chosen by `pick`.
+ *
+ * **Every answer still goes through the real HTTP endpoint** — that is the whole reason these
+ * fixtures are expensive and it is not something to trade away. What changed is that they no
+ * longer go one at a time.
+ *
+ * ## Why this was worth changing
+ *
+ * A fully-assessed student costs 60 + 30 answers, and `test/recommendation/` needs several. Run
+ * serially that is ~90 sequential round trips per student, and it was the single largest cost in
+ * the suite: `regeneration.test.ts > lets a counselor rebuild for their own student` took 27 s
+ * alone and **121.8 s inside the full run**, against a 120 s budget — a real CI failure whose only
+ * symptom was a timeout on a test that passes in isolation. Raising the budget again (5 s → 30 s →
+ * 60 s → 120 s, each documented in vitest.config.ts) would have moved the cliff rather than
+ * removed it, on a CI runner the config itself describes as "two cores and always cold".
+ *
+ * ## Why concurrency is safe here, structurally and not by luck
+ *
+ * `AssessmentAttemptService.saveAnswer` is an **atomic upsert** on the `(attempt_id, question_id)`
+ * unique index — written that way for H4, precisely so two near-simultaneous saves cannot race.
+ * It writes one row per question and touches no attempt-level state, so answers to distinct
+ * questions are independent by construction.
+ *
+ * Nothing asserts the *order* answers arrive in. `answerAll` is a fixture at all 26 of its call
+ * sites: the assertions are about the attempt that results, and the one test that measures cost
+ * (`platform/subrequest-budget.test.ts`) measures the submit, where each answer is its own
+ * top-level request either way. A test that did care about answering order would call the
+ * endpoint directly rather than reach for a helper named "answer all of them".
  */
 export async function answerAll(
   studentToken: string,
   attempt: any,
   pick: (question: any, index: number) => number,
 ): Promise<void> {
-  for (const [index, question] of attempt.questions.entries()) {
-    const optionIndex = pick(question, index);
-    const option = question.options[optionIndex];
+  const questions: any[] = attempt.questions;
+
+  const saveOne = async (question: any, index: number): Promise<void> => {
+    const option = question.options[pick(question, index)];
 
     const response = await api('POST', `/student/attempts/${attempt.id}/answers`, {
       token: studentToken,
@@ -610,5 +648,17 @@ export async function answerAll(
     if (response.status !== 200) {
       throw new Error(`Fixture answer failed: ${JSON.stringify(response.body)}`);
     }
-  }
+  };
+
+  // A fixed pool of workers pulling from a shared cursor, rather than `Promise.all` over slices:
+  // a slice-based split stalls the whole batch on its slowest slice, and these requests are not
+  // uniform (the first pays connection setup, later ones do not).
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(ANSWER_CONCURRENCY, questions.length) }, async () => {
+    for (let index = cursor++; index < questions.length; index = cursor++) {
+      await saveOne(questions[index], index);
+    }
+  });
+
+  await Promise.all(workers);
 }

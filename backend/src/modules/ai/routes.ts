@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 
 import { createDatabase } from '@/db/client';
 import type { AppEnv } from '@/env';
+import { queueCatalogSyncContinuation } from '@/jobs/ai-jobs';
 import { successEnvelope, ApiError } from '@/lib/envelope';
 import { clientIp, parseBody, parseQuery } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
@@ -248,7 +249,8 @@ function catalogSyncMessage(result: CatalogSyncResult): string {
   const parts = [
     result.changed === 0 ? null : `${result.changed} entries queued for re-reading`,
     result.retired === 0 ? null : `${result.retired} archived`,
-    result.remaining === 0 ? null : `${result.remaining} still to do — run this again`,
+    // Not "run this again" any more: the remainder is queued and finishes on its own.
+    result.remaining === 0 ? null : `${result.remaining} more queued and finishing in the background`,
   ].filter((part): part is string => part !== null);
 
   return `${parts.join(', ')}.`;
@@ -264,6 +266,10 @@ function catalogSyncMessage(result: CatalogSyncResult): string {
  */
 adminAiRoutes.post('/knowledge-catalog-sync', async (c) => {
   const result = await syncCatalogKnowledge(createDatabase(c.env.DB), c.env, requireUser(c).id);
+
+  // The rest of the catalog finishes on the queue rather than on the admin's patience. One batch
+  // still runs inline so the response reports real numbers instead of "queued, check back".
+  await queueCatalogSyncContinuation(c.env, result, 1);
 
   return c.json(
     successEnvelope(
