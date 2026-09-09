@@ -48,6 +48,33 @@ const CONFIDENCE_BANDS = [
   { min: 80, max: 100, label: 'High' },
 ];
 
+/**
+ * The same four bands, worded for a **single SCCT dimension** rather than the composite.
+ *
+ * SCCT's three dimensions were seeded with `INTEREST_BANDS`, so a student who finished the
+ * confidence scale was told *"Self-Efficacy 78 · High Interest"* — on a screen headed "Your career
+ * confidence", under a summary that had just said "Moderately High Career Confidence." Interest is
+ * what the *other* instrument measures (§22); self-efficacy is a belief about your own ability, and
+ * a student cannot have a high or low interest in one. §55 makes Dimension terminology enforced
+ * rather than advisory for exactly this reason: the two instruments answer different questions and
+ * their results must not borrow each other's words.
+ *
+ * The cut points are `CONFIDENCE_BANDS`' own, not a third scale invented for the dimensions. A
+ * student reading "Moderately High Career Confidence" above and "High Confidence" beside a
+ * dimension is reading one instrument on one scale; two sets of thresholds would make the summary
+ * and the breakdown disagree about the same 78.
+ *
+ * The labels carry the noun ("High Confidence") where the composite's do not ("High" + " Career
+ * Confidence."), because the composite's label is always read inside that sentence and a
+ * dimension's is rendered bare, after the score: `78 · High` names no quantity at all.
+ */
+const CONFIDENCE_DIMENSION_BANDS = [
+  { min: 0, max: 33.99, label: 'Low Confidence' },
+  { min: 34, max: 66.99, label: 'Moderate Confidence' },
+  { min: 67, max: 79.99, label: 'Moderately High Confidence' },
+  { min: 80, max: 100, label: 'High Confidence' },
+];
+
 /** 10 items per dimension × 6 = 60 (§22). */
 const RIASEC_ITEMS: Record<string, string[]> = {
   R: [
@@ -314,21 +341,21 @@ async function seedScct(
       code: 'SE',
       name: 'Self-Efficacy',
       description: 'Belief in your ability to succeed in a domain.',
-      interpretationRanges: INTEREST_BANDS,
+      interpretationRanges: CONFIDENCE_DIMENSION_BANDS,
       orderNumber: 1,
     },
     {
       code: 'OE',
       name: 'Outcome Expectations',
       description: 'Belief that effort in a domain leads to good outcomes.',
-      interpretationRanges: INTEREST_BANDS,
+      interpretationRanges: CONFIDENCE_DIMENSION_BANDS,
       orderNumber: 2,
     },
     {
       code: 'GO',
       name: 'Goal Orientation',
       description: 'Your intent to pursue a domain.',
-      interpretationRanges: INTEREST_BANDS,
+      interpretationRanges: CONFIDENCE_DIMENSION_BANDS,
       orderNumber: 3,
     },
   ]);

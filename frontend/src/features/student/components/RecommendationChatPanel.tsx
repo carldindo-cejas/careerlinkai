@@ -308,12 +308,40 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   const flag = useFlagAnswer();
   const isStudent = message.role === 'user';
   /**
-   * The fallback tell. An assistant message with no `ai_request_id` was **not** generated — the
-   * server built it from the student's own §27 results because the model could not answer. Saying
-   * so is not a disclaimer for its own sake: the whole trust model of this product rests on a
-   * student being able to tell a computed fact from a generated sentence.
+   * The "not generated" tell. An assistant message with no `ai_request_id` did not come from the
+   * model, and saying so is not a disclaimer for its own sake: the whole trust model of this
+   * product rests on a student being able to tell a computed fact from a generated sentence.
+   *
+   * **But `ai_request_id === null` is three different things, and this used to call all of them a
+   * failure.** `ChatService.answer` returns a null request id for an out-of-scope redirect, for
+   * the no-coverage refusal, for a rejected generation *and* for a Gate 1 answer — an admin's own
+   * words, returned verbatim with the entry they came from named in `sources`. Gate 1 is the best
+   * answer this system can give and the flywheel the AI-gaps screen exists to turn: an admin
+   * answers a question students keep asking, and the next student to ask gets that answer with no
+   * model in the loop. Labelling it *"From your computed results — the assistant was unavailable"*
+   * told the student the opposite of all three true things about it — it was not computed, it came
+   * from the school's own material, and nothing was unavailable — directly above a "Based on:"
+   * line naming the source it had just denied having.
+   *
+   * So the sourced case is separated out and gets no notice at all: `sources` already says where
+   * it came from, and a sourced answer is not a fallback in any sense.
+   *
+   * What is left really is a canned reply, but the wording no longer guesses *why*. The four
+   * remaining causes — off-domain, nothing retrieved, a citation the grounding contract rejected,
+   * and the model being down — are not distinguishable from the message row (no reason is stored
+   * on it), and the reply text already explains itself in each case. The one thing the notice can
+   * state truthfully for all four is the thing it is there for: this sentence was not written by
+   * the AI.
    */
-  const isFallback = !isStudent && message.ai_request_id === null;
+  const isSourced = message.sources.length > 0;
+  const isCannedReply = !isStudent && message.ai_request_id === null && !isSourced;
+  /**
+   * Unchanged, and deliberately still keyed on the request id rather than on `isCannedReply`.
+   * The flag's value is the chunk trail on the answer's `ai_requests` row — an admin follows it to
+   * the passage that produced the answer — and a Gate 1 reply has no such row. Offering the button
+   * there would file review items into a queue built around a join that cannot find them.
+   */
+  const isGenerated = !isStudent && message.ai_request_id !== null;
 
   return (
     <li className={cn('flex gap-2.5', isStudent && 'flex-row-reverse')}>
@@ -340,9 +368,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           {message.content}
         </div>
 
-        {isFallback ? (
+        {isCannedReply ? (
           <p className="text-xs text-muted-foreground">
-            From your computed results — the assistant was unavailable.
+            A standard reply from CareerLinkAI — not written by the AI.
           </p>
         ) : null}
 
@@ -367,7 +395,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           the chunk ids behind the answer lead straight to the passage that produced it, and an
           item that can vanish before anyone looks at it is worse than a stale one.
         */}
-        {!isStudent && !isFallback ? (
+        {isGenerated ? (
           message.feedback === 'DOWN' ? (
             <p className="text-xs text-muted-foreground">
               Reported — a counselor will look at this.

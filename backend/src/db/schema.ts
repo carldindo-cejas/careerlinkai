@@ -11,6 +11,7 @@ import type {
   AssignmentStatus,
   AttemptStatus,
   CatalogStatus,
+  ChatAnswerKind,
   ChatRole,
   ClassStatus,
   EnrollmentStatus,
@@ -1273,6 +1274,23 @@ export const aiPolicies = sqliteTable(
     instructions: text('instructions'),
     restrictions: text('restrictions'),
     isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
+    /**
+     * The two fallback tiers below the knowledge base (migration 0029), switchable without a
+     * deploy because they are guardrails and invariant 5 says guardrails are not hardcoded.
+     *
+     * They gate whether a student may be shown a sentence that did not come from the school's own
+     * materials: `webSearchEnabled` allows Gate 3, which grounds an answer in cited web pages, and
+     * `generalKnowledgeEnabled` allows Gate 4, which answers from the model's own knowledge with
+     * no grounding at all and says so on screen.
+     *
+     * Read from the **active** policy row only. No active row means both are off — unlike
+     * `instructions`/`restrictions`, whose absence degrades to the base prompt, an absent switch
+     * here must not read as permission.
+     */
+    webSearchEnabled: integer('web_search_enabled', { mode: 'boolean' }).notNull().default(true),
+    generalKnowledgeEnabled: integer('general_knowledge_enabled', { mode: 'boolean' })
+      .notNull()
+      .default(true),
     updatedBy: text('updated_by')
       .notNull()
       .references(() => users.id),
@@ -1337,6 +1355,14 @@ export const chatMessages = sqliteTable(
      * where the absence is itself the signal that this is not a sourced fact.
      */
     sources: text('sources', { mode: 'json' }).$type<string[]>(),
+    /**
+     * Which gate produced this answer (migration 0029) — see `CHAT_ANSWER_KINDS`.
+     *
+     * NULL on every user message, and on every assistant message written before 0029: the panel
+     * treats NULL exactly as it treated those rows before the column existed, rather than
+     * back-filling a claim about provenance that nobody recorded at the time.
+     */
+    answerKind: text('answer_kind').$type<ChatAnswerKind>(),
     /**
      * A student saying *this answer was wrong* (migration 0026). `DOWN` or NULL — there is no
      * `UP`, because a rating on an answer nobody questioned tells an admin nothing they can act

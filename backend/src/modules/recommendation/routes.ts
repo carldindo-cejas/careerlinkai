@@ -389,9 +389,24 @@ studentRecommendationRoutes.post('/chat', async (c) => {
         answer: serializeChatMessage(turn.answer),
         failure: turn.failure,
       },
+      /**
+       * `failure` says which gate answered, not that the service broke, and the envelope message
+       * used to report every one of them as *"The assistant is unavailable right now — your
+       * computed results are shown instead."* Two claims, both usually false: nothing was
+       * unavailable when Gate 0 declined an off-domain question or Gate 2 refused for want of
+       * coverage, and neither reply is built from the student's computed results. The answer body
+       * already explains itself in each case; the message says only which kind of answer it is.
+       *
+       * `null` covers both a grounded generation and a Gate 1 verbatim answer, which is correct —
+       * an admin's own words are an answer, not a degraded one.
+       */
       turn.failure === null
         ? 'Answer generated.'
-        : 'The assistant is unavailable right now — your computed results are shown instead.',
+        : turn.failure.startsWith('OUT_OF_SCOPE_')
+          ? 'That question is outside what this assistant covers.'
+          : turn.failure === 'NO_GROUNDING'
+            ? 'Nothing in the school’s guidance materials covers that question.'
+            : 'The assistant could not answer that — a standard reply was sent instead.',
     ),
     201,
   );

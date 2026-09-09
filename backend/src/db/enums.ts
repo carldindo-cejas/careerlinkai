@@ -219,3 +219,18 @@ export type AiPolicyScope = (typeof AI_POLICY_SCOPES)[number];
  */
 export const CHAT_ROLES = ['user', 'assistant'] as const;
 export type ChatRole = (typeof CHAT_ROLES)[number];
+
+/**
+ * Which gate produced an assistant message (migration 0029).
+ *
+ * Recorded rather than inferred. The panel used to derive "this was not generated" from
+ * `ai_request_id IS NULL`, which was already wrong for a Gate 1 answer — an admin's own words are
+ * the *best* answer this system gives, not a degraded one — and became unrecoverable once two
+ * ungrounded-adjacent tiers existed: "generated, no sources" would mean either "from the student's
+ * own computed results" or "from the model's general knowledge", and a student is entitled to know
+ * which of those they are reading.
+ *
+ * Ordered from most grounded to least, which is also the order the gates run in.
+ */
+export const CHAT_ANSWER_KINDS = ['CURATED', 'KNOWLEDGE', 'WEB', 'GENERAL', 'CANNED'] as const;
+export type ChatAnswerKind = (typeof CHAT_ANSWER_KINDS)[number];

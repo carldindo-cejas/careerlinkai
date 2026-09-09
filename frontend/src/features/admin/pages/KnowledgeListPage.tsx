@@ -486,7 +486,13 @@ function CatalogSyncCard() {
                     }.${
                       sync.data.remaining === 0
                         ? ''
-                        : ` ${sync.data.remaining} still to do — press Sync now again to continue.`
+                        : // The batch cap is 20 entries per run, because a rewrite costs two
+                          // subrequests against a free Worker's 50. The route now queues its own
+                          // continuation, so the rest finishes by itself — this used to say
+                          // "press Sync now again to continue", which stopped being true and would
+                          // have an admin either pressing a working button or reading a finishing
+                          // sync as a stalled one.
+                          ` ${sync.data.remaining} still to do — those finish in the background over the next few minutes.`
                     }`}
             </p>
           ) : null}

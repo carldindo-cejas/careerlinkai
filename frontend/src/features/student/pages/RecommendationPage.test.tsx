@@ -344,11 +344,17 @@ describe('RecommendationPage', () => {
   });
 
   /**
-   * §29's whole posture, on screen: when the model is unavailable the student still gets a true
-   * answer built from their computed results — **and it is labelled**, because presenting computed
-   * text as a generation is the confusion the AI/deterministic split exists to prevent.
+   * §29's whole posture, on screen: when the model cannot answer, the student still gets a true
+   * reply — **and it is labelled**, because presenting a canned sentence as a generation is the
+   * confusion the AI/deterministic split exists to prevent.
+   *
+   * The label says only that the AI did not write it. It used to say *why* — "from your computed
+   * results — the assistant was unavailable" — and `ai_request_id === null` cannot support that
+   * claim: it is equally the state of an off-domain redirect and a no-coverage refusal, neither of
+   * which is built from the student's results and neither of which involves anything being
+   * unavailable.
    */
-  it('labels a deterministic fallback answer as one', async () => {
+  it('labels a canned reply as one, without guessing why it was sent', async () => {
     const user = userEvent.setup();
     vi.mocked(chatApi.ask).mockResolvedValue({
       conversation_id: 'conversation-1',
@@ -365,7 +371,7 @@ describe('RecommendationPage', () => {
         id: 'message-2',
         role: 'assistant',
         content: 'The assistant is unavailable at the moment, so here is what your results say.',
-        // The tell: no request behind it.
+        // The tell: no request behind it, and nothing to cite.
         ai_request_id: null,
         sources: [],
         feedback: null,
@@ -382,8 +388,57 @@ describe('RecommendationPage', () => {
     await user.click(screen.getByRole('button', { name: /^send$/i }));
 
     expect(
-      await screen.findByText(/from your computed results — the assistant was unavailable/i),
+      await screen.findByText(/a standard reply from careerlinkai — not written by the ai/i),
     ).toBeInTheDocument();
+  });
+
+  /**
+   * **Gate 1 is not a failure.** An admin's own answer, returned verbatim with the entry it came
+   * from named in `sources`, also carries no `ai_request_id` — so the old label fired on it and
+   * told the student the best answer in the system was a computed stand-in for an unavailable
+   * assistant, immediately above a "Based on:" line naming the source it had just denied having.
+   *
+   * That is the flywheel the AI-gaps screen exists to turn — an admin answers a question students
+   * keep asking, and the next student gets those words with no model in the loop — so mislabelling
+   * it is not a cosmetic slip.
+   */
+  it('does not label an admin-authored answer as a fallback', async () => {
+    const user = userEvent.setup();
+    vi.mocked(chatApi.ask).mockResolvedValue({
+      conversation_id: 'conversation-1',
+      question: {
+        id: 'message-1',
+        role: 'user',
+        content: 'When do applications close?',
+        ai_request_id: null,
+        sources: [],
+        feedback: null,
+        created_at: null,
+      },
+      answer: {
+        id: 'message-2',
+        role: 'assistant',
+        content: 'Applications close on 30 April.',
+        // Gate 1: no model call, but a named source — the admin's own entry.
+        ai_request_id: null,
+        sources: ['2026 Admissions Handbook'],
+        feedback: null,
+        created_at: null,
+      },
+      failure: null,
+    });
+
+    renderPage();
+
+    await screen.findByText('Career 1');
+
+    await user.type(screen.getByLabelText(/your question/i), 'When do applications close?');
+    await user.click(screen.getByRole('button', { name: /^send$/i }));
+
+    expect(await screen.findByText('Applications close on 30 April.')).toBeInTheDocument();
+    expect(screen.getByText(/based on: 2026 admissions handbook/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not written by the ai/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/from your computed results/i)).not.toBeInTheDocument();
   });
 
   /** D11: a failed load is not an empty one, and the two must not look alike. */
