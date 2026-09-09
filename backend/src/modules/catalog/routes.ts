@@ -31,6 +31,7 @@ import {
   serializeProgram,
 } from '@/modules/catalog/serializers';
 import type { Career } from '@/db/schema';
+import { requestCatalogResync } from '@/jobs/ai-jobs';
 
 /**
  * The `/admin` route group (FULLPLAN §20) — its first mount, and for now the academic catalog
@@ -58,6 +59,24 @@ adminRoutes.use('*', ensurePasswordChanged());
 
 function catalog(c: { env: AppEnv['Bindings'] }): AcademicCatalogService {
   return new AcademicCatalogService(createDatabase(c.env.DB));
+}
+
+/**
+ * Every write below is a write to something the assistant is supposed to know about (2026-09-09).
+ *
+ * A college, a program, a career and the mapping between them are all rendered into the knowledge
+ * corpus by `syncCatalogKnowledge`, and until now that ran only at 03:00 and on an admin pressing
+ * a button on another screen. An admin who added a college and then asked the chatbot about it
+ * was told nothing covered it — which was true, and which stayed true until the next morning.
+ *
+ * `waitUntil` because the admin is not waiting for this: the catalog write is already committed,
+ * the response is already correct, and the derived entry catches up in the background. It is
+ * called on deletes as well as creates, because the sync's retirement pass is what pulls a
+ * withdrawn college's entry out of the index — an assistant still describing a program the
+ * school has removed is the worse failure of the two.
+ */
+function resyncKnowledge(c: Context<AppEnv>): void {
+  c.executionCtx.waitUntil(requestCatalogResync(c.env));
 }
 
 /**
@@ -122,6 +141,8 @@ adminRoutes.post('/colleges', async (c) => {
   const college = await service.createCollege(requireUser(c), input, clientIp(c));
   const location = await service.resolveLocation(college);
 
+  resyncKnowledge(c);
+
   return c.json(
     successEnvelope(serializeCollege(college, { location }), 'College created successfully.'),
     201,
@@ -157,6 +178,8 @@ adminRoutes.patch('/colleges/:id', async (c) => {
   const college = await service.updateCollege(requireUser(c), c.req.param('id'), input, clientIp(c));
   const location = await service.resolveLocation(college);
 
+  resyncKnowledge(c);
+
   return c.json(
     successEnvelope(serializeCollege(college, { location }), 'College updated successfully.'),
   );
@@ -165,6 +188,8 @@ adminRoutes.patch('/colleges/:id', async (c) => {
 /** Soft delete, cascading to the college's programs (§20). 204. */
 adminRoutes.delete('/colleges/:id', async (c) => {
   await catalog(c).removeCollege(requireUser(c), c.req.param('id'), clientIp(c));
+
+  resyncKnowledge(c);
 
   return c.body(null, 204);
 });
@@ -196,6 +221,8 @@ adminRoutes.post('/colleges/:collegeId/programs', async (c) => {
     clientIp(c),
   );
 
+  resyncKnowledge(c);
+
   return c.json(successEnvelope(serializeProgram(program, []), 'Program created successfully.'), 201);
 });
 
@@ -208,11 +235,15 @@ adminRoutes.patch('/programs/:id', async (c) => {
     clientIp(c),
   );
 
+  resyncKnowledge(c);
+
   return c.json(successEnvelope(serializeProgram(program), 'Program updated successfully.'));
 });
 
 adminRoutes.delete('/programs/:id', async (c) => {
   await catalog(c).removeProgram(requireUser(c), c.req.param('id'), clientIp(c));
+
+  resyncKnowledge(c);
 
   return c.body(null, 204);
 });
@@ -267,6 +298,8 @@ adminRoutes.post('/careers', async (c) => {
   const service = catalog(c);
   const career = await service.createCareer(requireUser(c), input, clientIp(c));
 
+  resyncKnowledge(c);
+
   return c.json(
     successEnvelope(await serializeCareerWithOutlook(service, career), 'Career created successfully.'),
     201,
@@ -278,6 +311,8 @@ adminRoutes.patch('/careers/:id', async (c) => {
   const service = catalog(c);
   const career = await service.updateCareer(requireUser(c), c.req.param('id'), input, clientIp(c));
 
+  resyncKnowledge(c);
+
   return c.json(
     successEnvelope(await serializeCareerWithOutlook(service, career), 'Career updated successfully.'),
   );
@@ -285,6 +320,8 @@ adminRoutes.patch('/careers/:id', async (c) => {
 
 adminRoutes.delete('/careers/:id', async (c) => {
   await catalog(c).removeCareer(requireUser(c), c.req.param('id'), clientIp(c));
+
+  resyncKnowledge(c);
 
   return c.body(null, 204);
 });
@@ -304,6 +341,8 @@ adminRoutes.post('/programs/:id/careers', async (c) => {
     clientIp(c),
   );
 
+  resyncKnowledge(c);
+
   return c.json(
     successEnvelope(serializeProgram(program, careers), 'Career linked successfully.'),
     201,
@@ -318,6 +357,8 @@ adminRoutes.delete('/programs/:id/careers/:careerId', async (c) => {
     c.req.param('careerId'),
     clientIp(c),
   );
+
+  resyncKnowledge(c);
 
   return c.json(successEnvelope(serializeProgram(program, careers), 'Career unlinked successfully.'));
 });

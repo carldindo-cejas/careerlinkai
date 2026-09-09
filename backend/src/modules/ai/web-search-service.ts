@@ -1,4 +1,4 @@
-import { log } from '@/lib/log';
+import { log } from '@/lib/logger';
 
 /**
  * `WebSearchService` — Gate 3's source of passages (prompt-driven, 2026-09-05).
@@ -89,7 +89,7 @@ export class WebSearchService {
       const response = await fetch(SERPER_ENDPOINT, {
         method: 'POST',
         headers: {
-          'X-API-KEY': this.apiKey as string,
+          'X-API-KEY': this.apiKey!,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({

@@ -17,8 +17,8 @@ export interface KnowledgeDocument {
   title: string;
   file_name: string;
   source_type: KnowledgeSourceType;
-  /** Set only on catalog-synced entries: which career or program this entry is about. */
-  entity_type: 'career' | 'program' | null;
+  /** Set only on catalog-synced entries: which career, program or college this is about. */
+  entity_type: 'career' | 'program' | 'college' | null;
   entity_id: string | null;
   processing_status: ProcessingStatus;
   visibility: 'GLOBAL' | 'COUNSELOR_PRIVATE';

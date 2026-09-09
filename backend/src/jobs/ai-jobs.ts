@@ -229,6 +229,43 @@ export async function queueCatalogSyncContinuation(
 }
 
 /**
+ * Ask for a catalog sync because the catalog just changed (2026-09-09).
+ *
+ * ## Why the admin's save has to do something
+ *
+ * The sync ran nightly and on a button, and nowhere else. So an admin who added a college at 2pm
+ * and asked the assistant about it at 2:05 was told, correctly and uselessly, that nothing in the
+ * school's materials covered it — for another thirteen hours. Every catalog write is a write to
+ * something the assistant is supposed to know, and the gap between the two was a full day.
+ *
+ * ## Why a message rather than the sync itself
+ *
+ * A save should not pay for a sync. Running one inline would spend up to 40 of the invocation's
+ * 50 subrequests (§45) on work the admin is not waiting for, on the request path of somebody who
+ * just wanted to fix a typo in a description. One `send` is one subrequest, and the consumer picks
+ * it up with a fresh budget and chains its own continuation — which is the machinery
+ * `SyncCatalogKnowledge` already exists to provide.
+ *
+ * ## Never throws
+ *
+ * A queue that is unreachable must not turn a successful college edit into a 500. The write is
+ * already committed and correct; the knowledge entry is a derived artifact, and the nightly cron
+ * is the safety net that makes a dropped message a delay rather than a loss. The failure is
+ * logged where an operator can see it.
+ */
+export async function requestCatalogResync(env: Env): Promise<void> {
+  try {
+    await env.QUEUE_AI.send({ type: 'SyncCatalogKnowledge', payload: { page: 1 } });
+  } catch (error) {
+    log('error', 'catalog_knowledge.resync_request_failed', {
+      pipeline: 'knowledge_ingestion',
+      stage: 'catalog_resync_request_failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Best-effort FAILED marker so a dead job is visible where a human looks (§53).
  *
  * Called from two places in `index.ts`: when a handler throws (so the admin list shows FAILED

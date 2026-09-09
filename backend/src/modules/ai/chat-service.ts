@@ -725,6 +725,13 @@ export class ChatService {
       // NULL, not [], for "nothing to name" — the two would render identically and mean the same
       // thing, and the absence of a source line is what tells a student this is not a cited fact.
       sources: sources.length === 0 ? null : sources,
+      /*
+        NULL until Gate 3/4 is wired up, which is exactly what migration 0029 specifies for a
+        message written before the tiers exist: the panel treats NULL as it always did. It is
+        not a claim that no gate answered — it is the absence of a claim, which is the only
+        honest value while nothing records one.
+      */
+      answerKind: null,
       feedback: null,
       createdAt: now(),
     };

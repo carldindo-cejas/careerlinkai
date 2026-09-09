@@ -146,8 +146,20 @@ export type ProcessingStatus = (typeof PROCESSING_STATUSES)[number];
 export const KNOWLEDGE_SOURCE_TYPES = ['pdf', 'docx', 'text', 'qa', 'catalog'] as const;
 export type KnowledgeSourceType = (typeof KNOWLEDGE_SOURCE_TYPES)[number];
 
-/** The two catalog things a `catalog` entry can be about (migration 0022). */
-export const KNOWLEDGE_ENTITY_TYPES = ['career', 'program'] as const;
+/**
+ * The catalog things a `catalog` entry can be about (migration 0022; `college` added 2026-09-09).
+ *
+ * `college` is the subject the corpus was missing. Location and the list of offerings lived only
+ * inside each *program* entry, whose subject is the program — so "where is Holy Name University?"
+ * and "what colleges in Cebu offer BS Computer Science?" retrieved career passages and were
+ * refused, while "tell me about BS Accountancy at Holy Name University" answered correctly from a
+ * chunk containing the very address the first question asked for. A question about an institution
+ * needs a passage whose subject is that institution.
+ *
+ * `entity_type` is an unconstrained TEXT column, so widening this list is a code change and not a
+ * migration.
+ */
+export const KNOWLEDGE_ENTITY_TYPES = ['career', 'program', 'college'] as const;
 export type KnowledgeEntityType = (typeof KNOWLEDGE_ENTITY_TYPES)[number];
 
 /** The source types an admin may author or edit in place — the rest are derived or uploaded. */
