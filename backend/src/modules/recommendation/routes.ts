@@ -439,6 +439,34 @@ studentRecommendationRoutes.post('/chat/messages/:id/feedback', async (c) => {
   );
 });
 
+/**
+ * `POST /student/chat/messages/:id/knowledge-request` — *please add this to the knowledge base*
+ * (migration 0030).
+ *
+ * The other half of the honest refusal. When nothing covers a question the student is told so and
+ * pointed at their counselor, and the question is logged as a gap — but until now that logging was
+ * invisible to the person who asked, who had no way to say "yes, this one matters to me".
+ *
+ * Offered only on an answer the service marked `OFFERED`, which is only ever a no-coverage refusal.
+ * 404 for anything else, for the same reason every other message route here does: an id alone is
+ * not authority, and "not yours", "not real" and "not a refusal" get one answer.
+ */
+studentRecommendationRoutes.post('/chat/messages/:id/knowledge-request', async (c) => {
+  const service = await chatServiceForAsync(createDatabase(c.env.DB), c);
+  const requested = await service.requestKnowledge(requireUser(c).id, c.req.param('id'));
+
+  if (!requested) {
+    throw ApiError.notFound('Message not found.');
+  }
+
+  return c.json(
+    successEnvelope(
+      { message_id: c.req.param('id'), knowledge_request: 'REQUESTED' },
+      'Thanks — your school has been asked to answer this.',
+    ),
+  );
+});
+
 /** `DELETE /student/chat` — the student's own transcript, cleared on their own say-so. */
 studentRecommendationRoutes.delete('/chat', async (c) => {
   const db = createDatabase(c.env.DB);

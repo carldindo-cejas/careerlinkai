@@ -16,6 +16,7 @@ import type {
   ClassStatus,
   EnrollmentStatus,
   KnowledgeEntityType,
+  KnowledgeRequestState,
   KnowledgeSourceType,
   KnowledgeVisibility,
   MatchType,
@@ -1370,6 +1371,15 @@ export const chatMessages = sqliteTable(
      * already recorded on this message's `ai_requests` row.
      */
     feedback: text('feedback').$type<'DOWN'>(),
+    /**
+     * The "Request to add to knowledge" lifecycle (migration 0030).
+     *
+     * `OFFERED` marks an answer that was a no-coverage refusal — recorded when the answer is
+     * written, so the panel can offer the button on a transcript reloaded a week later rather than
+     * re-deriving it by matching the reply text. `REQUESTED` is the student having pressed it, and
+     * is the signal `/admin/ai-insights` ranks its backlog by. NULL on everything else.
+     */
+    knowledgeRequest: text('knowledge_request').$type<KnowledgeRequestState>(),
     createdAt: createdAt(),
   },
   (table) => [
@@ -1381,6 +1391,7 @@ export const chatMessages = sqliteTable(
       table.id,
     ),
     index('chat_messages_ai_request_id_index').on(table.aiRequestId),
+    index('chat_messages_knowledge_request_index').on(table.knowledgeRequest, table.createdAt),
   ],
 );
 

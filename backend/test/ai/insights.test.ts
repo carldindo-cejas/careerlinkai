@@ -39,6 +39,53 @@ async function seedRefusal(question: string, reason: string): Promise<void> {
   });
 }
 
+/**
+ * One student pressing *"Request to add to knowledge"* on a refusal (migration 0030).
+ *
+ * Written as the two rows a real turn leaves — the question, then the refusal — because the report
+ * finds the question by looking back for the preceding user message in the same conversation, and
+ * a fixture that wrote only the answer would test a join that never runs in production.
+ */
+async function seedKnowledgeRequest(question: string): Promise<void> {
+  const student = await createStaffUser({ role: 'admin' }); // any user row; the FK is to users
+  const conversationId = uuid();
+  const timestamp = now();
+
+  await db().insert(chatConversations).values({
+    id: conversationId,
+    studentId: student.id,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+
+  await db()
+    .insert(chatMessages)
+    .values([
+      {
+        id: uuid(),
+        conversationId,
+        role: 'user',
+        content: question,
+        aiRequestId: null,
+        sources: null,
+        feedback: null,
+        knowledgeRequest: null,
+        createdAt: timestamp,
+      },
+      {
+        id: uuid(),
+        conversationId,
+        role: 'assistant',
+        content: 'Nothing in the guidance materials covers that.',
+        aiRequestId: null,
+        sources: null,
+        feedback: null,
+        knowledgeRequest: 'REQUESTED',
+        createdAt: timestamp,
+      },
+    ]);
+}
+
 describe('the unanswered-questions report', () => {
   /**
    * The point of the whole phase: the most-asked gap is first on screen, so an admin answering
@@ -78,6 +125,36 @@ describe('the unanswered-questions report', () => {
     const report = await new AiInsightsService(db()).unansweredQuestions();
 
     expect(report.map((row) => row.question)).not.toContain(outage);
+  });
+
+  /**
+   * Migration 0030 — the one signal on this screen a person volunteered.
+   *
+   * Every other number here is the pipeline counting its own failures. A student pressing "Request
+   * to add to knowledge" is different in kind: it is somebody saying the gap mattered to them, and
+   * one of those outranks a question the retrieval happened to miss three times.
+   */
+  it('ranks a question students asked for above one merely asked more often', async () => {
+    const asked = `Is there a shuttle service? ${uuid()}`;
+    const requested = `When do dorm applications open? ${uuid()}`;
+
+    for (let i = 0; i < 3; i += 1) {
+      await seedRefusal(asked, 'SKIPPED: nothing retrieved — NO_GROUNDING.');
+    }
+
+    await seedRefusal(requested, 'SKIPPED: nothing retrieved — NO_GROUNDING.');
+    await seedKnowledgeRequest(requested);
+
+    const report = await new AiInsightsService(db()).unansweredQuestions();
+    const row = report.find((entry) => entry.question === requested);
+
+    expect(row).toBeDefined();
+    expect(row!.requests).toBe(1);
+    // It was asked once and the other three times, and it still comes first.
+    expect(row!.asks).toBe(1);
+    expect(report.findIndex((entry) => entry.question === requested)).toBeLessThan(
+      report.findIndex((entry) => entry.question === asked),
+    );
   });
 });
 

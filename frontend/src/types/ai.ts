@@ -56,6 +56,13 @@ export interface CatalogSyncResult {
 export interface UnansweredQuestion {
   question: string;
   asks: number;
+  /**
+   * How many students pressed *"Request to add to knowledge"* on this refusal (migration 0030).
+   *
+   * Usually 0. When it is not, this question sorts to the top of the backlog — a student asking
+   * for an answer outranks the pipeline having failed to find one.
+   */
+  requests: number;
   last_asked_at: string;
 }
 

@@ -68,6 +68,12 @@ export function serializeChatMessage(message: ChatMessage): Record<string, unkno
     ai_request_id: message.aiRequestId,
     sources: message.sources ?? [],
     feedback: message.feedback,
+    /**
+     * Whether this answer can be — or has been — nominated for the knowledge base (migration
+     * 0030). `OFFERED` puts *"Request to add to knowledge"* under a no-coverage refusal; NULL, the
+     * ordinary value, offers nothing.
+     */
+    knowledge_request: message.knowledgeRequest,
     created_at: message.createdAt,
   };
 }

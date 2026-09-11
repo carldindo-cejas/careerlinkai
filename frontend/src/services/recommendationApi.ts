@@ -106,6 +106,21 @@ export const chatApi = {
       ),
     );
   },
+
+  /**
+   * *"Request to add to knowledge"* — the other half of an honest refusal (migration 0030).
+   *
+   * The server accepts it only on an answer it marked as a no-coverage refusal, so this is never
+   * a way to nominate an answer the assistant actually gave. The question itself is already in the
+   * admin's backlog; this adds the student's own voice to it, which is what ranks it.
+   */
+  requestKnowledge(messageId: string): Promise<{ message_id: string }> {
+    return unwrap(
+      httpClient.post<ApiSuccess<{ message_id: string }>>(
+        `/student/chat/messages/${messageId}/knowledge-request`,
+      ),
+    );
+  },
 };
 
 /**

@@ -21,6 +21,11 @@ import type { CoverageGap, UnansweredQuestion } from '@/types/ai';
  * than inventing → the gap appears here → an admin writes one answer → the next student to ask
  * gets that answer word for word, from Gate 1, with no model call at all. After a term of use the
  * common questions are all answered by a human, deterministically, for free.
+ *
+ * Migration 0030 adds the student's own voice to the ranking. The refusal now carries a *"Request
+ * to add to knowledge"* button, and a question somebody pressed it on sorts above one the pipeline
+ * merely failed on more often — a count of retrieval misses is a measure of the corpus, while a
+ * request is a measure of what a student actually needed and did not get.
  */
 export function AiInsightsPage() {
   const { data, isLoading, isError, error } = useAiInsights();
@@ -108,7 +113,9 @@ function UnansweredList({ questions }: { questions: UnansweredQuestion[] }) {
     <Card>
       <CardHeader>
         <CardTitle>Unanswered questions</CardTitle>
-        <CardDescription>Most-asked first. Answer the top few.</CardDescription>
+        <CardDescription>
+          Questions students asked for first, then most-asked. Answer the top few.
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {questions.map((row) => (
@@ -122,6 +129,18 @@ function UnansweredList({ questions }: { questions: UnansweredQuestion[] }) {
                 Asked {row.asks} {row.asks === 1 ? 'time' : 'times'} · last{' '}
                 {new Date(row.last_asked_at).toLocaleString()}
               </p>
+              {/*
+                The one signal on this screen a person volunteered (migration 0030). Every other
+                number here is the pipeline counting its own failures; this is a student reading a
+                refusal and pressing "Request to add to knowledge" on it. It sorts these rows, and
+                it is worth saying so rather than leaving an unexplained ordering.
+              */}
+              {row.requests > 0 ? (
+                <p className="mt-1 text-xs font-medium text-foreground">
+                  {row.requests} {row.requests === 1 ? 'student' : 'students'} asked you to answer
+                  this
+                </p>
+              ) : null}
             </div>
             {/*
               The button that closes the loop. It carries the question into the Q&A form so the

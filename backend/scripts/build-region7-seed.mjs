@@ -1,11 +1,17 @@
 /**
- * Generates `seeds/0005_region7_catalog_reset.sql` — the Region VII (Central Visayas) academic
- * catalog that replaces seed 0004's nationwide one.
+ * Generates `seeds/0005_region7_catalog_reset.sql` — the **Bohol** academic catalog that replaces
+ * seed 0004's nationwide one.
+ *
+ * The filename still says `region7`, and so do the npm scripts (`seed:region7`,
+ * `db:seed:catalog:region7*`). Bohol *is* Region VII, so the name is not wrong, but it is now
+ * wider than the contents: the Cebu half was removed (see "Where the data comes from" below).
+ * Renaming the file would rename four npm scripts, a CI check and two runbook references for a
+ * cosmetic gain, so the name stays and this paragraph is the correction.
  *
  * ## Why a generator and not hand-written SQL
  *
  * Seeds 0002 and 0004 are hand-committed SQL. That works up to a point; 0004 crossed it. The
- * catalog below is 16 institutions × ~13 programmes × ~4 careers each — well over a thousand rows
+ * catalog below is 22 campuses × ~6 programmes × ~4 careers each — well over a thousand rows
  * whose ids are content-derived hashes, and every one of the ~880 mapping rows has to name a
  * programme id and a career id that both exist. Hand-maintaining that is not review: nobody can read a
  * 1,500-line wall of UUIDs and notice that one offering points at a career that was renamed.
@@ -22,36 +28,44 @@
  *
  * ## Where the data comes from
  *
- * Two source documents, both dated 2026-09-05 and both sourced from CHED RO VII directories,
- * institutional programme pages, and PRC / MARINA registers:
+ * **`colleges.md`, at the repository root.** It lists 22 Bohol campuses, each with a name, a
+ * Google Maps share link and a numbered list of the programmes that campus offers. That document
+ * is the whole of the institution, campus, map-link and offering data below; nothing here names a
+ * campus or a programme it does not.
  *
- *   * `Region VII Education Career Database.pdf` — the regional boundary, nine verified
- *     institutions, the normalisation rules, and the pathway taxonomy.
- *   * `Region VII Education Career Database additional.pdf` — seven further institutions
- *     (16 in total), maritime education under MARINA/STCW rather than the PRC, and a
- *     substantially finer career matrix at roughly 2.7 pathways per programme.
+ * It replaced two earlier PDFs (`Region VII Education Career Database.pdf` and its `additional`
+ * companion, both 2026-09-05, sourced from CHED RO VII directories and PRC / MARINA registers).
+ * Those documents covered Bohol **and Cebu** — sixteen institutions — and what survives of them
+ * here is the career catalog, the normalisation rules and the licensure statements, none of which
+ * `colleges.md` supplies.
  *
- * Their bindings, adopted here verbatim:
+ * The rules that survived, and one that changed:
  *
- *   * **The region is Bohol and Cebu, and nothing else.** RA 12000 re-established the Negros
- *     Island Region, moving Negros Oriental and Siquijor out of Region VII. Silliman University
- *     — in seed 0004's list — is a Dumaguete institution and is therefore *not* Region VII any
- *     more. Excluding it is the single most consequential edit in this file.
- *   * **The 16 institutions below are the source documents' verified set**, not a sample of a
- *     larger ambition. CHED RO VII counts 139 HEIs in the region — 111 in Cebu, 28 in Bohol;
- *     these 16 are the ones cross-validated to the standard this catalog needs, and the other
- *     123 are absent rather than guessed at. The first document verified nine and the expanded
- *     one added seven, which is why the institution list below is in two blocks.
+ *   * **The catalog is Bohol, and nothing else.** This is the change. `colleges.md` is a Bohol
+ *     document, and the catalog was scoped to match it on instruction — so the twelve Cebu
+ *     institutions the PDFs verified (USC, CTU, UP Cebu, USJ-R, Cebu Doctors', PhilSCA, UC,
+ *     CIT-U, CNU, Velez, Benedicto, Lapu-Lapu City College) are gone. Bohol is still Region VII;
+ *     the catalog is simply narrower than the region now. Git history has the Cebu data if the
+ *     scope is ever widened back.
+ *   * **A campus is a college row.** BISU's six campuses, BIT's four and Cristal's two are twelve
+ *     rows, not three. `colleges.md` gives each its own map link and its own programme list, and
+ *     they genuinely differ — BS Fisheries is taught at Calape and Candijay and at no other BISU
+ *     campus. Collapsing them would throw away the only part of the answer a student who cannot
+ *     relocate actually needs.
+ *   * **The 22 campuses below are the source document's set.** CHED RO VII counts 28 HEIs in
+ *     Bohol; the rest are absent rather than guessed at.
  *   * **Normalisation preserves scope of practice.** BSCS / BSIT / BSIS / BS CpE stay four
  *     canonical entries because they are four different careers, and BSA stays separate from
- *     BSMA and BS AIS because only BSA graduates may sit the CPALE. Variant *titles* for one
- *     curriculum do collapse: CDU's "BS Medical Technology" and the sector's "BSMLS" are one
- *     canonical programme sitting one licensure exam.
+ *     BS AIS because only BSA graduates may sit the CPALE. The same rule keeps BS Industrial /
+ *     Electrical / Electronics Technology apart from the engineering degrees they resemble — a
+ *     technologist is not eligible for the engineering boards, and merging them would say
+ *     otherwise. Variant *titles* for one curriculum do collapse: PMI's "BS Maritime
+ *     Transportation" and BIT's "BS Marine Transportation" are one canonical programme leading to
+ *     one MARINA credential, with each institution's own title kept on its offering row.
  *   * **A degree is not a licence.** Every regulated career's description says which examination
- *     stands between graduation and practice, and under whose authority — the PRC for most, but
- *     MARINA under the STCW Convention for deck officers and CAAP for aircraft maintenance and
- *     flight crew. Both documents are explicit that an automated system must never imply that
- *     graduating is enough.
+ *     stands between graduation and practice, and under whose authority — the PRC for most,
+ *     MARINA under the STCW Convention for deck and marine engineering officers, and the Supreme
+ *     Court for the Bar. An automated system must never imply that graduating is enough.
  *
  * Salary bands and `typical_riasec_code` remain **estimates, not measurements** — monthly PHP for
  * the Central Visayas market, Holland codes from the standard occupational interpretation. They
@@ -136,138 +150,248 @@ const OUTLOOK = {
 const REGION = { name: 'Region VII (Central Visayas)', code: '070000000' };
 
 const PROVINCES = [
-  { name: 'Cebu', code: '072200000' },
   { name: 'Bohol', code: '071200000' },
 ];
 
+// The fifteen Bohol municipalities and cities that host an institution in `colleges.md`. Every one
+// of them already exists in `towns`, seeded by migration 0011's bulk paste of the Philippine
+// address hierarchy — which is names only, with `code` null. The inserts below are
+// `INSERT OR IGNORE` and the college rows resolve their town by *name scoped to the province*, so
+// what actually happens for all fifteen is that the migration's row wins and this list is inert.
+//
+// `code` is therefore null rather than a PSGC number. The 9-digit codes for Bohol's 47
+// municipalities are not in `colleges.md` and are not in this repository; writing plausible ones
+// would put unverified identifiers into the column that exists precisely to be authoritative, and
+// they would never be stored anyway. A null says "not recorded", which is true.
 const TOWNS = [
-  { name: 'Cebu City', province: 'Cebu', code: '072217000' },
-  { name: 'Mandaue City', province: 'Cebu', code: '072230000' },
-  { name: 'Lapu-Lapu City', province: 'Cebu', code: '072226000' },
-  { name: 'Tagbilaran City', province: 'Bohol', code: '071241000' },
+  { name: 'Tagbilaran City', province: 'Bohol', code: null },
+  { name: 'Balilihan', province: 'Bohol', code: null },
+  { name: 'Batuan', province: 'Bohol', code: null },
+  { name: 'Bilar', province: 'Bohol', code: null },
+  { name: 'Buenavista', province: 'Bohol', code: null },
+  { name: 'Calape', province: 'Bohol', code: null },
+  { name: 'Candijay', province: 'Bohol', code: null },
+  { name: 'Carmen', province: 'Bohol', code: null },
+  { name: 'Clarin', province: 'Bohol', code: null },
+  { name: 'Jagna', province: 'Bohol', code: null },
+  { name: 'Panglao', province: 'Bohol', code: null },
+  { name: 'Talibon', province: 'Bohol', code: null },
+  { name: 'Trinidad', province: 'Bohol', code: null },
+  { name: 'Tubigon', province: 'Bohol', code: null },
+  { name: 'Ubay', province: 'Bohol', code: null },
 ];
 
-// --- 2. institutions (the 16 verified HEIs) ------------------------------------------------------
+// --- 2. institutions (the 22 Bohol campuses of `colleges.md`) -------------------------------------
+//
+// **A campus is a college row, not a line in a description.** This is the change that separates
+// this list from the one it replaces. Bohol Island State University was previously one row whose
+// description mentioned six campuses, and BIT International College one row mentioning four — so
+// "which colleges offer BS Fisheries?" answered "BISU", and a student in Candijay had no way to
+// learn that the Candijay campus is the one that teaches it while the Tagbilaran main campus does
+// not. Every campus below has its own town, its own programme list and its own map link, because
+// those three things genuinely differ per campus and a student's question is always about one.
+//
+// `map` is the institution's own Google Maps share link, taken verbatim from `colleges.md`. These
+// are real `maps.app.goo.gl` pins, which is a strict improvement on the synthesised
+// `/maps/search/?query=<name>` URLs this seed used to emit — a search URL is a guess the browser
+// resolves, a share link is the place. One campus (BIT Carmen) has no link in the source document;
+// it is `null` here and the emitter falls back to a name search rather than inventing a pin.
+//
+// Descriptions state what the source document supports and stop there. The four institutions that
+// were already in this catalog (BISU, HNU, UB, BIT) keep their verified accreditation sentences;
+// the thirteen that `colleges.md` adds get a factual line about campus and offerings, with no
+// accreditation claim, because this repository has nothing that would substantiate one.
 
 const COLLEGES = [
+  // --- Bohol Island State University — the state university, six campuses -------------------
   {
-    key: 'USC',
-    name: 'University of San Carlos',
-    town: 'Cebu City',
-    description:
-      'A private Catholic research university in Cebu City administered by the Society of the Divine Word (SVD), operating five campuses across the Downtown and Talamban sites. PAASCU Level III accredited, with CHED Centers of Excellence and Development.',
-  },
-  {
-    key: 'CTU',
-    name: 'Cebu Technological University',
-    town: 'Cebu City',
-    description:
-      'The primary state technological university of Cebu Province, running 29 campuses from its Cebu City main campus — 16 satellite and 12 extension campuses in municipal hubs including Argao, Barili, Carmen, Danao City, Moalboal, San Francisco and Tuburan. AACCUP accredited and ISO 9001:2015 certified.',
-  },
-  {
-    key: 'UPC',
-    name: 'University of the Philippines Cebu',
-    town: 'Cebu City',
-    description:
-      'An autonomous constituent university of the UP System on the Lahug and South Road Properties campuses, recognised for information technology, management, fine arts and environmental science. CHED Center of Excellence in IT and Center of Development in Environmental Science.',
-  },
-  {
-    key: 'USJR',
-    name: 'University of San Jose - Recoletos',
-    town: 'Cebu City',
-    description:
-      'A private Catholic university in Cebu City run by the Order of Augustinian Recollects (OAR), across three campuses including Main and Basak. PAASCU accredited, with CHED Centers of Excellence and Development in engineering and business programmes.',
-  },
-  {
-    key: 'CDU',
-    name: "Cebu Doctors' University",
-    town: 'Mandaue City',
-    description:
-      'A private non-sectarian health sciences university on North Reclamation Area, Mandaue City, specialising in medicine, nursing and the allied health professions. PAASCU accredited and a recognised healthcare Center of Excellence.',
-  },
-  {
-    key: 'PHILSCA',
-    name: 'Philippine State College of Aeronautics - Mactan',
-    town: 'Lapu-Lapu City',
-    description:
-      'The Central Visayas campus of the national aviation state college, at Mactan Air Base in Lapu-Lapu City, delivering aerospace and aviation education. A CAAP-approved training organisation.',
-  },
-  {
-    key: 'BISU',
-    name: 'Bohol Island State University',
+    key: 'BISU_MAIN',
+    name: 'Bohol Island State University - Main Campus',
     town: 'Tagbilaran City',
+    map: 'https://maps.app.goo.gl/cwMMxcspn8QxgXs49',
     description:
-      'The state university of Bohol, with its main campus in Tagbilaran City and external campuses in Balilihan, Bilar, Calape, Candijay and Clarin. AACCUP accredited and WURI 2026 ranked.',
+      'The main campus of the state university of Bohol, in Tagbilaran City, and the only BISU campus offering the engineering and architecture programmes. AACCUP accredited and WURI 2026 ranked.',
+  },
+  {
+    key: 'BISU_BALILIHAN',
+    name: 'Bohol Island State University - Balilihan Campus',
+    town: 'Balilihan',
+    map: 'https://maps.app.goo.gl/pJd8oYqeXrRP6x5k7',
+    description:
+      'The Balilihan campus of Bohol Island State University, concentrating on computing, industrial and electrical technology, and criminology.',
+  },
+  {
+    key: 'BISU_BILAR',
+    name: 'Bohol Island State University - Bilar Campus',
+    town: 'Bilar',
+    map: 'https://maps.app.goo.gl/BcH4bLwVZ45GrEDx5',
+    description:
+      'The Bilar campus of Bohol Island State University, the agriculture and forestry campus, alongside computer science and teacher education.',
+  },
+  {
+    key: 'BISU_CALAPE',
+    name: 'Bohol Island State University - Calape Campus',
+    town: 'Calape',
+    map: 'https://maps.app.goo.gl/TqKYyqY4ivSFwQgj6',
+    description:
+      'The Calape campus of Bohol Island State University, offering fisheries, food technology, midwifery, industrial technology, computer science and teacher education.',
+  },
+  {
+    key: 'BISU_CLARIN',
+    name: 'Bohol Island State University - Clarin Campus',
+    town: 'Clarin',
+    map: 'https://maps.app.goo.gl/dHJHgnpGYquPKZt89',
+    description:
+      'The Clarin campus of Bohol Island State University, offering environmental science, hospitality management, computer science and teacher education.',
+  },
+  {
+    key: 'BISU_CANDIJAY',
+    name: 'Bohol Island State University - Candijay Campus',
+    town: 'Candijay',
+    map: 'https://maps.app.goo.gl/vWqSk94PCqDMDdSA6',
+    description:
+      'The Candijay campus of Bohol Island State University, on the east coast, and the campus that teaches marine biology and fisheries.',
+  },
+
+  // --- The Tagbilaran private universities ---------------------------------------------------
+  {
+    key: 'UB',
+    name: 'University of Bohol',
+    town: 'Tagbilaran City',
+    map: 'https://maps.app.goo.gl/P9zFTPQ1hTz7UNpf9',
+    description:
+      'A private non-sectarian comprehensive university in Poblacion, Tagbilaran City, with programmes spanning liberal arts, criminology, business, engineering, health sciences and civil law. PACUCOA accredited.',
   },
   {
     key: 'HNU',
     name: 'Holy Name University',
     town: 'Tagbilaran City',
+    map: 'https://maps.app.goo.gl/DWZoBLASrVhmqnc68',
     description:
-      "Bohol's principal private university, an SVD institution on the Dampas campus in Tagbilaran City, offering health sciences, accountancy, engineering and civil law. PAASCU Level III accredited.",
-  },
-  {
-    key: 'UB',
-    name: 'University of Bohol',
-    town: 'Tagbilaran City',
-    description:
-      'A private non-sectarian comprehensive university in Poblacion, Tagbilaran City, with programmes spanning liberal arts, criminology, business, engineering and teacher education. PACUCOA accredited.',
+      'The principal private university of Bohol, an SVD institution on the Dampas campus in Tagbilaran City, offering nursing, accountancy, engineering, computing and teacher education. PAASCU Level III accredited.',
   },
 
-  // The seven institutions the expanded source document adds to the nine above. Together they
-  // are its "16 major representative universities and colleges", and they widen the catalog in
-  // two directions the first nine could not reach on their own: maritime education (UC, BIT),
-  // which is one of Cebu's largest employers of graduates and carries a MARINA/STCW credential
-  // path rather than a PRC one, and the LUC/college tier (Lapu-Lapu City College, Benedicto,
-  // Velez), which is where a large share of Region VII students actually enrol.
+  // --- BIT International College — four campuses ---------------------------------------------
   {
-    key: 'UC',
-    name: 'University of Cebu',
-    town: 'Cebu City',
-    description:
-      'A private non-sectarian university across five Metro Cebu campuses — Main, Banilad, Lapu-Lapu & Mandaue, and the Maritime Education and Training Center — known for maritime education, information technology, criminology, nursing and business.',
-  },
-  {
-    key: 'CITU',
-    name: 'Cebu Institute of Technology - University',
-    town: 'Cebu City',
-    description:
-      'A private non-sectarian engineering and technology university on N. Bacalso Avenue, Cebu City, with long-established programmes in mechanical and civil engineering, computer science and architecture.',
-  },
-  {
-    key: 'CNU',
-    name: 'Cebu Normal University',
-    town: 'Cebu City',
-    description:
-      'A state university on Osmeña Boulevard, Cebu City, across three campuses. Historically the region’s teacher-training institution, it also offers nursing and the liberal arts.',
-  },
-  {
-    key: 'VELEZ',
-    name: 'Velez College',
-    town: 'Cebu City',
-    description:
-      'A private non-sectarian health sciences college on F. Ramos Street, Cebu City, specialising in medical technology, nursing, physical therapy and occupational therapy.',
-  },
-  {
-    key: 'BENEDICTO',
-    name: 'Benedicto College',
-    town: 'Mandaue City',
-    description:
-      'A private non-sectarian college with campuses in Mandaue City and Cebu City, focused on technical-vocational education, information technology and business administration.',
-  },
-  {
-    key: 'LLCC',
-    name: 'Lapu-Lapu City College',
-    town: 'Lapu-Lapu City',
-    description:
-      'The Local University and College of Lapu-Lapu City, in Gun-ob, established by city ordinance to widen local access to teacher education, hospitality management and criminology.',
-  },
-  {
-    key: 'BIT',
-    name: 'BIT International College',
+    key: 'BIT_TAGBILARAN',
+    name: 'BIT International College - Tagbilaran Campus',
     town: 'Tagbilaran City',
+    map: 'https://maps.app.goo.gl/cd1HDDGuhP4VJz198',
     description:
-      'A private non-sectarian college with four Bohol campuses — Tagbilaran City, Carmen, Jagna and Talibon — offering information technology, business administration and maritime studies.',
+      'The Tagbilaran City campus of BIT International College, a private non-sectarian college, and the only BIT campus offering marine transportation alongside computing, business, hospitality and criminology.',
+  },
+  {
+    key: 'BIT_CARMEN',
+    name: 'BIT International College - Carmen Campus',
+    town: 'Carmen',
+    map: null,
+    description:
+      'The Carmen campus of BIT International College, offering information technology, hospitality management and criminology.',
+  },
+  {
+    key: 'BIT_JAGNA',
+    name: 'BIT International College - Jagna Campus',
+    town: 'Jagna',
+    map: 'https://maps.app.goo.gl/UBpv3GfshnfJzNBg6',
+    description:
+      'The Jagna campus of BIT International College, offering information technology, business administration and hospitality management.',
+  },
+  {
+    key: 'BIT_TALIBON',
+    name: 'BIT International College - Talibon Campus',
+    town: 'Talibon',
+    map: 'https://maps.app.goo.gl/sVBi35aqRstJfGPE6',
+    description:
+      'The Talibon campus of BIT International College, in northern Bohol, offering information technology, hospitality management and criminology.',
+  },
+
+  // --- The provincial private colleges -------------------------------------------------------
+  {
+    key: 'MATERDEI',
+    name: 'Mater Dei College',
+    town: 'Tubigon',
+    map: 'https://maps.app.goo.gl/wujaoZYySyfN8sob6',
+    description:
+      'A private college in Tubigon, western Bohol, and one of the few institutions outside Tagbilaran offering nursing and midwifery, alongside business, computing, hospitality, tourism, criminology and teacher education.',
+  },
+  {
+    key: 'BNSC',
+    name: 'Bohol Northern Star Colleges',
+    town: 'Ubay',
+    map: 'https://maps.app.goo.gl/D9d48vQq6aWLobNQ6',
+    description:
+      'A private college in Ubay, northeastern Bohol, offering criminology, business administration, hospitality management and teacher education.',
+  },
+  {
+    key: 'PMI',
+    name: 'Philippine Maritime Institute - Bohol',
+    town: 'Tagbilaran City',
+    map: 'https://maps.app.goo.gl/YpY9SCGRGpZhFog89',
+    description:
+      'The Bohol campus of the Philippine Maritime Institute, a maritime-only institution offering marine transportation and marine engineering. Both are MARINA/STCW credential paths rather than PRC ones.',
+  },
+  {
+    key: 'CRISTAL_TAGBILARAN',
+    name: 'Cristal e-College - Tagbilaran Campus',
+    town: 'Tagbilaran City',
+    map: 'https://maps.app.goo.gl/LCPArDab5danWVFB9',
+    description:
+      'The Tagbilaran City campus of Cristal e-College, offering information technology, business administration and tourism management.',
+  },
+  {
+    key: 'CRISTAL_PANGLAO',
+    name: 'Cristal e-College - Panglao Campus',
+    town: 'Panglao',
+    map: 'https://maps.app.goo.gl/gNd9dQvxqcRDHzVdA',
+    description:
+      'The Panglao campus of Cristal e-College, on the island, pairing tourism and information technology with the maritime programmes the Tagbilaran campus does not offer.',
+  },
+
+  // --- The LUC tier — municipal and city colleges ---------------------------------------------
+  //
+  // Five institutions funded by a municipal or city ordinance rather than by CHED or by tuition.
+  // They matter to this catalog out of proportion to their programme counts: they are the only
+  // higher education in their municipality, and for a student who cannot relocate to Tagbilaran
+  // the three programmes at Batuan College are not a short list, they are the list.
+  {
+    key: 'BUENAVISTA_CC',
+    name: 'Buenavista Community College',
+    town: 'Buenavista',
+    map: 'https://maps.app.goo.gl/CD7kEMNQ8t8DS3zAA',
+    description:
+      'The community college of Buenavista, northern Bohol, offering business administration, information technology, criminology and elementary education.',
+  },
+  {
+    key: 'TRINIDAD_MC',
+    name: 'Trinidad Municipal College',
+    town: 'Trinidad',
+    map: 'https://maps.app.goo.gl/EC8zB2SpL7woPMdb9',
+    description:
+      'The municipal college of Trinidad, offering business administration, public administration and elementary education.',
+  },
+  {
+    key: 'BATUAN_COLLEGE',
+    name: 'Batuan College',
+    town: 'Batuan',
+    map: 'https://maps.app.goo.gl/kzzhSChu39ga17j98',
+    description:
+      'The municipal college of Batuan, interior Bohol, offering elementary education, secondary education and business administration.',
+  },
+  {
+    key: 'TALIBON_POLY',
+    name: 'Talibon Polytechnic College',
+    town: 'Talibon',
+    map: 'https://maps.app.goo.gl/5iguk1Mf4FmCZ8aL9',
+    description:
+      'The polytechnic college of Talibon, and the broadest LUC offering in the province: agriculture, accounting information systems, information systems, criminology, political science and English language.',
+  },
+  {
+    key: 'TAGBILARAN_CC',
+    name: 'Tagbilaran City College',
+    town: 'Tagbilaran City',
+    map: 'https://maps.app.goo.gl/XrDVGr4unn2R77hPA',
+    description:
+      'The city college of Tagbilaran, offering entrepreneurship and hospitality management.',
   },
 ];
 
@@ -431,6 +555,15 @@ const CAREERS = [
     riasec: 'AIR',
   },
   {
+    title: 'Industrial Designer',
+    description:
+      'Designs manufactured products — furniture, equipment, packaging and consumer goods — from concept and prototype through to production drawings. Non-regulated; hired on portfolio.',
+    min: 20000,
+    max: 65000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'AIR',
+  },
+  {
     title: 'Interior Designer',
     description:
       'Plans interior spaces, materials and detailing for residential and commercial fit-outs. Regulated under RA 10350 — practice requires passing the PRC Interior Design Licensure Examination.',
@@ -458,31 +591,49 @@ const CAREERS = [
     riasec: 'RIC',
   },
   {
-    title: 'Electronics Engineer',
+    title: 'Agricultural and Biosystems Engineer',
     description:
-      'Works on circuits, communications systems and embedded electronics. Regulated under RA 9292 — practice requires passing the PRC Electronics Engineer Licensure Examination.',
-    min: 28000,
-    max: 105000,
-    outlook: OUTLOOK.high,
-    riasec: 'IRE',
-  },
-  {
-    title: 'Industrial Engineer',
-    description:
-      'Improves operations through operations research, quality systems and process design. Non-regulated in the Philippines; certification through professional bodies is optional.',
-    min: 30000,
-    max: 110000,
-    outlook: OUTLOOK.high,
-    riasec: 'ECI',
-  },
-  {
-    title: 'Chemical Engineer',
-    description:
-      'Designs and operates chemical processes and production plant. Regulated under RA 9297 — practice requires passing the PRC Chemical Engineer Licensure Examination.',
-    min: 30000,
-    max: 115000,
+      'Designs farm machinery, irrigation and drainage systems, post-harvest facilities and agricultural processing plant. Regulated under RA 10915 — practice requires passing the PRC Agricultural and Biosystems Engineering Licensure Examination.',
+    min: 22000,
+    max: 65000,
     outlook: OUTLOOK.moderate,
-    riasec: 'IRE',
+    riasec: 'RIE',
+  },
+  {
+    title: 'Industrial Technologist',
+    description:
+      'Supervises manufacturing, machine shop, welding and industrial maintenance work in plants and workshops. Not a PRC-licensed engineering title — a BS Industrial Technology graduate is not eligible for the engineering board examinations, and the credentials that advance this career are TESDA National Certificates.',
+    min: 15000,
+    max: 42000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'REC',
+  },
+  {
+    title: 'Electrical Technician',
+    description:
+      'Installs, tests and maintains building wiring, motor controls and electrical equipment to Philippine Electrical Code practice. Distinct from a licensed Electrical Engineer: the ladder here runs through the PRC Registered Master Electrician examination and TESDA certification, not the engineering board.',
+    min: 14000,
+    max: 38000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RCI',
+  },
+  {
+    title: 'Electronics Technician',
+    description:
+      'Services, calibrates and repairs electronic instrumentation, communications and control equipment. Not the licensed Electronics Engineer title under RA 9292 — this is the technician track, credentialled through TESDA and the PRC Electronics Technician examination.',
+    min: 14000,
+    max: 38000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RCE',
+  },
+  {
+    title: 'Forester',
+    description:
+      'Manages forest stands, watersheds, reforestation and agroforestry programmes for DENR, LGUs and private plantations. Regulated under RA 6239 — practice requires passing the PRC Foresters Licensure Examination.',
+    min: 20000,
+    max: 55000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RIS',
   },
   {
     title: 'Computer Engineer',
@@ -492,6 +643,51 @@ const CAREERS = [
     max: 120000,
     outlook: OUTLOOK.high,
     riasec: 'IRE',
+  },
+  {
+    title: 'Embedded Systems Engineer',
+    description:
+      'Writes firmware and designs the hardware-software boundary for microcontrollers, industrial controllers and connected devices. Non-regulated; the credential is demonstrated low-level work.',
+    min: 30000,
+    max: 100000,
+    outlook: OUTLOOK.high,
+    riasec: 'IRE',
+  },
+  {
+    title: 'Instrumentation Technician',
+    description:
+      'Installs, calibrates and troubleshoots sensors, transmitters and process control loops in plants, utilities and food processing lines. Credentialled through TESDA National Certificates rather than a PRC board.',
+    min: 18000,
+    max: 48000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RCE',
+  },
+  {
+    title: 'Maintenance Engineer',
+    description:
+      'Plans and supervises preventive and corrective maintenance for plant, building systems and production equipment. Non-regulated as a title, though supervising electrical or mechanical work at scale generally requires the corresponding PRC licence.',
+    min: 25000,
+    max: 75000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RCS',
+  },
+  {
+    title: 'Renewable Energy Specialist',
+    description:
+      'Sizes, installs and commissions solar, wind and hybrid generation and storage systems, and handles the grid-connection and net-metering paperwork. Non-regulated as a title; design sign-off on a distribution system requires a licensed Electrical Engineer.',
+    min: 28000,
+    max: 90000,
+    outlook: OUTLOOK.emerging,
+    riasec: 'IRS',
+  },
+  {
+    title: 'Occupational Health and Safety Officer',
+    description:
+      'Runs workplace hazard assessment, safety training and incident investigation on sites and in plants. Required by DOLE Department Order 198-18: the role needs an accredited Safety Officer certification (SO1-SO4) earned through mandatory training on top of the degree, not the degree alone.',
+    min: 18000,
+    max: 60000,
+    outlook: OUTLOOK.high,
+    riasec: 'RSC',
   },
   {
     title: 'Marine Engineer',
@@ -504,42 +700,6 @@ const CAREERS = [
   },
 
   // Aviation
-  {
-    title: 'Aeronautical Engineer',
-    description:
-      'Designs, analyses and certifies aircraft structures and systems. Regulated under RA 9836 — practice requires passing the PRC Aeronautical Engineer Licensure Examination.',
-    min: 35000,
-    max: 130000,
-    outlook: OUTLOOK.emerging,
-    riasec: 'IRE',
-  },
-  {
-    title: 'Aircraft Maintenance Technician',
-    description:
-      'Inspects, services and certifies airworthiness of aircraft and components. Requires a CAAP Aircraft Maintenance Technician licence, not a PRC one — the airworthiness authority is the Civil Aviation Authority of the Philippines.',
-    min: 25000,
-    max: 120000,
-    outlook: OUTLOOK.emerging,
-    riasec: 'RCI',
-  },
-  {
-    title: 'Avionics Technician',
-    description:
-      'Maintains and repairs aircraft electronic systems — navigation, communication and instrumentation. Licensed by CAAP under its avionics rating.',
-    min: 24000,
-    max: 100000,
-    outlook: OUTLOOK.emerging,
-    riasec: 'CRI',
-  },
-  {
-    title: 'Commercial Pilot',
-    description:
-      'Flies aircraft for commercial air operators. Requires a CAAP Commercial Pilot Licence with logged flight hours and recurrent medical certification — the degree alone confers no flying privilege.',
-    min: 70000,
-    max: 300000,
-    outlook: OUTLOOK.moderate,
-    riasec: 'RIE',
-  },
 
   // Health sciences
   {
@@ -550,15 +710,6 @@ const CAREERS = [
     max: 70000,
     outlook: OUTLOOK.high,
     riasec: 'SIR',
-  },
-  {
-    title: 'Medical Technologist',
-    description:
-      'Performs clinical specimen analysis, diagnostic testing and blood banking in hospital and reference laboratories. Regulated under RA 5527 — BSMT and BSMLS graduates alike must pass the Medical Technologist Licensure Examination before practising.',
-    min: 24000,
-    max: 75000,
-    outlook: OUTLOOK.high,
-    riasec: 'ICR',
   },
   {
     title: 'Pharmacist',
@@ -579,31 +730,40 @@ const CAREERS = [
     riasec: 'SIR',
   },
   {
-    title: 'Nutritionist-Dietitian',
+    title: 'Midwife',
     description:
-      'Plans clinical, community and food-service nutrition programmes. Regulated under RA 10862 — practice requires passing the PRC Nutritionist-Dietitian Licensure Examination.',
-    min: 21000,
-    max: 65000,
+      'Provides prenatal, delivery, postnatal and newborn care in birthing homes, rural health units and hospitals. Regulated under RA 7392 — practice requires passing the PRC Midwifery Licensure Examination.',
+    min: 15000,
+    max: 38000,
     outlook: OUTLOOK.moderate,
-    riasec: 'SIC',
+    riasec: 'SRI',
   },
   {
-    title: 'Radiologic Technologist',
+    title: 'Regulatory Affairs Specialist',
     description:
-      'Operates diagnostic imaging equipment and applies radiation safety practice. Regulated under RA 7431 — practice requires passing the PRC Radiologic Technology Licensure Examination.',
-    min: 21000,
-    max: 70000,
+      'Prepares product registrations, licence renewals and compliance dossiers for the Philippine FDA in pharmaceutical, food and device companies. Non-regulated as a title, but the work is defined by FDA circulars.',
+    min: 25000,
+    max: 75000,
     outlook: OUTLOOK.moderate,
-    riasec: 'RIS',
+    riasec: 'CIE',
   },
   {
-    title: 'Respiratory Therapist',
+    title: 'Medical Sales Representative',
     description:
-      'Manages ventilation and cardiopulmonary care for critically ill patients. Regulated under RA 10024 — practice requires passing the PRC Respiratory Therapist Licensure Examination.',
-    min: 21000,
+      'Details pharmaceutical and medical products to physicians, hospitals and pharmacies. Non-regulated; earnings are substantially commission, so the range below is wider in practice than a salaried role.',
+    min: 18000,
     max: 65000,
     outlook: OUTLOOK.moderate,
-    riasec: 'SIC',
+    riasec: 'ESI',
+  },
+  {
+    title: 'Sports Rehabilitation Specialist',
+    description:
+      'Manages injury prevention, conditioning and return-to-play rehabilitation for athletes and active patients. Where the work is physical therapy it requires the PRC Physical Therapist licence under RA 5680; conditioning and strength coaching do not.',
+    min: 20000,
+    max: 60000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'SRI',
   },
   {
     title: 'Clinical Researcher',
@@ -642,15 +802,6 @@ const CAREERS = [
     max: 120000,
     outlook: OUTLOOK.high,
     riasec: 'CIE',
-  },
-  {
-    title: 'Management Accountant',
-    description:
-      'Runs cost accounting, budgeting and internal performance reporting inside a business. A non-licensure track: Certified Management Accountant (CMA) certification, not PRC registration, is the recognised credential.',
-    min: 28000,
-    max: 110000,
-    outlook: OUTLOOK.high,
-    riasec: 'CEI',
   },
   {
     title: 'Internal Auditor',
@@ -698,6 +849,24 @@ const CAREERS = [
     riasec: 'SEC',
   },
   {
+    title: 'Office Administrator',
+    description:
+      'Runs office systems, records, correspondence, scheduling and administrative support for a business unit or agency. Non-regulated; government appointments require Civil Service eligibility.',
+    min: 14000,
+    max: 35000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'CES',
+  },
+  {
+    title: 'Executive Assistant',
+    description:
+      'Manages the calendar, correspondence, records and travel of an executive or department, and coordinates across the units reporting to them. Non-regulated.',
+    min: 16000,
+    max: 45000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'CSE',
+  },
+  {
     title: 'Bank Operations Officer',
     description:
       'Runs branch and back-office banking operations, compliance checks and client accounts. Non-regulated, though BSP-supervised roles carry their own fit-and-proper requirements.',
@@ -723,6 +892,33 @@ const CAREERS = [
     max: 70000,
     outlook: OUTLOOK.moderate,
     riasec: 'ESA',
+  },
+  {
+    title: 'Events Manager',
+    description:
+      'Plans and runs weddings, conferences and corporate events end to end — suppliers, budget, programme and on-the-day operations. Non-regulated; a substantial market across Panglao and Tagbilaran.',
+    min: 18000,
+    max: 60000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'ESA',
+  },
+  {
+    title: 'Food and Beverage Supervisor',
+    description:
+      'Supervises restaurant, banquet and bar operations — service standards, costing, inventory and food safety compliance. Non-regulated, though kitchens operate under local sanitation permits.',
+    min: 15000,
+    max: 40000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'ECS',
+  },
+  {
+    title: 'Tour Operations Manager',
+    description:
+      'Builds and runs tour products and itineraries, manages guides and transport, and handles DOT accreditation for the operator. Non-regulated as a title; tour guiding itself requires DOT accreditation.',
+    min: 18000,
+    max: 55000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'ESC',
   },
   {
     title: 'Entrepreneur',
@@ -753,26 +949,35 @@ const CAREERS = [
     outlook: OUTLOOK.high,
     riasec: 'SAE',
   },
+
+  // Psychology, social work and public safety
   {
-    title: 'Technical-Vocational Teacher',
+    title: 'Physical Education Teacher',
     description:
-      'Teaches technical and vocational subjects in DepEd senior high schools and TESDA training centres. Requires both the PRC Licensure Examination for Teachers and the relevant TESDA National Certificate (NC II/III) in the trade being taught.',
+      'Teaches physical education and coaches school athletics programmes. Regulated under RA 7836 — a BPEd degree grants eligibility, and teaching requires passing the Licensure Examination for Teachers.',
     min: 27000,
-    max: 55000,
+    max: 48000,
     outlook: OUTLOOK.high,
     riasec: 'SRE',
   },
   {
-    title: 'Special Needs Education Teacher',
+    title: 'School Administrator',
     description:
-      'Teaches learners with disabilities and additional needs in inclusive and specialised settings. Regulated under RA 7836 — requires passing the Licensure Examination for Teachers.',
-    min: 27000,
-    max: 55000,
+      'Leads a school or department — instructional supervision, staffing, compliance and DepEd reporting. A progression from teaching rather than an entry role: it requires the PRC teaching licence plus classroom experience, and public school principalship additionally requires the DepEd principals’ examination.',
+    min: 35000,
+    max: 80000,
     outlook: OUTLOOK.moderate,
-    riasec: 'SAE',
+    riasec: 'SEC',
   },
-
-  // Psychology, social work and public safety
+  {
+    title: 'Athletic Coach',
+    description:
+      'Trains and manages school, club or LGU athletic teams, including conditioning, competition entry and athlete development. Non-regulated; national sport associations run their own coaching accreditation.',
+    min: 15000,
+    max: 48000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'SER',
+  },
   {
     title: 'Psychometrician',
     description:
@@ -790,15 +995,6 @@ const CAREERS = [
     max: 70000,
     outlook: OUTLOOK.moderate,
     riasec: 'SIA',
-  },
-  {
-    title: 'Social Worker',
-    description:
-      'Delivers casework, community organising and social protection services for LGUs, DSWD and NGOs. Regulated under RA 4373 — practice requires passing the PRC Social Worker Licensure Examination.',
-    min: 20000,
-    max: 60000,
-    outlook: OUTLOOK.moderate,
-    riasec: 'SEC',
   },
   {
     title: 'Registered Criminologist',
@@ -839,6 +1035,15 @@ const CAREERS = [
     riasec: 'RIE',
   },
   {
+    title: 'Food Technologist',
+    description:
+      'Develops food products and runs processing, preservation, quality assurance and food-safety systems (HACCP, GMP) in manufacturing plants and for regulators. Non-regulated as a title, though food-safety practice is governed by FDA and DA standards.',
+    min: 18000,
+    max: 50000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'IRC',
+  },
+  {
     title: 'Environmental Scientist',
     description:
       'Assesses environmental impact and advises on remediation and compliance for industry and LGUs. Non-regulated as a profession, though environmental impact work is governed by DENR accreditation.',
@@ -846,6 +1051,33 @@ const CAREERS = [
     max: 85000,
     outlook: OUTLOOK.high,
     riasec: 'IRS',
+  },
+  {
+    title: 'Pollution Control Officer',
+    description:
+      'Runs a facility’s environmental compliance — effluent and emissions monitoring, waste manifests and the self-monitoring reports DENR requires. The role is mandatory for covered establishments and requires DENR-EMB accreditation as a PCO on top of the degree.',
+    min: 22000,
+    max: 65000,
+    outlook: OUTLOOK.high,
+    riasec: 'IRC',
+  },
+  {
+    title: 'Farm Operations Manager',
+    description:
+      'Runs the production side of a commercial farm or aquaculture operation — cropping and stocking plans, labour, inputs, machinery and yield. Non-regulated, though signing off as a professional agriculturist requires the PRC licence.',
+    min: 20000,
+    max: 60000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RES',
+  },
+  {
+    title: 'Agricultural Extension Worker',
+    description:
+      'Brings production technology and training to farmers and fisherfolk for LGU agriculture offices, DA and BFAR. Non-regulated; permanent government posts require Civil Service eligibility.',
+    min: 18000,
+    max: 45000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RSI',
   },
   {
     title: 'Marine Biologist',
@@ -864,33 +1096,6 @@ const CAREERS = [
     max: 65000,
     outlook: OUTLOOK.moderate,
     riasec: 'ICR',
-  },
-  {
-    title: 'Chemist',
-    description:
-      'Analyses substances and develops compounds in laboratory and industrial settings. Regulated under RA 10657 — practice as a chemist requires passing the PRC Chemist Licensure Examination.',
-    min: 26000,
-    max: 80000,
-    outlook: OUTLOOK.moderate,
-    riasec: 'IRC',
-  },
-  {
-    title: 'Statistician',
-    description:
-      'Designs studies and analyses data to quantify uncertainty and test hypotheses, for research units and government statistics offices. Non-regulated.',
-    min: 32000,
-    max: 95000,
-    outlook: OUTLOOK.high,
-    riasec: 'ICE',
-  },
-  {
-    title: 'Actuary',
-    description:
-      'Prices risk for insurers and pension funds using probability and statistics. Non-regulated in the Philippines, but accreditation by the Actuarial Society of the Philippines is the working requirement for signing statutory valuations.',
-    min: 50000,
-    max: 180000,
-    outlook: OUTLOOK.high,
-    riasec: 'ICE',
   },
 
   // Communication and the arts
@@ -922,6 +1127,15 @@ const CAREERS = [
     riasec: 'AES',
   },
   {
+    title: 'Content Writer and Editor',
+    description:
+      'Writes and edits copy for publications, marketing teams, agencies and technical documentation. Non-regulated; hired on portfolio.',
+    min: 18000,
+    max: 65000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'AIC',
+  },
+  {
     title: 'Journalist',
     description:
       'Reports, writes and produces news for broadcast, print and digital outlets. Non-regulated.',
@@ -929,6 +1143,51 @@ const CAREERS = [
     max: 70000,
     outlook: OUTLOOK.moderate,
     riasec: 'AIS',
+  },
+  {
+    title: 'Lawyer',
+    description:
+      'Advises clients, drafts instruments and represents parties before the courts and quasi-judicial agencies. Entered through the Juris Doctor, which is a graduate-entry degree, and admission to practice requires passing the Philippine Bar Examination and being admitted to the Roll of Attorneys — the Bar is administered by the Supreme Court, not the PRC.',
+    min: 40000,
+    max: 180000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'EIS',
+  },
+  {
+    title: 'Policy Research Analyst',
+    description:
+      'Researches and drafts policy positions, legislative briefs and programme evaluations for LGUs, national agencies, legislators and NGOs. Non-regulated; permanent government posts require Civil Service eligibility.',
+    min: 25000,
+    max: 75000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'IES',
+  },
+  {
+    title: 'Legal Researcher',
+    description:
+      'Researches jurisprudence and statutes, drafts pleadings and memoranda and manages case records for law firms, courts and corporate legal units. Non-regulated and open before admission to the Bar — it is the common working role for a law student or an unadmitted graduate.',
+    min: 20000,
+    max: 55000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'ICE',
+  },
+  {
+    title: 'Security Operations Manager',
+    description:
+      'Runs guard force operations, access control, investigations and loss prevention for an establishment or a security agency. Governed by RA 11917: agency operators and security professionals require PNP-SOSIA licensing.',
+    min: 20000,
+    max: 65000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'ERC',
+  },
+  {
+    title: 'Fire Officer',
+    description:
+      'Fire suppression, rescue and fire safety inspection with the Bureau of Fire Protection. Entry is by BFP appointment under RA 9263 and requires either a relevant baccalaureate or a PRC/CSC eligibility, plus the BFP’s own recruitment and training process.',
+    min: 25000,
+    max: 50000,
+    outlook: OUTLOOK.moderate,
+    riasec: 'RSE',
   },
   {
     title: 'Public Administration Officer',
@@ -1080,33 +1339,6 @@ const CAREERS = [
     riasec: 'SEC',
   },
   {
-    title: 'Blood Bank Specialist',
-    description:
-      'Performs blood typing, crossmatching, transfusion safety and component processing for the Philippine Red Cross and tertiary hospitals. Requires the PRC Medical Technologist licence under RA 5527, plus blood banking certification.',
-    min: 25000,
-    max: 80000,
-    outlook: OUTLOOK.moderate,
-    riasec: 'ICR',
-  },
-  {
-    title: 'Molecular Diagnostics Specialist',
-    description:
-      'Runs real-time PCR testing, DNA/RNA extraction and next-generation sequencing in genetic testing labs and research centres. Built on the PRC Medical Technologist licence, with molecular biology certification as the specialisation.',
-    min: 30000,
-    max: 95000,
-    outlook: OUTLOOK.emerging,
-    riasec: 'IRC',
-  },
-  {
-    title: 'Occupational Therapist',
-    description:
-      'Enables participation in everyday occupations after injury, illness or developmental difficulty. Regulated under RA 5680 — practice requires passing the PRC Occupational Therapist Licensure Examination.',
-    min: 24000,
-    max: 80000,
-    outlook: OUTLOOK.moderate,
-    riasec: 'SIR',
-  },
-  {
     title: 'Clinical Psychologist',
     description:
       'Carries out psychological diagnosis, psychotherapy and clinical assessment. Regulated under RA 10029 and **not** reachable on a bachelor’s degree alone: it requires a Master’s degree in psychology and the Psychologist Licensure Examination, which is a different examination from the Psychometrician one.',
@@ -1208,206 +1440,199 @@ const A = 'Academic';
 const T = 'Technical-Professional';
 
 const PROGRAMS = [
-  // Computing — four entries, deliberately. The PDF is explicit that these are four different
-  // careers and must not be normalised together.
+  // Computing — four entries, deliberately. These are four different careers and must not be
+  // normalised together. Talibon Polytechnic's "BS Information System" is BSIS under its own
+  // singular title; the offering row keeps what the college calls it.
   { code: 'BSCS', name: 'BS Computer Science', strand: A, description: 'Computational theory, algorithm design and software architecture.' },
   { code: 'BSIT', name: 'BS Information Technology', strand: A, description: 'Systems administration, network infrastructure and web application deployment.' },
   { code: 'BSIS', name: 'BS Information Systems', strand: A, description: 'Business process integration and enterprise software systems.' },
   { code: 'BSCPE', name: 'BS Computer Engineering', strand: A, description: 'Hardware-software interfaces, embedded circuit design and computer architecture.' },
 
-  // Engineering
+  // Engineering — the licensure track. Offered in Bohol only at BISU Main, UB and HNU.
   { code: 'BSCE', name: 'BS Civil Engineering', strand: A, description: 'Structural calculation, reinforced concrete design, hydraulics and construction cost estimation.' },
   { code: 'BSME', name: 'BS Mechanical Engineering', strand: A, description: 'Thermodynamics, machine design and manufacturing systems.' },
   { code: 'BSEE', name: 'BS Electrical Engineering', strand: A, description: 'Power systems, electrical machines and building electrical design.' },
-  { code: 'BSECE', name: 'BS Electronics Engineering', strand: A, description: 'Circuits, communications systems and embedded electronics.' },
-  { code: 'BSIE', name: 'BS Industrial Engineering', strand: A, description: 'Operations research, quality systems and process improvement.' },
-  { code: 'BSCHE', name: 'BS Chemical Engineering', strand: A, description: 'Process design, transport phenomena and plant operations.' },
-  { code: 'BSMARE', name: 'BS Marine Engineering', strand: T, description: 'Shipboard machinery, propulsion and marine systems, with supervised sea service.' },
-  // Maritime deck officers are credentialled by MARINA under STCW rather than by the PRC, which
-  // is why this is its own canonical entry and not a variant of Marine Engineering. Note the
-  // code: institutions abbreviate BS Marine Transportation as "BSMT", which is also how BS
-  // Medical Technology is abbreviated. Both keep their own abbreviation on their offering rows
-  // — that ambiguity is real and a student will meet it — while the canonical codes stay
-  // distinct, because `program_catalog.code` is what one programme is looked up by.
-  { code: 'BSMARTRANS', name: 'BS Marine Transportation', strand: T, description: 'Ocean navigation, watchkeeping, passage planning, cargo operations and collision regulations.' },
+  { code: 'BSABE', name: 'BS Agricultural and Biosystems Engineering', strand: A, description: 'Farm machinery, irrigation and land-and-water resources engineering, and agricultural processing plant.' },
   { code: 'BSARCH', name: 'BS Architecture', strand: A, description: 'Architectural design, building code compliance, AutoCAD and Revit (BIM) practice.' },
-  { code: 'BSID', name: 'BS Interior Design', strand: A, description: 'Interior space planning, materials and detailing.' },
+  { code: 'BSINDDES', name: 'BS Industrial Design', strand: A, description: 'Product design, materials and manufacture, prototyping and human factors. Distinct from interior design and from industrial engineering: the object is the artefact.' },
 
-  // Aviation
-  { code: 'BSAERO', name: 'BS Aeronautical Engineering', strand: A, description: 'Aircraft structures, aerodynamics and propulsion systems.' },
-  { code: 'BSAMT', name: 'BS Aircraft Maintenance Technology', strand: T, description: 'Airframe and powerplant maintenance to CAAP airworthiness standards.' },
-  { code: 'BSAVTECH', name: 'BS Aviation Electronics Technology', strand: T, description: 'Aircraft navigation, communication and instrumentation systems.' },
-  { code: 'BSAIRT', name: 'BS Air Transportation', strand: T, description: 'Flying training, air navigation and aviation regulation toward a CAAP pilot licence.' },
+  // Maritime. Both are MARINA/STCW credential paths under RA 10635, not PRC ones — the licence is
+  // a Certificate of Competency earned after approved sea service, which no degree confers.
+  // Institutions title these inconsistently ("Marine" at BIT, "Maritime" at PMI and Cristal); the
+  // canonical entries are one each and the offering rows carry the institution's own wording.
+  { code: 'BSMARE', name: 'BS Marine Engineering', strand: T, description: 'Shipboard machinery, propulsion and marine systems, with supervised sea service.' },
+  { code: 'BSMARTRANS', name: 'BS Marine Transportation', strand: T, description: 'Ocean navigation, watchkeeping, passage planning, cargo operations and collision regulations.' },
+
+  // Industrial and technology programmes — the BISU Balilihan and Calape tier. These are
+  // technologist tracks, not the engineering licensure tracks above, and they are kept separate
+  // for exactly the reason BSA is kept separate from BSMA: a BS Industrial Technology graduate is
+  // not eligible for the PRC electrical or mechanical engineering examinations, and collapsing the
+  // two would tell a student the opposite.
+  { code: 'BSINDTECH', name: 'BS Industrial Technology', strand: T, description: 'Applied manufacturing, machine shop, welding and industrial maintenance practice.' },
+  { code: 'BSELECTECH', name: 'BS Electrical Technology', strand: T, description: 'Electrical installation, motor control and building wiring to Philippine Electrical Code practice.' },
+  { code: 'BSELXTECH', name: 'BS Electronics Technology', strand: T, description: 'Electronic servicing, instrumentation and communications equipment maintenance.' },
 
   // Health sciences
   { code: 'BSN', name: 'BS Nursing', strand: A, description: 'Clinical patient care, IV therapy, bedside assessment and emergency response.' },
-  { code: 'BSMLS', name: 'BS Medical Laboratory Science', strand: A, description: 'Haematology analysis, blood chemistry, microbiology culture and histopathology. Offered as "BS Medical Technology" at some institutions — the same curriculum and the same licensure examination.' },
   { code: 'BSPHARM', name: 'BS Pharmacy', strand: A, description: 'Pharmaceutical science, dispensing and pharmacy practice.' },
   { code: 'BSPT', name: 'BS Physical Therapy', strand: A, description: 'Rehabilitation of movement and physical function.' },
-  { code: 'BSND', name: 'BS Nutrition and Dietetics', strand: A, description: 'Clinical, community and food-service nutrition.' },
-  { code: 'BSRT', name: 'BS Radiologic Technology', strand: A, description: 'Diagnostic imaging and radiation safety.' },
-  { code: 'BSRESPT', name: 'BS Respiratory Therapy', strand: A, description: 'Ventilation management and cardiopulmonary care.' },
-  { code: 'BSOT', name: 'BS Occupational Therapy', strand: A, description: 'Enabling participation in everyday occupations after injury, illness or developmental difficulty.' },
+  { code: 'BSMID', name: 'BS Midwifery', strand: A, description: 'Prenatal, delivery and postnatal care, newborn care and maternal health in community and facility settings.' },
 
-  // Accountancy and business — BSA is kept separate from BSMA and BS AIS because only BSA
-  // graduates may sit the CPALE (RA 9298). This is the PDF's central normalisation rule.
+  // Accountancy and business — BSA is kept separate from BS AIS because only BSA graduates may sit
+  // the CPALE under RA 9298.
   { code: 'BSA', name: 'BS Accountancy', strand: A, description: 'Financial auditing, PFRS/IAS standards, internal controls and tax compliance. The only accounting track whose graduates may sit the CPA Licensure Examination.' },
-  { code: 'BSMA', name: 'BS Management Accounting', strand: A, description: 'Corporate management accounting, cost analysis and internal reporting. A non-licensure track oriented toward CMA certification rather than PRC registration.' },
   { code: 'BSAIS', name: 'BS Accounting Information Systems', strand: A, description: 'Accounting systems, controls and business process automation. A non-licensure track.' },
   { code: 'BSBA', name: 'BS Business Administration', strand: A, description: 'Management, marketing, finance and operations.' },
-  { code: 'BSBM', name: 'BS Business Management', strand: A, description: 'Supply chain optimisation, business strategy, process mapping and HR analytics.' },
   { code: 'BSENTREP', name: 'BS Entrepreneurship', strand: A, description: 'Venture creation, business planning and small enterprise management.' },
+  { code: 'BSOA', name: 'BS Office Administration', strand: T, description: 'Office systems, records management, business correspondence and administrative support practice.' },
   { code: 'BSHM', name: 'BS Hospitality Management', strand: T, description: 'Hotel, restaurant and events operations.' },
   { code: 'BSTM', name: 'BS Tourism Management', strand: T, description: 'Destination management, travel operations and visitor services.' },
 
   // Education
   { code: 'BEED', name: 'Bachelor of Elementary Education', strand: A, description: 'Elementary teaching, curriculum and assessment.' },
   { code: 'BSED', name: 'Bachelor of Secondary Education', strand: A, description: 'Secondary teaching with a subject major.' },
-  { code: 'BTVTED', name: 'Bachelor of Technical-Vocational Teacher Education', strand: T, description: 'Pedagogical design, technical drafting, CAD instruction and TVET assessment.' },
-  { code: 'BSNED', name: 'Bachelor of Special Needs Education', strand: A, description: 'Inclusive and special needs teaching practice.' },
+  { code: 'BPED', name: 'Bachelor of Physical Education', strand: A, description: 'Physical education pedagogy, sports science and athletic programme management.' },
 
-  // Social sciences, law enforcement, communication and the arts
+  // Social sciences, law and law enforcement
   { code: 'BSPSY', name: 'BS Psychology', strand: A, description: 'Behavioural science, psychological assessment and research methods.' },
-  { code: 'BSSW', name: 'BS Social Work', strand: A, description: 'Casework, community organising and social policy.' },
   { code: 'BSCRIM', name: 'BS Criminology', strand: A, description: 'Crime scene investigation, Philippine criminal law, criminalistics and forensic ballistics.' },
-  { code: 'ABCOM', name: 'AB Communication', strand: null, description: 'Media production, writing and communication theory.' },
   { code: 'ABPOLSCI', name: 'AB Political Science', strand: null, description: 'Government, law and political theory.' },
-  { code: 'BFA', name: 'Bachelor of Fine Arts', strand: null, description: 'Studio practice across visual, product and applied arts.' },
+  { code: 'ABENG', name: 'AB English Language', strand: null, description: 'English linguistics, literature and professional writing.' },
+  { code: 'BPA', name: 'Bachelor of Public Administration', strand: null, description: 'Public sector management, local governance and public policy.' },
+  // The only graduate-entry programme in this catalog. It is listed because University of Bohol
+  // genuinely offers it, and its description says plainly that it is not a first degree — a senior
+  // high school student reading "Juris Doctor" on a recommendations screen otherwise learns the
+  // wrong thing about what they can enrol in next year.
+  { code: 'JD', name: 'Juris Doctor', strand: null, description: 'The professional law degree. Entered after a bachelor degree, not from senior high school, and admission to practice requires passing the Philippine Bar Examination.' },
 
   // Sciences, environment, marine and agriculture
-  { code: 'BSBIO', name: 'BS Biology', strand: A, description: 'Organismal, cellular and ecological biology.' },
   { code: 'BSMARBIO', name: 'BS Marine Biology', strand: A, description: 'Marine organisms, reef ecosystems and coastal resource science.' },
   { code: 'BSENVSCI', name: 'BS Environmental Science', strand: A, description: 'Environmental systems, impact assessment and management.' },
-  { code: 'BSCHEM', name: 'BS Chemistry', strand: A, description: 'Analytical, organic and physical chemistry.' },
-  { code: 'BSMATH', name: 'BS Mathematics', strand: A, description: 'Pure and applied mathematical structures and methods.' },
   { code: 'BSFISH', name: 'BS Fisheries', strand: T, description: 'Aquaculture, capture fisheries and aquatic resource management.' },
   { code: 'BSAGRI', name: 'BS Agriculture', strand: T, description: 'Crop science, animal science and farm management.' },
+  { code: 'BSFOR', name: 'BS Forestry', strand: T, description: 'Silviculture, forest resource management, watershed protection and agroforestry.' },
+  { code: 'BSFT', name: 'BS Food Technology', strand: T, description: 'Food processing, preservation, product development and food safety systems.' },
 ];
 
 // --- 5. offerings ---------------------------------------------------------------------------------
 //
-// Which of the 16 institutions offers which canonical programme. A bare code means the
-// institution uses the canonical title; `'BSMLS as BSMT/BS Medical Technology'` records an
-// institution whose own title differs — `programs.code`/`programs.name` keep what the institution
-// calls it, `program_catalog_id` links it to what it *is*. That split is what lets a student see
-// "BS Medical Technology at CDU" and still find every other Region VII institution teaching the
-// same curriculum.
+// Which of the 22 campuses offers which canonical programme, transcribed from the numbered lists
+// in `colleges.md`. A bare code means the campus uses the canonical title;
+// `'BSMARTRANS as BSMT/BS Maritime Transportation'` records a campus whose own title differs —
+// `programs.code`/`programs.name` keep what the institution calls it, `program_catalog_id` links it
+// to what it *is*. That split is what lets a student see "BS Maritime Transportation at PMI" and
+// still find every other Bohol campus teaching the same curriculum under a different name.
+//
+// Two titles in `colleges.md` are typos and are normalised rather than reproduced — see the
+// comments on BISU Calape and Tagbilaran City College below.
 
 const OFFERINGS = {
-  USC: [
-    'BSCS', 'BSIT', 'BSIS', 'BSCPE',
-    'BSCE', 'BSME', 'BSEE', 'BSECE', 'BSIE', 'BSCHE',
-    'BSARCH', 'BSID',
-    'BSA', 'BSMA', 'BSBA', 'BSHM', 'BSTM',
-    'BSPSY', 'BSSW', 'ABCOM', 'ABPOLSCI', 'BFA',
-    'BSBIO', 'BSCHEM', 'BSMATH', 'BSENVSCI',
-    'BSPHARM', 'BSND',
-    'BEED', 'BSED',
+  // --- Bohol Island State University ---------------------------------------------------------
+  BISU_MAIN: [
+    'BSCE', 'BSME', 'BSEE', 'BSCPE',
+    'BSARCH', 'BSINDDES',
+    'BSIT', 'BSENVSCI',
+    'BSENTREP', 'BSOA',
+    'BEED', 'BSED', 'BPED',
   ],
-  CTU: [
-    'BSIT', 'BSCS', 'BSCPE',
-    'BSCE', 'BSME', 'BSEE', 'BSECE', 'BSIE', 'BSMARE',
-    'BTVTED', 'BEED', 'BSED',
-    'BSBA', 'BSENTREP', 'BSHM', 'BSTM',
-    'BSAGRI', 'BSFISH',
-    'BSMATH', 'BSCRIM',
+  BISU_BALILIHAN: [
+    'BSIT', 'BSCS',
+    'BSINDTECH', 'BSELECTECH', 'BSELXTECH',
+    'BSCRIM',
   ],
-  UPC: [
+  BISU_BILAR: [
+    'BSAGRI', 'BSFOR', 'BSABE',
     'BSCS',
-    'BSBM as BSM/BS Management',
-    'BFA', 'BSENVSCI', 'BSBIO', 'BSMATH',
-    'ABCOM', 'ABPOLSCI',
-  ],
-  USJR: [
-    'BSCS', 'BSIT', 'BSIS', 'BSCPE',
-    'BSCE', 'BSME', 'BSEE', 'BSECE', 'BSIE',
-    'BSA', 'BSMA', 'BSAIS', 'BSBA', 'BSHM',
     'BEED', 'BSED',
-    'BSPSY', 'BSCRIM',
   ],
-  CDU: [
-    'BSN',
-    'BSMLS as BSMT/BS Medical Technology',
-    'BSPT', 'BSPHARM', 'BSND', 'BSRT', 'BSRESPT',
-    'BSPSY', 'BSBIO',
+  // `colleges.md` prints "BS Computes Science" here. It is a typo for BS Computer Science, not a
+  // programme, and it is normalised rather than reproduced — an offering row titled "BS Computes
+  // Science" would be a search result no student could match and a canonical programme of one.
+  BISU_CALAPE: [
+    'BSCS',
+    'BSINDTECH', 'BSFISH', 'BSFT', 'BSMID',
+    'BEED', 'BSED',
   ],
-  PHILSCA: ['BSAERO', 'BSAMT', 'BSAVTECH', 'BSAIRT'],
-  BISU: [
-    'BSCE', 'BSME', 'BSEE', 'BSECE', 'BSCPE',
-    'BSIT', 'BSCS',
-    'BTVTED', 'BEED', 'BSED',
-    'BSHM', 'BSTM',
-    'BSAGRI', 'BSFISH', 'BSMARBIO',
-    'BSCRIM', 'BSMATH',
+  BISU_CLARIN: [
+    'BSENVSCI', 'BSHM', 'BSCS',
+    'BEED', 'BSED',
   ],
-  HNU: [
-    'BSPSY', 'BSCRIM', 'BSSW',
-    'BSA', 'BSMA', 'BSBA', 'BSHM', 'BSTM',
-    'BSN',
-    'BSMLS as BSMT/BS Medical Technology',
-    'BSPHARM',
-    'BSCE', 'BSCPE', 'BSIT', 'BSCS',
-    'BEED', 'BSED', 'BSNED', 'ABCOM',
-  ],
-  UB: [
-    'BSN', 'BSCRIM',
-    'BSCE', 'BSEE', 'BSME',
-    'BSIT', 'BSCS',
-    'BSBA', 'BSA', 'BSHM', 'BSTM',
-    'BEED', 'BSED', 'BSPSY',
-    'BSMARE',
+  BISU_CANDIJAY: [
+    'BSMARBIO', 'BSFISH', 'BSCS',
+    'BEED', 'BSED',
   ],
 
-  // --- The expanded source document's seven additional institutions ------------------------
-  UC: [
-    // "BSMT" here is BS Marine Transportation, and "BSMT" at CDU and HNU is BS Medical
-    // Technology. Both are what the institution actually prints on the diploma; the canonical
-    // entry each one links to is what tells them apart.
-    'BSMARTRANS as BSMT/BS Marine Transportation',
-    'BSMARE',
+  // --- The Tagbilaran private universities ---------------------------------------------------
+  UB: [
+    'BSA', 'BSBA',
     'BSIT', 'BSCS',
-    'BSCRIM', 'BSN', 'BSPSY',
-    'BSBA', 'BSA', 'BSHM', 'BSTM',
+    'BSCE', 'BSME', 'BSEE',
+    'BSCRIM',
+    'BSPHARM', 'BSPT',
+    'BSHM', 'BSTM',
+    'ABPOLSCI', 'BSPSY',
     'BEED', 'BSED',
-    'BSCE',
+    'JD',
   ],
-  CITU: [
-    'BSME', 'BSCE', 'BSEE', 'BSECE', 'BSIE', 'BSCPE', 'BSCHE',
-    'BSARCH',
-    'BSCS', 'BSIT',
-    'BSMATH',
-    'BSBA', 'BSA',
+  HNU: [
+    'BSN', 'BSA', 'BSBA',
+    'BSIT', 'BSCPE', 'BSCE',
+    'BSHM', 'BSTM',
+    'BSPSY',
+    'BEED', 'BSED',
   ],
-  CNU: [
-    'BEED', 'BSED', 'BSNED',
-    'BSN',
-    'BSPSY', 'ABCOM', 'ABPOLSCI',
-    'BSBIO', 'BSMATH',
-    'BSTM',
-  ],
-  VELEZ: [
-    'BSMLS as BSMT/BS Medical Technology',
-    'BSN', 'BSPT', 'BSOT',
-  ],
-  BENEDICTO: [
-    'BTVTED',
+
+  // --- BIT International College -------------------------------------------------------------
+  BIT_TAGBILARAN: [
     'BSIT', 'BSCS',
-    'BSBA', 'BSHM',
+    'BSHM', 'BSBA',
+    'BSCRIM',
+    'BSMARTRANS',
+  ],
+  BIT_CARMEN: ['BSIT', 'BSHM', 'BSCRIM'],
+  BIT_JAGNA: ['BSIT', 'BSBA', 'BSHM'],
+  BIT_TALIBON: ['BSIT', 'BSHM', 'BSCRIM'],
+
+  // --- The provincial private colleges -------------------------------------------------------
+  MATERDEI: [
+    'BSN', 'BSMID',
+    'BSBA', 'BSIT',
+    'BSHM', 'BSTM',
     'BSCRIM',
     'BEED', 'BSED',
   ],
-  LLCC: [
+  BNSC: [
+    'BSCRIM', 'BSBA', 'BSHM',
     'BEED', 'BSED',
-    'BSHM', 'BSCRIM',
-    'BSIT', 'BSBA',
   ],
-  BIT: [
-    'BSIT', 'BSCS',
-    'BSBA', 'BSHM',
-    'BSMARTRANS as BSMT/BS Marine Transportation',
-    'BSMARE',
+  // PMI and Cristal Panglao title the maritime pair "Maritime" where BIT titles it "Marine". The
+  // curriculum and the MARINA credential are the same, so the canonical codes are the same and the
+  // offering rows keep each institution's own wording — that is what `programs.code`/`name` are for.
+  PMI: [
+    'BSMARTRANS as BSMT/BS Maritime Transportation',
+    'BSMARE as BSMarE/BS Maritime Engineering',
+  ],
+  CRISTAL_TAGBILARAN: ['BSIT', 'BSBA', 'BSTM'],
+  CRISTAL_PANGLAO: [
+    'BSIT', 'BSTM',
+    'BSMARTRANS as BSMT/BS Maritime Transportation',
+    'BSMARE as BSMarE/BS Maritime Engineering',
+  ],
+
+  // --- The LUC tier ---------------------------------------------------------------------------
+  BUENAVISTA_CC: ['BSBA', 'BSIT', 'BSCRIM', 'BEED'],
+  TRINIDAD_MC: ['BSBA', 'BPA', 'BEED'],
+  BATUAN_COLLEGE: ['BEED', 'BSED', 'BSBA'],
+  TALIBON_POLY: [
+    'BSAGRI',
+    'BSAIS as BSAIS/BS Accounting Information System',
+    'BSIS as BSIS/BS Information System',
     'BSCRIM',
+    'ABPOLSCI as ABPolSci/Bachelor of Arts in Political Science',
+    'ABENG as ABEng/Bachelor of Arts in English Language',
   ],
+  // `colleges.md` prints "BS Entrepreurship". Normalised, for the same reason as BISU Calape above.
+  TAGBILARAN_CC: ['BSENTREP', 'BSHM'],
 };
 
 // --- 6. programme → career mapping ----------------------------------------------------------------
@@ -1424,61 +1649,56 @@ const MAPPINGS = {
   BSCS: ['Software Developer', 'Data Scientist', 'Cybersecurity Analyst', 'AI/Machine Learning Engineer', 'Cloud Infrastructure Engineer', 'Enterprise Systems Architect', 'Quality Assurance Engineer'],
   BSIT: ['Software Developer', 'Systems Administrator', 'Network Engineer', 'IT Support Specialist', 'Database Administrator', 'Cybersecurity Analyst', 'Cloud Infrastructure Engineer'],
   BSIS: ['Business Systems Analyst', 'Database Administrator', 'Data Analyst', 'Software Developer', 'Supply Chain Analyst'],
-  BSCPE: ['Computer Engineer', 'Network Engineer', 'Software Developer', 'Systems Administrator'],
+  BSCPE: ['Computer Engineer', 'Network Engineer', 'Software Developer', 'Systems Administrator', 'Embedded Systems Engineer'],
 
-  BSCE: ['Civil Engineer', 'Geotechnical Engineer', 'Construction Project Manager', 'Quantity Surveyor', 'BIM Specialist'],
-  BSME: ['Mechanical Engineer', 'HVAC Design Engineer', 'Power Plant Engineer', 'Construction Project Manager', 'Industrial Engineer'],
-  BSEE: ['Electrical Engineer', 'Power Plant Engineer', 'Construction Project Manager', 'Industrial Engineer'],
-  BSECE: ['Electronics Engineer', 'Network Engineer', 'Computer Engineer'],
-  BSIE: ['Industrial Engineer', 'Operations Manager', 'Supply Chain Analyst', 'Quality Assurance Engineer'],
-  BSCHE: ['Chemical Engineer', 'Chemist', 'Environmental Scientist', 'Industrial Engineer'],
-  BSMARE: ['Marine Engineer', 'Power Plant Engineer', 'Port Operations Supervisor', 'Mechanical Engineer'],
-  BSMARTRANS: ['Deck Officer', 'Marine Surveyor', 'Port Operations Supervisor', 'Ship Captain'],
+  BSCE: ['Civil Engineer', 'Geotechnical Engineer', 'Construction Project Manager', 'Quantity Surveyor', 'BIM Specialist', 'Occupational Health and Safety Officer'],
+  BSME: ['Mechanical Engineer', 'HVAC Design Engineer', 'Power Plant Engineer', 'Construction Project Manager', 'Maintenance Engineer', 'Occupational Health and Safety Officer'],
+  BSEE: ['Electrical Engineer', 'Power Plant Engineer', 'Construction Project Manager', 'Maintenance Engineer', 'Renewable Energy Specialist'],
+  BSABE: ['Agricultural and Biosystems Engineer', 'Agriculturist', 'Environmental Scientist', 'Food Technologist', 'Farm Operations Manager'],
   BSARCH: ['Architect', 'BIM Specialist', 'Urban and Regional Planner', 'Construction Project Manager', 'Interior Designer', 'Quantity Surveyor'],
-  BSID: ['Interior Designer', 'CAD Design Technician', 'Graphic Designer', 'Architect'],
+  BSINDDES: ['Industrial Designer', 'CAD Design Technician', 'Graphic Designer', 'Multimedia Artist', 'UI/UX Designer'],
 
-  BSAERO: ['Aeronautical Engineer', 'Aircraft Maintenance Technician', 'Mechanical Engineer'],
-  BSAMT: ['Aircraft Maintenance Technician', 'Avionics Technician'],
-  BSAVTECH: ['Avionics Technician', 'Aircraft Maintenance Technician', 'Electronics Engineer'],
-  BSAIRT: ['Commercial Pilot', 'Aircraft Maintenance Technician'],
+  BSMARE: ['Marine Engineer', 'Power Plant Engineer', 'Port Operations Supervisor', 'Mechanical Engineer', 'Maintenance Engineer'],
+  BSMARTRANS: ['Deck Officer', 'Marine Surveyor', 'Port Operations Supervisor', 'Ship Captain'],
 
-  BSN: ['Registered Nurse', 'Public Health Nurse', 'Clinical Researcher', 'Nurse Administrator', 'Public Health Officer'],
-  BSMLS: ['Medical Technologist', 'Blood Bank Specialist', 'Molecular Diagnostics Specialist', 'Clinical Researcher', 'Laboratory Research Associate'],
-  BSPHARM: ['Pharmacist', 'Clinical Researcher', 'Laboratory Research Associate'],
-  BSPT: ['Physical Therapist', 'Public Health Officer'],
-  BSOT: ['Occupational Therapist', 'Physical Therapist', 'Public Health Officer'],
-  BSND: ['Nutritionist-Dietitian', 'Public Health Officer'],
-  BSRT: ['Radiologic Technologist', 'Public Health Officer'],
-  BSRESPT: ['Respiratory Therapist', 'Public Health Officer'],
+  // The technologist tracks map to technician and supervisory roles, never to the licensed
+  // engineering titles above. That boundary is the whole reason they are separate canonical
+  // programmes, and a mapping that crossed it would quietly promise a PRC licence the curriculum
+  // does not lead to.
+  BSINDTECH: ['Industrial Technologist', 'CAD Design Technician', 'Quality Assurance Engineer', 'Operations Manager', 'Occupational Health and Safety Officer', 'Instrumentation Technician'],
+  BSELECTECH: ['Electrical Technician', 'Industrial Technologist', 'CAD Design Technician', 'Instrumentation Technician', 'Occupational Health and Safety Officer'],
+  BSELXTECH: ['Electronics Technician', 'Industrial Technologist', 'IT Support Specialist', 'Instrumentation Technician', 'Embedded Systems Engineer'],
+
+  BSN: ['Registered Nurse', 'Public Health Nurse', 'Clinical Researcher', 'Nurse Administrator', 'Public Health Officer', 'Occupational Health and Safety Officer', 'Medical Sales Representative'],
+  BSPHARM: ['Pharmacist', 'Clinical Researcher', 'Laboratory Research Associate', 'Regulatory Affairs Specialist', 'Medical Sales Representative'],
+  BSPT: ['Physical Therapist', 'Public Health Officer', 'Sports Rehabilitation Specialist'],
+  BSMID: ['Midwife', 'Public Health Officer', 'Public Health Nurse'],
 
   BSA: ['Certified Public Accountant', 'Tax Advisory Specialist', 'Financial Analyst', 'Internal Auditor', 'Chief Financial Officer'],
-  BSMA: ['Management Accountant', 'Financial Analyst', 'Internal Auditor', 'Chief Financial Officer'],
-  BSAIS: ['Business Systems Analyst', 'Management Accountant', 'Internal Auditor', 'Data Analyst'],
-  BSBA: ['Marketing Specialist', 'Operations Manager', 'Business Development Specialist', 'Human Resources Specialist', 'Bank Operations Officer', 'Financial Analyst'],
-  BSBM: ['Operations Manager', 'Business Development Specialist', 'Supply Chain Analyst', 'Human Resources Specialist', 'Financial Analyst'],
+  BSAIS: ['Business Systems Analyst', 'Internal Auditor', 'Data Analyst', 'Financial Analyst'],
+  BSBA: ['Marketing Specialist', 'Operations Manager', 'Business Development Specialist', 'Human Resources Specialist', 'Bank Operations Officer', 'Financial Analyst', 'Events Manager', 'Executive Assistant'],
   BSENTREP: ['Entrepreneur', 'Business Development Specialist', 'Marketing Specialist', 'Operations Manager'],
-  BSHM: ['Hotel Operations Manager', 'Operations Manager', 'Entrepreneur'],
-  BSTM: ['Tourism Officer', 'Hotel Operations Manager', 'Marketing Specialist'],
+  BSOA: ['Office Administrator', 'Human Resources Specialist', 'Operations Manager', 'Executive Assistant'],
+  BSHM: ['Hotel Operations Manager', 'Operations Manager', 'Entrepreneur', 'Events Manager', 'Food and Beverage Supervisor', 'Tour Operations Manager'],
+  BSTM: ['Tourism Officer', 'Hotel Operations Manager', 'Marketing Specialist', 'Tour Operations Manager', 'Events Manager'],
 
-  BEED: ['Elementary School Teacher', 'Special Needs Education Teacher', 'Curriculum Developer', 'Guidance Counselor'],
-  BSED: ['Secondary School Teacher', 'Curriculum Developer', 'Guidance Counselor'],
-  BTVTED: ['Technical-Vocational Teacher', 'CAD Design Technician', 'Secondary School Teacher'],
-  BSNED: ['Special Needs Education Teacher', 'Elementary School Teacher', 'Social Worker'],
+  BEED: ['Elementary School Teacher', 'Curriculum Developer', 'Guidance Counselor', 'School Administrator'],
+  BSED: ['Secondary School Teacher', 'Curriculum Developer', 'Guidance Counselor', 'School Administrator'],
+  BPED: ['Physical Education Teacher', 'Secondary School Teacher', 'Elementary School Teacher', 'Athletic Coach', 'Sports Rehabilitation Specialist', 'School Administrator'],
 
   BSPSY: ['Psychometrician', 'Human Resources Specialist', 'Clinical Psychologist', 'Guidance Counselor', 'Clinical Researcher'],
-  BSSW: ['Social Worker', 'Public Health Officer', 'Public Administration Officer'],
-  BSCRIM: ['Registered Criminologist', 'Police Officer', 'Crime Scene Investigator', 'Correctional Officer', 'Public Administration Officer'],
-  ABCOM: ['Communications Officer', 'Journalist', 'Marketing Specialist', 'Multimedia Artist'],
-  ABPOLSCI: ['Public Administration Officer', 'Communications Officer', 'Journalist'],
-  BFA: ['Multimedia Artist', 'Graphic Designer', 'UI/UX Designer'],
+  BSCRIM: ['Registered Criminologist', 'Police Officer', 'Crime Scene Investigator', 'Correctional Officer', 'Public Administration Officer', 'Security Operations Manager', 'Fire Officer', 'Legal Researcher'],
+  ABPOLSCI: ['Public Administration Officer', 'Communications Officer', 'Journalist', 'Lawyer', 'Policy Research Analyst', 'Legal Researcher'],
+  ABENG: ['Communications Officer', 'Journalist', 'Secondary School Teacher', 'Curriculum Developer', 'Content Writer and Editor'],
+  BPA: ['Public Administration Officer', 'Operations Manager', 'Human Resources Specialist', 'Policy Research Analyst', 'Security Operations Manager'],
+  JD: ['Lawyer', 'Public Administration Officer', 'Internal Auditor', 'Policy Research Analyst', 'Legal Researcher'],
 
-  BSBIO: ['Laboratory Research Associate', 'Marine Biologist', 'Environmental Scientist', 'Clinical Researcher'],
   BSMARBIO: ['Marine Biologist', 'Aquatic Resource Specialist', 'Environmental Scientist', 'Fisheries Technologist', 'Laboratory Research Associate'],
-  BSENVSCI: ['Environmental Scientist', 'Public Health Officer', 'Laboratory Research Associate'],
-  BSCHEM: ['Chemist', 'Laboratory Research Associate', 'Medical Technologist', 'Environmental Scientist'],
-  BSMATH: ['Statistician', 'Actuary', 'Data Analyst', 'Secondary School Teacher'],
-  BSFISH: ['Fisheries Technologist', 'Aquatic Resource Specialist', 'Marine Biologist', 'Agriculturist'],
-  BSAGRI: ['Agriculturist', 'Environmental Scientist', 'Entrepreneur'],
+  BSENVSCI: ['Environmental Scientist', 'Public Health Officer', 'Laboratory Research Associate', 'Pollution Control Officer', 'Renewable Energy Specialist'],
+  BSFISH: ['Fisheries Technologist', 'Aquatic Resource Specialist', 'Marine Biologist', 'Agriculturist', 'Farm Operations Manager', 'Agricultural Extension Worker'],
+  BSAGRI: ['Agriculturist', 'Environmental Scientist', 'Entrepreneur', 'Farm Operations Manager', 'Agricultural Extension Worker', 'Pollution Control Officer'],
+  BSFOR: ['Forester', 'Environmental Scientist', 'Agriculturist', 'Pollution Control Officer', 'Agricultural Extension Worker'],
+  BSFT: ['Food Technologist', 'Laboratory Research Associate', 'Quality Assurance Engineer', 'Entrepreneur', 'Regulatory Affairs Specialist', 'Food and Beverage Supervisor'],
 };
 
 // --- emitter ---------------------------------------------------------------------------------------
@@ -1768,7 +1988,7 @@ function writeInsert(table, columns, rows) {
   flush();
 }
 
-w(`-- Seed 0005 — the Region VII (Central Visayas) academic catalog. **Generated file.**`);
+w(`-- Seed 0005 — the Bohol academic catalog. **Generated file.**`);
 w(`--`);
 w(`-- Edit \`scripts/build-region7-seed.mjs\` and re-run \`node scripts/build-region7-seed.mjs\`.`);
 w(`-- Editing this file by hand works exactly once, until the next regeneration overwrites it, and`);
@@ -1776,15 +1996,29 @@ w(`-- \`npm run seed:region7:check\` fails the build in the meantime.`);
 w(`--`);
 w(`-- ## What this file does`);
 w(`--`);
-w(`-- It is a **reset**, not an addition. Seed 0004 seeded a nationwide catalog — 20 institutions`);
-w(`-- from Diliman to Iligan — and this replaces it wholesale with the Region VII catalog described`);
-w(`-- in \`Region VII Education Career Database.pdf\` (2026-09-05, sourced from CHED RO VII`);
-w(`-- directories, institutional programme pages and PRC board registers).`);
+w(`-- It is a **reset**, not an addition. It replaces whatever catalog is in the database with the`);
+w(`-- ${COLLEGES.length} Bohol campuses enumerated in \`colleges.md\`, the source document at the repository root.`);
 w(`--`);
-w(`-- The boundary is the point. RA 12000 re-established the Negros Island Region, so Region VII is`);
-w(`-- **Bohol and Cebu only** — Negros Oriental and Siquijor moved to NIR, and Silliman University,`);
-w(`-- which seed 0004 lists, is a Dumaguete institution that no longer belongs in this region's`);
-w(`-- catalog at all. A student in Cebu asking "where can I study this?" was being shown Manila.`);
+w(`-- ## The boundary is Bohol, and that is narrower than it used to be`);
+w(`--`);
+w(`-- Earlier revisions of this seed covered Region VII as RA 12000 leaves it — Bohol **and Cebu**,`);
+w(`-- 16 institutions, Negros Oriental and Siquijor having moved to the Negros Island Region. The`);
+w(`-- twelve Cebu institutions (USC, CTU, UP Cebu, USJ-R, Cebu Doctors', PhilSCA, UC, CIT-U, CNU,`);
+w(`-- Velez, Benedicto, Lapu-Lapu City College) are **gone from this catalog**, deliberately and on`);
+w(`-- instruction: \`colleges.md\` is a Bohol document and the catalog was scoped to match it.`);
+w(`--`);
+w(`-- That is a real narrowing and it is worth stating plainly, because it is invisible from inside`);
+w(`-- the app: a student in Cebu City now gets a recommendations list on which every institution is`);
+w(`-- across a ferry. Restoring the Cebu half means restoring those institutions to \`COLLEGES\`,`);
+w(`-- \`OFFERINGS\` and \`MAPPINGS\` in the generator — the git history of this file has them.`);
+w(`--`);
+w(`-- ## Campuses are rows`);
+w(`--`);
+w(`-- The other structural change. BISU was one row whose description named six campuses, and BIT`);
+w(`-- one row naming four. They are now ${COLLEGES.length} rows across ${new Set(COLLEGES.map((c) => c.town)).size} towns, each with its own programme list and`);
+w(`-- its own map link, because "which colleges offer BS Fisheries?" should answer "BISU Candijay`);
+w(`-- and BISU Calape", not "BISU" — and a student who cannot relocate needs the campus, not the`);
+w(`-- institution.`);
 w(`--`);
 w(`-- ## What it deletes, and what that costs`);
 w(`--`);
@@ -1856,12 +2090,15 @@ w(`-- is what seed 0004 did) because this catalog's defining property is a geogr
 w(`-- college row that cannot say which province it is in cannot be checked against the boundary`);
 w(`-- it was selected for.`);
 w(`--`);
-w(`-- \`code\` is the PSGC 9-digit code. Nullable and advisory in the schema.`);
+w(`-- \`code\` is the PSGC 9-digit code. Nullable and advisory in the schema, and NULL for every town`);
+w(`-- below: migration 0011 already seeded all 47 Bohol municipalities by name with no codes, and`);
+w(`-- \`colleges.md\` supplies none. A null says "not recorded", which is true; a plausible-looking`);
+w(`-- nine digits would say something stronger and unverified in the column meant to be canonical.`);
 w(`--`);
 w(`-- \`INSERT OR IGNORE\` here is doing something subtle: \`regions\`, \`provinces\` and \`towns\` carry`);
-w(`-- **partial unique indexes on name** (live rows only), so if an admin has already created`);
-w(`-- "Cebu City" through the address screens, these inserts are skipped and the ids below never`);
-w(`-- reach the table. The college inserts that follow therefore resolve their location by`);
+w(`-- **partial unique indexes on name** (live rows only), so because migration 0011 has already`);
+w(`-- created "Tagbilaran City" and every other town below, these inserts are skipped and the ids`);
+w(`-- derived here never reach the table. The college inserts that follow therefore resolve by`);
 w(`-- *subquery on name*, not by the derived id — which finds whichever row actually exists and`);
 w(`-- cannot leave a college pointing at an id that was never inserted.`);
 w();
@@ -1890,20 +2127,21 @@ writeInsert(
 
 w(`-- --- Institutions (${COLLEGES.length}) ${'-'.repeat(Math.max(1, 62 - String(COLLEGES.length).length))}`);
 w(`--`);
-w(`-- The PDF's fully-verified set. CHED RO VII counts 139 HEIs across Cebu (111) and Bohol (28);`);
-w(`-- these ${COLLEGES.length} are the ones cross-validated against CHED directories, institutional`);
-w(`-- prospectuses and PRC registers. The other ${139 - COLLEGES.length} are absent rather than guessed at.`);
+w(`-- Every campus listed in \`colleges.md\`, one row each. Bohol has 28 HEIs by CHED RO VII's count;`);
+w(`-- these ${COLLEGES.length} campuses are the ones the source document enumerates, and the rest are absent`);
+w(`-- rather than guessed at.`);
 w(`--`);
-w(`-- The list spans all three sectors the region actually has, which matters because the tier an`);
-w(`-- institution sits in changes who can realistically attend it: state universities (CTU, UP`);
-w(`-- Cebu, CNU, BISU, PhilSCA), private universities and colleges (USC, USJ-R, UC, CIT-U, CDU,`);
-w(`-- Velez, Benedicto, HNU, UB, BIT), and the LUC tier funded by a city ordinance`);
-w(`-- (Lapu-Lapu City College).`);
+w(`-- The list spans all three sectors the province has, which matters because the tier an`);
+w(`-- institution sits in changes who can realistically attend it: the state university (BISU, six`);
+w(`-- campuses), the private universities and colleges (UB, HNU, BIT ×4, Mater Dei, Bohol Northern`);
+w(`-- Star, PMI, Cristal ×2), and the LUC tier funded by a municipal or city ordinance (Buenavista,`);
+w(`-- Trinidad, Batuan, Talibon Polytechnic, Tagbilaran City College).`);
 w(`--`);
-w(`-- \`map_link\` is a Google Maps *search* URL built from the institution's name and city — an`);
-w(`-- honest "find this place" link. It is deliberately not a \`/maps/place/…\` pin, because a pin`);
-w(`-- encodes a surveyed coordinate this seed does not have and inventing one would be fabricating`);
-w(`-- a fact rather than seeding one.`);
+w(`-- \`map_link\` is the institution's own Google Maps share link, copied from \`colleges.md\`. Where`);
+w(`-- the source document has no link (BIT Carmen), it falls back to a Maps *search* URL built from`);
+w(`-- the campus name and town — an honest "find this place". What is never emitted is a`);
+w(`-- \`/maps/place/…\` pin this seed invented, because a pin encodes a surveyed coordinate and`);
+w(`-- fabricating one would be seeding a claim rather than a fact.`);
 w();
 writeInsert(
   'colleges',
@@ -1911,7 +2149,7 @@ writeInsert(
   COLLEGES.map((c) => {
     const town = townByName.get(c.town);
     const mapQuery = encodeURIComponent(`${c.name} ${c.town}`).replace(/%20/g, '+');
-    const mapLink = `https://www.google.com/maps/search/?api=1&query=${mapQuery}`;
+    const mapLink = c.map ?? `https://www.google.com/maps/search/?api=1&query=${mapQuery}`;
     return (
       `(${q(collegeIds.get(c.key))}, ${q(c.name)}, ${q(c.description)}, 'active', ` +
       `${regionLookup()}, ${provinceLookup(town.province)}, ${townLookup(c.town, town.province)}, ` +

@@ -79,6 +79,14 @@ export interface ChatMessage {
   sources: string[];
   /** `DOWN` once a student has marked this answer wrong (Phase 4). Null otherwise. */
   feedback: 'DOWN' | null;
+  /**
+   * Whether this answer can be nominated for the knowledge base (migration 0030).
+   *
+   * `OFFERED` is a no-coverage refusal — the assistant saying it has nothing on file — and is what
+   * puts *"Request to add to knowledge"* under it. `REQUESTED` is the student having pressed that.
+   * Null is every other message, and offers nothing.
+   */
+  knowledge_request: 'OFFERED' | 'REQUESTED' | null;
   created_at: string | null;
 }
 

@@ -246,3 +246,16 @@ export type ChatRole = (typeof CHAT_ROLES)[number];
  */
 export const CHAT_ANSWER_KINDS = ['CURATED', 'KNOWLEDGE', 'WEB', 'GENERAL', 'CANNED'] as const;
 export type ChatAnswerKind = (typeof CHAT_ANSWER_KINDS)[number];
+
+/**
+ * The "Request to add to knowledge" lifecycle on a chat answer (migration 0030).
+ *
+ * `OFFERED` is written when the assistant refuses for want of coverage — the state that puts the
+ * button on screen. `REQUESTED` is the student having pressed it, and is what ranks the admin's
+ * backlog: a question two students asked to have answered outranks one the pipeline merely failed.
+ *
+ * NULL is every other message, and is not a claim about them — a refusal written before this
+ * column existed simply does not offer the button.
+ */
+export const KNOWLEDGE_REQUEST_STATES = ['OFFERED', 'REQUESTED'] as const;
+export type KnowledgeRequestState = (typeof KNOWLEDGE_REQUEST_STATES)[number];

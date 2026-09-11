@@ -12,7 +12,9 @@
 >    5 colleges, 10 careers and 16 programs, and §27 keeps a top **ten** — so seeding production
 >    with it gives every student the entire career catalog, reordered. See audit finding C1.
 >    *(Superseded 2026-09-05: the fix was seed 0004, and the live catalog is now
->    `seeds/0005_region7_catalog_reset.sql` — Region VII only. See §3a.)*
+>    `seeds/0005_region7_catalog_reset.sql`. Superseded again 2026-09-09: that catalog is now
+>    **Bohol only**, generated from `colleges.md`, and seeds 0002 and 0004 have been **deleted** —
+>    either one would have put Manila and Cebu institutions back alongside it. See §3a.)*
 > 3. **Installing RIASEC and SCCT was not listed at all.** A freshly migrated database has **no
 >    assessments**. The instruments arrive only via
 >    `POST /api/v1/admin/assessment-templates/seed-instruments`, which now has an
@@ -65,12 +67,19 @@ After migrating: staff accounts, academic catalog, AI policy.
 Staff **must** go through the bootstrap script (it derives PBKDF2 hashes at run time — never the
 committed `seeds/0001_staff_accounts.sql`, which publishes the password it encodes).
 
-The catalog seed is **0005**. `0002` is the 10-career demo fixture; because §27 keeps a top ten,
-seeding production with it hands every student the whole catalog in a different order and the
-recommendation engine appears to do nothing (audit C1). `0004` was the nationwide catalog that
-fixed C1 and has now been superseded by **`seeds/0005_region7_catalog_reset.sql`** — Region VII
-(Bohol and Cebu) only, 9 institutions, 49 canonical programmes, 140 offerings, 71 careers, 478
-mappings. Both 0002 and 0004 are local-only now and have no `:production` runner at all.
+The catalog seed is **0005**, and as of 2026-09-09 it is the **only** catalog seed —
+**`seeds/0005_region7_catalog_reset.sql`**, the 22 Bohol campuses of `colleges.md`: 41 canonical
+programmes, 126 offerings, 86 careers, 549 mappings. It is generated; edit
+`backend/scripts/build-region7-seed.mjs` and re-run `npm run seed:region7`, never the `.sql`.
+
+`0002` (the 10-career Manila demo fixture behind audit C1) and `0004` (the nationwide catalog that
+fixed C1, 20 institutions from Diliman to Iligan) were **deleted**, not demoted. Being local-only
+was enough while the catalog was national; it stopped being enough once the catalog became one
+province. Neither file collides with 0005 by name, so `INSERT OR IGNORE` collides on nothing and
+running either one *after* 0005 adds a second catalog rather than replacing the first — a student
+in Tagbilaran gets offered a programme in Manila. `test/platform/seed-chain.test.ts` fails if
+either file reappears or if any seed runner points somewhere other than 0005. Git history has them
+if the catalog is ever widened again.
 
 0005 is idempotent, so re-running it is safe. It is also a **reset**: it deletes every college,
 programme, career and mapping before inserting, which cascades to every student's stored
@@ -79,7 +88,7 @@ recommendations. On a first cutover there are none. On a re-seed of a live datab
 
 ```bash
 node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
-npm run db:seed:catalog:region7:production  # seeds/0005 — 16 HEIs, 51 programmes, 96 careers
+npm run db:seed:catalog:region7:production  # seeds/0005 — 22 Bohol campuses, 41 programmes, 86 careers
 npm run db:seed:ai-policy:production        # seeds/0003
 ```
 
@@ -188,7 +197,7 @@ single-Worker consolidation removed the separate frontend artifact entirely.
 3. npx wrangler d1 migrations list CareerLinkAI_Main --remote --env production   # expect none pending
 4. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
                                                    # prints the temp password ONCE — capture it
-5. npm run db:seed:catalog:region7:production      # seeds/0005 (NOT 0002 or 0004 — see blocker 3)
+5. npm run db:seed:catalog:region7:production      # seeds/0005 — the only catalog seed there is
 6. npm run db:seed:ai-policy:production
 7. npm run deploy:production                       # publishes SPA + API in one versioned deploy
 8. curl https://careerlinkai.online/api/v1/health  # expect {"environment":"production"}

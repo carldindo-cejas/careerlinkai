@@ -162,10 +162,11 @@ export function useAskChat() {
             role: 'user',
             content: message,
             ai_request_id: null,
-            // The optimistic echo of what the student just typed — a question, so nothing to cite
-            // and nothing to flag.
+            // The optimistic echo of what the student just typed — a question, so nothing to cite,
+            // nothing to flag and nothing to ask the school to answer.
             sources: [],
             feedback: null,
+            knowledge_request: null,
             created_at: new Date().toISOString(),
           },
         ],
@@ -216,6 +217,34 @@ export function useFlagAnswer() {
               ...current,
               messages: current.messages.map((message) =>
                 message.id === messageId ? { ...message, feedback: 'DOWN' as const } : message,
+              ),
+            },
+      );
+    },
+  });
+}
+
+/**
+ * Ask the school to answer a question nothing covered (migration 0030).
+ *
+ * Optimistic, for the same reason the flag is: a student who presses a button and sees nothing
+ * change assumes it did nothing. The server is idempotent, so a double press is the same state.
+ */
+export function useRequestKnowledge() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (messageId: string) => chatApi.requestKnowledge(messageId),
+    onSuccess: (_result, messageId) => {
+      queryClient.setQueryData<ChatTranscript>(chatKeys.transcript, (current) =>
+        current === undefined
+          ? current
+          : {
+              ...current,
+              messages: current.messages.map((message) =>
+                message.id === messageId
+                  ? { ...message, knowledge_request: 'REQUESTED' as const }
+                  : message,
               ),
             },
       );

@@ -307,6 +307,7 @@ adminAiRoutes.get('/ai-insights', async (c) => {
         unanswered_questions: unanswered.map((row) => ({
           question: row.question,
           asks: row.asks,
+          requests: row.requests,
           last_asked_at: row.lastAskedAt,
         })),
         coverage: {

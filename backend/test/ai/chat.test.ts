@@ -439,4 +439,30 @@ describe('the chat endpoints', () => {
 
     expect(response.status).toBe(401);
   });
+
+  /**
+   * "Request to add to knowledge" (migration 0030) on a message that is not a refusal — or not
+   * this student's — is a 404, the same answer this module gives to "not yours" and "not real"
+   * everywhere else. An id alone is not authority, and the mark the service wrote is the only
+   * thing that makes the transition legal.
+   */
+  it('404s a knowledge request against a message that is not an offered refusal', async () => {
+    await clearConversation();
+
+    const asked = await api('POST', '/student/chat', {
+      token: studentToken,
+      body: { message: 'Why is this my top match?' },
+    });
+
+    // With the AI bindings absent this is the deterministic fallback, not a coverage gap — so
+    // there is nothing here for an admin to write, and nothing to file.
+    const response = await api(
+      'POST',
+      `/student/chat/messages/${asked.body.data.answer.id}/knowledge-request`,
+      { token: studentToken },
+    );
+
+    expect(asked.body.data.answer.knowledge_request).toBeNull();
+    expect(response.status).toBe(404);
+  });
 });

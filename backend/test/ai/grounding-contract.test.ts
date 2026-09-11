@@ -259,6 +259,50 @@ describe('Gate 4 — refusing rather than inventing', () => {
     // NULL rather than []: a refusal has nothing to name, and the absence of a source line is
     // itself the signal that this is not a sourced fact.
     expect(turn.answer.sources).toBeNull();
+    // Migration 0030: the refusal is marked as one, so the panel can offer "Request to add to
+    // knowledge" on a transcript reloaded next week rather than matching the reply text.
+    expect(turn.answer.knowledgeRequest).toBe('OFFERED');
+  });
+
+  /**
+   * The refusal's second half (migration 0030).
+   *
+   * The question was always logged — that is the SKIPPED `ai_requests` row above — and the student
+   * had no way to know it. Pressing the button puts their own voice on the backlog, which is what
+   * ranks it above the questions the retrieval merely missed.
+   */
+  it('lets the student ask for a refused question to be answered', async () => {
+    await clearConversation();
+
+    const { service } = pipeline({ responses: ['Tuition is about PHP 40,000 per semester.'], matches: [] });
+    const turn = await service.ask(studentId, 'how much is the dormitory fee?', await currentSet());
+
+    expect(await service.requestKnowledge(studentId, turn.answer.id)).toBe(true);
+
+    const [answer] = (await service.messagesFor(studentId, turn.conversation.id)).filter(
+      (message) => message.role === 'assistant',
+    );
+
+    expect(answer!.knowledgeRequest).toBe('REQUESTED');
+
+    // Idempotent, like the wrong-answer flag: pressing twice is the same state, not an error.
+    expect(await service.requestKnowledge(studentId, turn.answer.id)).toBe(true);
+  });
+
+  /**
+   * The state the transition starts from *is* the authorisation. A generated answer, a Gate 1
+   * answer and an off-domain redirect all carry NULL, so none of them can be nominated — there is
+   * nothing for an admin to write in any of those cases, and a backlog padded with them is a
+   * backlog nobody works.
+   */
+  it('refuses to file an answer that was not a coverage gap', async () => {
+    await clearConversation();
+
+    const { service } = pipeline({ responses: ['Your strongest match is the first one on your list.'] });
+    const turn = await service.ask(studentId, 'which of my matches scored highest?', await currentSet());
+
+    expect(turn.answer.knowledgeRequest).toBeNull();
+    expect(await service.requestKnowledge(studentId, turn.answer.id)).toBe(false);
   });
 
   it('still answers a question the student’s own results cover', async () => {

@@ -9,6 +9,7 @@ import {
   useChatTranscript,
   useClearChat,
   useFlagAnswer,
+  useRequestKnowledge,
 } from '@/features/student/hooks/useRecommendations';
 import { toast } from '@/stores/toastStore';
 import type { ChatMessage } from '@/types/recommendation';
@@ -23,10 +24,16 @@ import type { ChatMessage } from '@/types/recommendation';
  * does not get to contradict it. So the framing here is deliberate and repeated in the copy: the
  * assistant *explains* results it did not produce.
  *
- * A message with no `ai_request_id` is the deterministic fallback — the server built it from the
- * student's own computed results because the model was unavailable, out of quota, or said something
- * that failed the §34 guardrails. It is labelled, because presenting computed text as a generation
- * (or a generation as computed) is exactly the confusion §29 exists to prevent.
+ * ## What is under each answer
+ *
+ * Nothing, unless the student can do something about it. The panel used to print a provenance
+ * notice under every turn — *"not written by the AI"*, *"Based on: …"* — which was true and, four
+ * exchanges into a conversation about somebody's future, was most of the screen. Provenance is
+ * still recorded on every message and is what the admin review screens read; it is simply not
+ * furniture in a student's conversation any more. `MessageBubble` is where that decision lives.
+ *
+ * The two controls that remain are both actions: **This answer looks wrong** on a generated
+ * answer, and **Request to add to knowledge** on a refusal for want of coverage.
  *
  * ## Layout
  *
@@ -306,42 +313,36 @@ function EmptyState({
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const flag = useFlagAnswer();
+  const requestKnowledge = useRequestKnowledge();
   const isStudent = message.role === 'user';
+
   /**
-   * The "not generated" tell. An assistant message with no `ai_request_id` did not come from the
-   * model, and saying so is not a disclaimer for its own sake: the whole trust model of this
-   * product rests on a student being able to tell a computed fact from a generated sentence.
+   * ## What sits under an answer, and what no longer does
    *
-   * **But `ai_request_id === null` is three different things, and this used to call all of them a
-   * failure.** `ChatService.answer` returns a null request id for an out-of-scope redirect, for
-   * the no-coverage refusal, for a rejected generation *and* for a Gate 1 answer — an admin's own
-   * words, returned verbatim with the entry they came from named in `sources`. Gate 1 is the best
-   * answer this system can give and the flywheel the AI-gaps screen exists to turn: an admin
-   * answers a question students keep asking, and the next student to ask gets that answer with no
-   * model in the loop. Labelling it *"From your computed results — the assistant was unavailable"*
-   * told the student the opposite of all three true things about it — it was not computed, it came
-   * from the school's own material, and nothing was unavailable — directly above a "Based on:"
-   * line naming the source it had just denied having.
+   * Two notices used to: *"A standard reply from CareerLinkAI — not written by the AI"* on any
+   * un-generated reply, and *"Based on: …"* naming the entries a sourced answer cited. Both were
+   * true, and both were provenance metadata printed under every single turn of a conversation a
+   * student is having about their own future. Four exchanges in, the panel was more footnote than
+   * answer. The provenance has not gone anywhere — `ai_request_id`, `sources` and the chunk trail
+   * are all still on the row, and the admin screens that act on them read the row, not this panel.
    *
-   * So the sourced case is separated out and gets no notice at all: `sources` already says where
-   * it came from, and a sourced answer is not a fallback in any sense.
+   * What is left is the one line a student can *act* on, which is the only thing that earned a
+   * permanent place under an answer:
    *
-   * What is left really is a canned reply, but the wording no longer guesses *why*. The four
-   * remaining causes — off-domain, nothing retrieved, a citation the grounding contract rejected,
-   * and the model being down — are not distinguishable from the message row (no reason is stored
-   * on it), and the reply text already explains itself in each case. The one thing the notice can
-   * state truthfully for all four is the thing it is there for: this sentence was not written by
-   * the AI.
-   */
-  const isSourced = message.sources.length > 0;
-  const isCannedReply = !isStudent && message.ai_request_id === null && !isSourced;
-  /**
-   * Unchanged, and deliberately still keyed on the request id rather than on `isCannedReply`.
-   * The flag's value is the chunk trail on the answer's `ai_requests` row — an admin follows it to
-   * the passage that produced the answer — and a Gate 1 reply has no such row. Offering the button
-   * there would file review items into a queue built around a join that cannot find them.
+   *   - a generated answer gets **This answer looks wrong** — a report that leads an admin
+   *     straight to the passage that produced it;
+   *   - a no-coverage refusal gets **Request to add to knowledge**, which is new (migration 0030)
+   *     and is the missing half of that refusal. The assistant already says "ask your counselor,
+   *     and they can add it here for next time"; this is the student saying yes without having to
+   *     go and find one.
+   *
+   * Nothing else — a Gate 1 answer in an admin's own words, an off-domain redirect, the
+   * deterministic fallback — carries a control, because there is nothing for the student to do
+   * about any of them.
    */
   const isGenerated = !isStudent && message.ai_request_id !== null;
+  const canRequestKnowledge = !isStudent && message.knowledge_request === 'OFFERED';
+  const hasRequestedKnowledge = !isStudent && message.knowledge_request === 'REQUESTED';
 
   return (
     <li className={cn('flex gap-2.5', isStudent && 'flex-row-reverse')}>
@@ -368,32 +369,14 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           {message.content}
         </div>
 
-        {isCannedReply ? (
-          <p className="text-xs text-muted-foreground">
-            A standard reply from CareerLinkAI — not written by the AI.
-          </p>
-        ) : null}
-
         {/*
-          Where the answer came from. A student who can see the source can judge the answer, and a
-          counselor fielding a question can check it against the same document in seconds — which
-          is the point: this is the last line of the grounding contract, and it is the one a person
-          performs rather than the code.
-        */}
-        {message.sources.length > 0 ? (
-          <p className="text-xs text-muted-foreground">
-            Based on: {message.sources.join(', ')}
-          </p>
-        ) : null}
+          Reporting a wrong answer (Phase 4). Offered only on generated answers: the flag's value is
+          the chunk trail on the answer's `ai_requests` row — an admin follows it to the passage
+          that produced it — and a reply with no such row would file a review item into a queue
+          built around a join that cannot find it.
 
-        {/*
-          Reporting a wrong answer (Phase 4). Offered only on generated answers: a deterministic
-          reply is computed arithmetic, and inviting a student to flag it would collect a signal
-          about the one kind of answer that cannot be wrong in the way this reports.
-
-          One direction only, and it does not undo. The flag goes to an admin review queue where
-          the chunk ids behind the answer lead straight to the passage that produced it, and an
-          item that can vanish before anyone looks at it is worse than a stale one.
+          One direction only, and it does not undo. An item that can vanish before anyone looks at
+          it is worse than a stale one.
         */}
         {isGenerated ? (
           message.feedback === 'DOWN' ? (
@@ -410,6 +393,27 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               This answer looks wrong
             </button>
           )
+        ) : null}
+
+        {/*
+          The refusal's second half (migration 0030). The question is already in the admin's
+          backlog — every one of these refusals logged it — so this is not what records it. It is
+          the student saying the gap matters to them, which is what lifts it above the questions
+          the retrieval merely missed.
+        */}
+        {hasRequestedKnowledge ? (
+          <p className="text-xs text-muted-foreground">
+            Requested — your school has been asked to answer this.
+          </p>
+        ) : canRequestKnowledge ? (
+          <button
+            type="button"
+            className="self-start text-xs text-muted-foreground underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
+            disabled={requestKnowledge.isPending}
+            onClick={() => requestKnowledge.mutate(message.id)}
+          >
+            Request to add to knowledge
+          </button>
         ) : null}
       </div>
     </li>

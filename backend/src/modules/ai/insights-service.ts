@@ -42,6 +42,14 @@ export interface UnansweredQuestion {
   question: string;
   /** How many times it was asked. The ordering, and the reason to answer this one first. */
   asks: number;
+  /**
+   * How many students pressed *"Request to add to knowledge"* on the refusal (migration 0030).
+   *
+   * Almost always 0, and that is the point: it is a student's own voice on top of the pipeline's
+   * count, and it sorts above it. A question one student asked to have answered is a better use of
+   * an admin's afternoon than one the retrieval merely missed five times.
+   */
+  requests: number;
   lastAskedAt: string;
 }
 
@@ -87,39 +95,126 @@ export class AiInsightsService {
   constructor(private readonly db: Database) {}
 
   /**
-   * Questions nothing answered, most-asked first.
+   * Questions nothing answered — the ones students **asked us to answer** first, then most-asked.
    *
    * Grouped on the **retrieval query** rather than on the raw message, because that is the text
    * the pipeline actually failed to match and because two students phrasing one question two ways
    * are one gap, not two. `json_extract` reaches into `input_context`, which is where every
    * pipeline in this module already records it.
+   *
+   * The second read is migration 0030's addition: the refusals a student pressed *"Request to add
+   * to knowledge"* on. Those are the same questions — every refusal logs one of the `ai_requests`
+   * rows above — so this is a **merge, not a second list**: it lifts the ones a person asked for
+   * to the top of the backlog the pipeline was already keeping. A requested question with no
+   * matching request row is still shown, because a missing join is not a reason to drop the one
+   * signal in this report that a human volunteered.
    */
   async unansweredQuestions(limit = 25): Promise<UnansweredQuestion[]> {
     const question = sql<string>`json_extract(${aiRequests.inputContext}, '$.retrieval_query')`;
 
+    const [rows, requested] = await Promise.all([
+      this.db
+        .select({
+          question,
+          asks: count(),
+          lastAskedAt: sql<string>`max(${aiRequests.createdAt})`,
+        })
+        .from(aiRequests)
+        .where(
+          and(
+            eq(aiRequests.status, 'FAILED'),
+            sql`(${aiRequests.failureReason} LIKE ${COVERAGE_FAILURE_PATTERNS[0]} OR ${aiRequests.failureReason} LIKE ${COVERAGE_FAILURE_PATTERNS[1]})`,
+            sql`${question} IS NOT NULL AND trim(${question}) <> ''`,
+          ),
+        )
+        .groupBy(question)
+        .orderBy(desc(count()), desc(sql`max(${aiRequests.createdAt})`))
+        // Over-read, because the merge below can promote a requested question from outside the
+        // top `limit` — a gap asked once and requested once outranks one asked twice and requested
+        // never, and slicing before the merge would hide exactly those.
+        .limit(limit * 2),
+      this.knowledgeRequests(limit),
+    ]);
+
+    const merged = new Map<string, UnansweredQuestion>();
+
+    for (const row of rows) {
+      merged.set(row.question, {
+        question: row.question,
+        asks: Number(row.asks),
+        requests: 0,
+        lastAskedAt: row.lastAskedAt,
+      });
+    }
+
+    for (const row of requested) {
+      const existing = merged.get(row.question);
+
+      if (existing === undefined) {
+        // No `ai_requests` row grouped to this text — an older refusal, or a question logged
+        // before the pipeline recorded a retrieval query. `asks` falls back to the requests, which
+        // is the only count there is evidence for.
+        merged.set(row.question, {
+          question: row.question,
+          asks: row.requests,
+          requests: row.requests,
+          lastAskedAt: row.lastAskedAt,
+        });
+        continue;
+      }
+
+      existing.requests = row.requests;
+    }
+
+    return [...merged.values()]
+      .sort(
+        (a, b) =>
+          b.requests - a.requests ||
+          b.asks - a.asks ||
+          b.lastAskedAt.localeCompare(a.lastAskedAt),
+      )
+      .slice(0, limit);
+  }
+
+  /**
+   * The refusals students pressed *"Request to add to knowledge"* on, grouped by the question that
+   * produced them (migration 0030).
+   *
+   * The question is the **preceding user message** in the same conversation, which is the same
+   * correlated subquery `flaggedAnswers` uses and is exact rather than approximate: a turn is
+   * question-then-answer, written in that order, in one conversation.
+   */
+  private async knowledgeRequests(
+    limit: number,
+  ): Promise<{ question: string; requests: number; lastAskedAt: string }[]> {
+    const asked = sql<string>`(
+      SELECT q.content FROM chat_messages q
+      WHERE q.conversation_id = ${chatMessages.conversationId}
+        AND q.role = 'user'
+        AND q.created_at <= ${chatMessages.createdAt}
+      ORDER BY q.created_at DESC, q.id DESC
+      LIMIT 1
+    )`;
+
     const rows = await this.db
       .select({
-        question,
-        asks: count(),
-        lastAskedAt: sql<string>`max(${aiRequests.createdAt})`,
+        question: asked,
+        requests: count(),
+        lastAskedAt: sql<string>`max(${chatMessages.createdAt})`,
       })
-      .from(aiRequests)
-      .where(
-        and(
-          eq(aiRequests.status, 'FAILED'),
-          sql`(${aiRequests.failureReason} LIKE ${COVERAGE_FAILURE_PATTERNS[0]} OR ${aiRequests.failureReason} LIKE ${COVERAGE_FAILURE_PATTERNS[1]})`,
-          sql`${question} IS NOT NULL AND trim(${question}) <> ''`,
-        ),
-      )
-      .groupBy(question)
-      .orderBy(desc(count()), desc(sql`max(${aiRequests.createdAt})`))
+      .from(chatMessages)
+      .where(eq(chatMessages.knowledgeRequest, 'REQUESTED'))
+      .groupBy(asked)
+      .orderBy(desc(count()))
       .limit(limit);
 
-    return rows.map((row) => ({
-      question: row.question,
-      asks: Number(row.asks),
-      lastAskedAt: row.lastAskedAt,
-    }));
+    return rows
+      .filter((row) => typeof row.question === 'string' && row.question.trim() !== '')
+      .map((row) => ({
+        question: row.question,
+        requests: Number(row.requests),
+        lastAskedAt: row.lastAskedAt,
+      }));
   }
 
   /**

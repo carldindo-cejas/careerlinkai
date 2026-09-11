@@ -165,7 +165,12 @@ adminRoutes.get('/colleges/:id', async (c) => {
     successEnvelope(
       serializeCollege(college, {
         location,
-        programs: rows.map((row) => serializeProgram(row.program, row.careers)),
+        // The canonical entry travels here (migration 0018): the program edit form opens with the
+        // canonical picker, and a picker that cannot see an existing link renders as "nothing
+        // selected" for an offering that is in fact matched.
+        programs: rows.map((row) =>
+          serializeProgram(row.program, row.careers, { canonical: row.canonical }),
+        ),
       }),
       'College retrieved successfully.',
     ),
@@ -205,7 +210,7 @@ adminRoutes.get('/colleges/:collegeId/programs', async (c) => {
 
   return c.json(
     successEnvelope(
-      rows.map((row) => serializeProgram(row.program, row.careers)),
+      rows.map((row) => serializeProgram(row.program, row.careers, { canonical: row.canonical })),
       'Programs retrieved successfully.',
     ),
   );

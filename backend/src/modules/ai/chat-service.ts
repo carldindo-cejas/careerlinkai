@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
 import {
@@ -9,6 +9,7 @@ import {
   type ChatConversation,
   type ChatMessage,
 } from '@/db/schema';
+import type { KnowledgeRequestState } from '@/db/enums';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import {
@@ -97,6 +98,15 @@ interface Answer {
   failure: string | null;
   /** Knowledge entries to name under the answer. Empty for anything not drawn from documents. */
   sources: string[];
+  /**
+   * True on the four paths that end in `NO_COVERAGE_REPLY` — nothing retrieved, a citation the
+   * grounding contract rejected, an unsupported claim, a failed verification.
+   *
+   * It is what puts *"Request to add to knowledge"* under the answer (migration 0030). Recorded on
+   * the row rather than re-derived by matching the reply text, so the button survives a reworded
+   * refusal and a transcript reloaded next week.
+   */
+  coverageGap: boolean;
 }
 
 export interface ChatTurn {
@@ -198,6 +208,53 @@ export class ChatService {
     return true;
   }
 
+  /**
+   * *"Request to add to knowledge"* — a student asking for a gap to be filled (migration 0030).
+   *
+   * Only ever on an answer the service itself marked `OFFERED`: a no-coverage refusal. That is the
+   * whole authorisation story beyond the ownership check — a student cannot nominate a generated
+   * answer, an off-domain redirect or somebody else's message, because none of those carry the
+   * state this transition starts from.
+   *
+   * The question itself is **already** in the admin's backlog: every one of these refusals wrote a
+   * SKIPPED `ai_requests` row carrying the exact text, and `/admin/ai-insights` has been reading
+   * that since Phase 4. What this adds is the student's own voice on top of the pipeline's — a
+   * question two students asked to have answered is a better use of an admin's afternoon than one
+   * the retrieval merely missed, and nothing recorded that difference before.
+   *
+   * Idempotent, and one direction only, exactly like `flagAnswer`: pressing twice is the same
+   * state, and a backlog item that can vanish before anyone has looked at it is worse than a
+   * stale one.
+   */
+  async requestKnowledge(studentId: string, messageId: string): Promise<boolean> {
+    const [message] = await this.db
+      .select({ id: chatMessages.id })
+      .from(chatMessages)
+      .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.role, 'assistant'),
+          eq(chatConversations.studentId, studentId),
+          // `OFFERED` or `REQUESTED` — the second is the idempotent re-press, which is a success
+          // rather than a 404. NULL is not a request anyone was invited to make.
+          isNotNull(chatMessages.knowledgeRequest),
+        ),
+      )
+      .limit(1);
+
+    if (message === undefined) {
+      return false;
+    }
+
+    await this.db
+      .update(chatMessages)
+      .set({ knowledgeRequest: 'REQUESTED' })
+      .where(eq(chatMessages.id, messageId));
+
+    return true;
+  }
+
   /** Wipe the transcript. The student's own data, and their own decision to clear it. */
   async clearFor(studentId: string): Promise<void> {
     // The `chat_messages` FK cascades, so deleting the conversation takes its messages with it.
@@ -227,6 +284,7 @@ export class ChatService {
       outcome.text,
       outcome.aiRequestId,
       outcome.sources,
+      outcome.coverageGap ? 'OFFERED' : null,
     );
 
     await this.db
@@ -263,6 +321,9 @@ export class ChatService {
         aiRequestId: null,
         failure: `OUT_OF_SCOPE_${offDomain}`,
         sources: [],
+        // Declined by design, not for want of material: there is nothing here for an admin to
+        // write, and offering to add homework help to the corpus would invite exactly that.
+        coverageGap: false,
       };
     }
 
@@ -278,7 +339,13 @@ export class ChatService {
     const canned = await this.cannedAnswerFor(question);
 
     if (canned !== null) {
-      return { text: canned.answer, aiRequestId: null, failure: null, sources: [canned.title] };
+      return {
+        text: canned.answer,
+        aiRequestId: null,
+        failure: null,
+        sources: [canned.title],
+        coverageGap: false,
+      };
     }
 
     return this.generated(studentId, question, history, recommendations);
@@ -405,6 +472,7 @@ export class ChatService {
         aiRequestId: null,
         failure: 'NO_GROUNDING',
         sources: [],
+        coverageGap: true,
       };
     }
 
@@ -429,6 +497,9 @@ export class ChatService {
         aiRequestId: null,
         failure: result.reason,
         sources: [],
+        // The model being down is an operational problem. No amount of admin writing fixes it,
+        // and filing it as a knowledge gap would bury the real ones on exactly the bad days.
+        coverageGap: false,
       };
     }
 
@@ -444,6 +515,7 @@ export class ChatService {
         aiRequestId: null,
         failure: 'FAILED_VALIDATION',
         sources: [],
+        coverageGap: false,
       };
     }
 
@@ -466,6 +538,7 @@ export class ChatService {
           aiRequestId: null,
           failure: citations.reason,
           sources: [],
+          coverageGap: true,
         };
       }
     }
@@ -494,6 +567,7 @@ export class ChatService {
         aiRequestId: null,
         failure: 'UNSUPPORTED_CLAIM',
         sources: [],
+        coverageGap: true,
       };
     }
 
@@ -519,6 +593,7 @@ export class ChatService {
           aiRequestId: null,
           failure: 'UNSUPPORTED_CLAIM',
           sources: [],
+          coverageGap: true,
         };
       }
     }
@@ -530,6 +605,7 @@ export class ChatService {
       // Only what the answer actually cited. Naming a passage the model never used would be a
       // worse lie than naming none: the student would check it and find nothing.
       sources: sourceTitlesFor(retrieved, citedIndexes(text)),
+      coverageGap: false,
     };
   }
 
@@ -715,6 +791,7 @@ export class ChatService {
     content: string,
     aiRequestId: string | null,
     sources: string[] = [],
+    knowledgeRequest: KnowledgeRequestState | null = null,
   ): Promise<ChatMessage> {
     const message: ChatMessage = {
       id: uuid(),
@@ -733,6 +810,12 @@ export class ChatService {
       */
       answerKind: null,
       feedback: null,
+      /*
+        `OFFERED` on a no-coverage refusal, NULL on everything else (migration 0030). Written here
+        rather than derived on read, so a transcript reloaded next term still knows which of its
+        refusals a student may ask to have answered.
+      */
+      knowledgeRequest,
       createdAt: now(),
     };
 
