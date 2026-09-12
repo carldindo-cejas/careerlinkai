@@ -173,6 +173,18 @@ export const AUTHORED_SOURCE_TYPES = ['text', 'qa'] as const;
 export const KNOWLEDGE_VISIBILITIES = ['GLOBAL', 'COUNSELOR_PRIVATE'] as const;
 export type KnowledgeVisibility = (typeof KNOWLEDGE_VISIBILITIES)[number];
 
+/**
+ * How a question left the unanswered backlog (migration 0031).
+ *
+ * `ANSWERED` carries a `document_id` and expires with it — archive or fail that entry and the
+ * question comes back, because it is genuinely unanswered again. `DISMISSED` carries no document
+ * and so cannot expire: it is the judgement "nobody will ever write an entry for this", which is
+ * the only honest disposition for the gibberish and test questions that otherwise accumulate in
+ * the backlog forever. Reversible either way — the row is deleted to reopen the question.
+ */
+export const QUESTION_RESOLUTIONS = ['ANSWERED', 'DISMISSED'] as const;
+export type QuestionResolution = (typeof QUESTION_RESOLUTIONS)[number];
+
 // --- Platform (§13.8) ------------------------------------------------------------------
 
 /**

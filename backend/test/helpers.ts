@@ -5,11 +5,13 @@ import { createDatabase } from '@/db/client';
 import type { UserRole, UserStatus } from '@/db/enums';
 import {
   apiTokens,
+  appSettings,
   auditLogs,
   classStudents,
   classes,
   colleges,
   counselorProfiles,
+  counselorSignupRequests,
   gradeLevels,
   passwordResetTokens,
   programCareers,
@@ -368,6 +370,42 @@ export async function backdateResetToken(email: string, minutesAgo: number): Pro
     .update(passwordResetTokens)
     .set({ createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString() })
     .where(eq(passwordResetTokens.email, email.toLowerCase()));
+}
+
+/**
+ * Open or close counselor self-signup (migration 0034).
+ *
+ * Written straight to the table rather than through `PATCH /admin/settings`, so a signup test is
+ * testing signup rather than also testing the admin route that happens to precede it — and so it
+ * does not need an admin fixture and a login (two PBKDF2 derivations) just to arrive at its
+ * subject. The route has its own tests.
+ *
+ * Upserted, because the migration's seeded row exists in the isolated schema each test builds.
+ */
+export async function setCounselorSignupEnabled(enabled: boolean): Promise<void> {
+  const value = enabled ? 'true' : 'false';
+
+  await db()
+    .insert(appSettings)
+    .values({ key: 'counselor_signup_enabled', value, updatedAt: now() })
+    .onConflictDoUpdate({
+      target: appSettings.key,
+      set: { value, updatedAt: now() },
+    });
+}
+
+/** Backdate a staged signup past the 15-minute code TTL. */
+export async function backdateSignupRequest(email: string, minutesAgo: number): Promise<void> {
+  await db()
+    .update(counselorSignupRequests)
+    .set({ createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString() })
+    .where(eq(counselorSignupRequests.email, email.toLowerCase()));
+}
+
+export async function findSignupRequest(email: string) {
+  return db().query.counselorSignupRequests.findFirst({
+    where: eq(counselorSignupRequests.email, email.toLowerCase()),
+  });
 }
 
 /** Every audit action recorded for a user, oldest first — the §13.8 trail under assertion. */

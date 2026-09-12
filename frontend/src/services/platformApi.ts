@@ -92,4 +92,22 @@ export const platformApi = {
   platformUsage(): Promise<PlatformUsage> {
     return unwrap(httpClient.get<ApiSuccess<PlatformUsage>>('/admin/platform-usage'));
   },
+
+  /** The operator flags (migration 0034) — today, whether counselors may register themselves. */
+  settings(): Promise<AppSettings> {
+    return unwrap(httpClient.get<ApiSuccess<AppSettings>>('/admin/settings'));
+  },
+
+  /**
+   * Change one or more flags. Partial by design: a client that had to send every flag to change one
+   * would silently revert any flag it did not know about yet.
+   */
+  updateSettings(payload: Partial<AppSettings>): Promise<AppSettings> {
+    return unwrap(httpClient.patch<ApiSuccess<AppSettings>>('/admin/settings', payload));
+  },
 };
+
+/** Mirrors the server's `APP_SETTINGS` registry. One flag today; the shape is built to grow. */
+export interface AppSettings {
+  counselor_signup_enabled: boolean;
+}

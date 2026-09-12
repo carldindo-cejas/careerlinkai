@@ -151,6 +151,13 @@ describe('LoginPage (counselor login)', () => {
     expect(screen.getByLabelText(/password/i)).toHaveAccessibleDescription('Password is required.');
   });
 
+  it('points counselors without an account to the sign-up page', () => {
+    renderPage(<LoginPage />);
+
+    expect(screen.getByText(/don't have a counselor account yet\?/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sign up' })).toHaveAttribute('href', '/signup');
+  });
+
   /** The card is the page, so its title is the page's `h1` — see StudentAccessPage for why. */
   it('titles itself with the one h1 on the page', () => {
     renderPage(<LoginPage />);
@@ -189,5 +196,11 @@ describe('AdminLoginPage', () => {
     );
     expect(authApi.revoke).toHaveBeenCalledWith('c-token');
     expect(useAuthStore.getState().token).toBeNull();
+  });
+
+  it('never links to counselor sign-up', () => {
+    renderPage(<AdminLoginPage />);
+
+    expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
   });
 });

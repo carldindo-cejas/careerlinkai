@@ -23,6 +23,7 @@ import type {
   NotificationCategory,
   ProcessingStatus,
   ProgramStatus,
+  QuestionResolution,
   QuestionSource,
   QuestionType,
   ScoringAlgorithm,
@@ -248,6 +249,53 @@ export const passwordResetTokens = sqliteTable('password_reset_tokens', {
   email: text('email').primaryKey().notNull(),
   tokenHash: text('token_hash').notNull(),
   createdAt: createdAt(),
+});
+
+/**
+ * A counselor self-signup that has not had its emailed code verified yet (migration 0034).
+ *
+ * Deliberately **not** a `users` row with `status = 'pending'`: an unverified submission would
+ * permanently squat the address under `users_email_unique` (which covers soft-deleted rows), and
+ * every abandoned one would appear in `/admin/counselors` as an account to deal with. The `users`
+ * row is created at verification; until then the whole signup lives here.
+ *
+ * One row per email, upserted — starting a second signup invalidates the first, exactly as
+ * `passwordResetTokens` does, so there is never a question of which code is live. The password is
+ * already derived (`AuthGuardDO`, full §38 work factor) before this row is written; the migration
+ * explains why the derivation cannot wait for verification.
+ */
+export const counselorSignupRequests = sqliteTable(
+  'counselor_signup_requests',
+  {
+    email: text('email').primaryKey().notNull(),
+    /** SHA-256 of the six-digit code, via `hashToken` — never the code itself. */
+    codeHash: text('code_hash').notNull(),
+    passwordHash: text('password_hash').notNull(),
+    firstName: text('first_name').notNull(),
+    lastName: text('last_name').notNull(),
+    phone: text('phone'),
+    employeeNumber: text('employee_number'),
+    specialization: text('specialization'),
+    bio: text('bio'),
+    createdAt: createdAt(),
+  },
+  (table) => [index('counselor_signup_requests_created_at_index').on(table.createdAt)],
+);
+
+/**
+ * Operator-controlled flags (migration 0034). Generic key/value, with the keys themselves declared
+ * as a registry in `modules/platform/settings-service.ts` — so a new flag costs a constant rather
+ * than a migration, and a mistyped key is a type error rather than a setting that silently reads
+ * as its default forever.
+ *
+ * Today it holds exactly one: whether counselors may register themselves.
+ */
+export const appSettings = sqliteTable('app_settings', {
+  key: text('key').primaryKey().notNull(),
+  value: text('value').notNull(),
+  /** NULL for the seeded default, which no person chose. */
+  updatedBy: text('updated_by').references(() => users.id),
+  updatedAt: updatedAt(),
 });
 
 // --- Class & Enrollment (§13.2) ------------------------------------------------------
@@ -1228,6 +1276,57 @@ export const knowledgeChunks = sqliteTable(
 );
 
 /**
+ * A question that has left the unanswered backlog, and who decided so (migration 0031).
+ *
+ * The fact the AI-gaps report was missing. `ai_requests` failures and `chat_messages`
+ * knowledge-requests are both records of past events — neither can ever stop being true — so
+ * before this table an answered question stayed at the top of the backlog forever, looking exactly
+ * like one nobody had touched.
+ *
+ * Keyed on normalised question text rather than on an id, because this system has no question
+ * entity: a question is text reached two ways (`ai_requests.input_context.retrieval_query` and the
+ * raw `chat_messages.content` of the preceding turn), which are the same sentence and rarely the
+ * same bytes. `questionKey()` in `insights-service.ts` is the single definition of that
+ * normalisation — it is SQL, applied identically when writing this row and when matching it, so
+ * there is no second implementation to drift.
+ */
+export const knowledgeQuestionResolutions = sqliteTable(
+  'knowledge_question_resolutions',
+  {
+    id: text('id').primaryKey().notNull(),
+    /** Normalised by `questionKey()`. Never assemble this in application code. */
+    questionKey: text('question_key').notNull(),
+    /** The question as a human last saw it — `questionKey` is lossy and is not for display. */
+    question: text('question').notNull(),
+    resolution: text('resolution').$type<QuestionResolution>().notNull(),
+    /**
+     * The entry that answers it. NULL for `DISMISSED`, and nullable for `ANSWERED` as well: the
+     * entry is written first and this row second, so an interruption between the two leaves the
+     * answer in the corpus and the question in the backlog rather than the reverse.
+     *
+     * The read follows it to decide whether the resolution still holds — an archived or FAILED
+     * document does not cover anything, so its question returns to the backlog by itself.
+     */
+    documentId: text('document_id').references(() => knowledgeDocuments.id),
+    resolvedBy: text('resolved_by')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    // One resolution per question — what makes two people answering at once an upsert rather
+    // than two rows the read would have to pick a winner from.
+    uniqueIndex('knowledge_question_resolutions_key_unique').on(table.questionKey),
+    index('knowledge_question_resolutions_resolved_by_index').on(
+      table.resolvedBy,
+      table.createdAt,
+    ),
+    index('knowledge_question_resolutions_document_index').on(table.documentId),
+  ],
+);
+
+/**
  * One row per `AiGatewayService` call, success or failure, no exceptions (§29 principle 6).
  * A quota-exhausted call is a FAILED row like any other model failure (§30 v1.5).
  *
@@ -1380,6 +1479,12 @@ export const chatMessages = sqliteTable(
      * is the signal `/admin/ai-insights` ranks its backlog by. NULL on everything else.
      */
     knowledgeRequest: text('knowledge_request').$type<KnowledgeRequestState>(),
+    /**
+     * When the question behind a REQUESTED refusal was answered and the student told (migration
+     * 0033). Also the notification's idempotency key: only NULL rows are notified, and the
+     * statement that claims them sets it, so nobody is told twice.
+     */
+    knowledgeAnsweredAt: text('knowledge_answered_at'),
     createdAt: createdAt(),
   },
   (table) => [
@@ -1453,6 +1558,8 @@ export type User = typeof users.$inferSelect;
 export type CounselorProfile = typeof counselorProfiles.$inferSelect;
 export type StudentProfile = typeof studentProfiles.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
+export type CounselorSignupRequest = typeof counselorSignupRequests.$inferSelect;
+export type AppSetting = typeof appSettings.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type ClassRoom = typeof classes.$inferSelect;
 export type ClassStudent = typeof classStudents.$inferSelect;
@@ -1487,6 +1594,7 @@ export type Recommendation = typeof recommendations.$inferSelect;
 export type RecommendationExplanation = typeof recommendationExplanations.$inferSelect;
 export type KnowledgeDocument = typeof knowledgeDocuments.$inferSelect;
 export type KnowledgeChunk = typeof knowledgeChunks.$inferSelect;
+export type KnowledgeQuestionResolution = typeof knowledgeQuestionResolutions.$inferSelect;
 export type AiRequest = typeof aiRequests.$inferSelect;
 export type AiPolicy = typeof aiPolicies.$inferSelect;
 export type ChatConversation = typeof chatConversations.$inferSelect;

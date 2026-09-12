@@ -1,5 +1,13 @@
 import { Bot, Loader2, MessageSquare, Send, Trash2, User, X } from 'lucide-react';
-import { type FormEvent, useEffect, useRef, useState } from 'react';
+import {
+  type CSSProperties,
+  type FormEvent,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -44,6 +52,8 @@ import type { ChatMessage } from '@/types/recommendation';
  */
 export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendations: boolean }) {
   const [open, setOpen] = useState(false);
+  const asideRef = useRef<HTMLElement>(null);
+  const height = useViewportFill(asideRef);
 
   return (
     <>
@@ -53,9 +63,13 @@ export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendat
           own content and leaves the sticky child no range to travel in — the panel would scroll
           away with the cards. Stretching the column to the full row height gives it that range.
           `top-[4.5rem]` clears the shell's own sticky top bar. */}
-      <aside className="hidden xl:block xl:w-[380px] xl:shrink-0 xl:self-stretch">
+      <aside ref={asideRef} className="hidden xl:block xl:w-[380px] xl:shrink-0 xl:self-stretch">
         <div className="sticky top-[4.5rem]">
-          <ChatSurface hasRecommendations={hasRecommendations} className="h-[calc(100vh-6rem)]" />
+          <ChatSurface
+            hasRecommendations={hasRecommendations}
+            className={height === null ? 'h-[calc(100vh-10rem)]' : undefined}
+            style={height === null ? undefined : { height }}
+          />
         </div>
       </aside>
 
@@ -103,13 +117,64 @@ export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendat
   );
 }
 
+/** The main column's bottom padding (`sm:p-6`) — the chat ends there, not at the window's edge. */
+const PAGE_BOTTOM_GAP = 24;
+/** Below this the transcript is too short to read; a short window scrolls instead. */
+const MIN_HEIGHT = 384;
+
+/**
+ * The chat's height: from where its column starts to the bottom of the window.
+ *
+ * It was a fixed `100vh - 6rem`, which ignored everything above the column — the back link, the
+ * page padding, the profiling banner — so the column ran past the window and dragged the page into
+ * a scroll of blank space under a short list. Measured instead, the page is exactly as tall as its
+ * content. Re-measured on resize and whenever the page above it changes height (the banner
+ * arriving once the profile loads).
+ */
+function useViewportFill(ref: RefObject<HTMLElement | null>): number | null {
+  const [height, setHeight] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const node = ref.current;
+
+    if (node === null) return;
+
+    const measure = () => {
+      // Hidden below xl — nothing to size, and a zero-height box would measure as the top.
+      if (node.offsetParent === null) return;
+
+      const top = node.getBoundingClientRect().top + window.scrollY;
+
+      setHeight(Math.max(MIN_HEIGHT, Math.floor(window.innerHeight - top - PAGE_BOTTOM_GAP)));
+    };
+
+    measure();
+    window.addEventListener('resize', measure);
+
+    const observer =
+      typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    const main = node.closest('main');
+
+    if (observer && main?.parentElement) observer.observe(main.parentElement);
+
+    return () => {
+      window.removeEventListener('resize', measure);
+      observer?.disconnect();
+    };
+  }, [ref]);
+
+  return height;
+}
+
 function ChatSurface({
   hasRecommendations,
   className,
+  style,
   onClose,
 }: {
   hasRecommendations: boolean;
-  className?: string;
+  className?: string | undefined;
+  style?: CSSProperties | undefined;
   onClose?: () => void;
 }) {
   const { data: transcript, isLoading } = useChatTranscript();
@@ -153,7 +218,7 @@ function ChatSurface({
   }
 
   return (
-    <div className={cn('flex flex-col border border-border bg-card', className)}>
+    <div className={cn('flex flex-col border border-border bg-card', className)} style={style}>
       <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3">
         <div>
           <h2 className="text-sm font-semibold text-foreground">Ask about my results</h2>
@@ -401,7 +466,17 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           the student saying the gap matters to them, which is what lifts it above the questions
           the retrieval merely missed.
         */}
-        {hasRequestedKnowledge ? (
+        {/*
+          Migration 0033: the other end of that request. Before it, "Requested" was the last thing a
+          student ever heard — the answer could be written the same afternoon and nothing here would
+          change. Now the line says so (and the bell carries a notification), because a request that
+          is acted on silently looks, from this side, exactly like one that was ignored.
+        */}
+        {hasRequestedKnowledge && message.knowledge_answered_at ? (
+          <p className="text-xs font-medium text-foreground">
+            Answered — ask your question again to see it.
+          </p>
+        ) : hasRequestedKnowledge ? (
           <p className="text-xs text-muted-foreground">
             Requested — your school has been asked to answer this.
           </p>

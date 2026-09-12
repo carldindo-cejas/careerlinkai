@@ -23,6 +23,8 @@ interface StudentClassState {
   clear: () => void;
 }
 
+export const STUDENT_CLASS_STORAGE_KEY = 'careerlinkai.student-class';
+
 export const useStudentClassStore = create<StudentClassState>()(
   persist(
     (set) => ({
@@ -31,6 +33,6 @@ export const useStudentClassStore = create<StudentClassState>()(
       setClass: (classRoom, username) => set({ classRoom, username }),
       clear: () => set({ classRoom: null, username: null }),
     }),
-    { name: 'careerlinkai.student-class' },
+    { name: STUDENT_CLASS_STORAGE_KEY },
   ),
 );

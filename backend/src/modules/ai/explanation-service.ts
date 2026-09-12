@@ -16,7 +16,11 @@ import {
   RECOMMENDATION_EXPLANATION_PROMPT_VERSION,
   RECOMMENDATION_EXPLANATION_SYSTEM_PROMPT,
 } from '@/prompts/recommendation-explanation.v1';
-import { unsupportedClaims, validateCitations } from '@/lib/grounding';
+import {
+  selfReportedGap,
+  unsupportedClaims,
+  validateCitations,
+} from '@/lib/grounding';
 import { academicAverage } from '@/lib/recommendation';
 import type { AiGatewayService, GenerateOptions } from '@/modules/ai/ai-gateway-service';
 import {
@@ -258,6 +262,32 @@ export class ExplanationService {
         explanation: null,
         fallbackReason: recommendation.reason,
         failure: 'UNSUPPORTED_CLAIM',
+      };
+    }
+
+    /**
+     * **The model saying it has nothing** (found testing on production, 2026-09-11) — see
+     * `selfReportedGap`.
+     *
+     * The chat path keeps such a reply, because it is a conversation and *"I don't have that, but
+     * here is what I do have"* is a good turn. This is a paragraph attached to a computed score
+     * under *Explain more*, and *"I don't have information about this program"* explains nothing
+     * about the number. The deterministic §27 reason does, so that is what the student gets, and
+     * the miss is logged like every other refusal in this service.
+     *
+     * `strict`: first-person admissions only. A sentence like *"your top interests do not include
+     * Social"* is a fact about the student, and must not cost them their explanation.
+     */
+    if (selfReportedGap(text, { strict: true })) {
+      await this.gateway.logSkipped(
+        { ...options, systemPrompt: '', userPrompt: query },
+        'The model answered that its material does not cover this recommendation (SELF_REPORTED_GAP).',
+      );
+
+      return {
+        explanation: null,
+        fallbackReason: recommendation.reason,
+        failure: 'SELF_REPORTED_GAP',
       };
     }
 

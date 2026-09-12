@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { createDatabase } from '@/db/client';
 import type { AppEnv } from '@/env';
 import { successEnvelope } from '@/lib/envelope';
-import { parseQuery } from '@/lib/validation';
+import { clientIp, parseBody, parseQuery } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
@@ -19,6 +19,11 @@ import {
 } from '@/modules/platform/audit-service';
 import { DashboardService } from '@/modules/platform/dashboard-service';
 import { serializeAuditLog, serializePlatformUsage } from '@/modules/platform/serializers';
+import {
+  APP_SETTING_KEYS,
+  SettingsService,
+  type AppSettingKey,
+} from '@/modules/platform/settings-service';
 import { PlatformUsageService } from '@/modules/platform/usage-service';
 
 /**
@@ -283,6 +288,54 @@ adminPlatformRoutes.get('/platform-usage', async (c) => {
   const snapshot = await new PlatformUsageService(createDatabase(c.env.DB), c.env).snapshot();
 
   return c.json(successEnvelope(serializePlatformUsage(snapshot), 'Platform usage retrieved successfully.'));
+});
+
+/**
+ * The operator flags (migration 0034) — admin-only, like everything else on this router.
+ *
+ * `PATCH` rather than `PUT`, and a partial body: the registry will grow, and a client that had to
+ * send every flag to change one would silently revert any flag it did not know about yet.
+ */
+const updateSettingsSchema = z
+  .object(
+    Object.fromEntries(APP_SETTING_KEYS.map((key) => [key, z.boolean().optional()])) as Record<
+      AppSettingKey,
+      z.ZodOptional<z.ZodBoolean>
+    >,
+  )
+  // A body naming a flag that does not exist is refused rather than ignored. The one flag here
+  // decides whether strangers may create accounts, so "we quietly did nothing" is the wrong answer
+  // to a client that thinks it turned something off.
+  .strict()
+  .refine((values) => Object.values(values).some((value) => value !== undefined), {
+    message: 'Name at least one setting to change.',
+  });
+
+adminPlatformRoutes.get('/settings', async (c) => {
+  const settings = await new SettingsService(createDatabase(c.env.DB)).all();
+
+  return c.json(successEnvelope(settings, 'Settings retrieved successfully.'));
+});
+
+adminPlatformRoutes.patch('/settings', async (c) => {
+  const input = await parseBody(c, updateSettingsSchema);
+  const service = new SettingsService(createDatabase(c.env.DB));
+  const admin = requireUser(c);
+  const ip = clientIp(c);
+
+  // Sequential rather than `Promise.all`: each write is an upsert plus an audit row, and D1 has no
+  // transaction spanning them — running them in order means a partial failure leaves a prefix of
+  // the requested changes applied, each with its own audit row, rather than an interleaving nobody
+  // can reconstruct. With one flag in the registry this is a loop of one.
+  for (const key of APP_SETTING_KEYS) {
+    const value = input[key];
+
+    if (value !== undefined) {
+      await service.set(key, value, admin, ip);
+    }
+  }
+
+  return c.json(successEnvelope(await service.all(), 'Settings updated successfully.'));
 });
 
 // --- /counselor ----------------------------------------------------------------------------

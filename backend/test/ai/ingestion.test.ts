@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import { createDatabase } from '@/db/client';
-import { knowledgeChunks, knowledgeDocuments } from '@/db/schema';
+import { auditLogs, knowledgeChunks, knowledgeDocuments } from '@/db/schema';
 import { AiGatewayService, type WorkersAiClient } from '@/modules/ai/ai-gateway-service';
 import { KnowledgeIngestionService } from '@/modules/ai/knowledge-ingestion-service';
 import type { VectorRecord, VectorStore } from '@/modules/ai/vector-store';
@@ -470,5 +470,233 @@ describe('DELETE /admin/knowledge-documents/{id}', () => {
       .where(eq(knowledgeDocuments.id, id));
 
     expect(rows).toHaveLength(1);
+  });
+});
+
+/**
+ * The live/archived split (prompt-driven).
+ *
+ * Archived entries used to sit in the same list as live ones, so the question the page exists to
+ * answer — *what can the AI actually answer from?* — could not be answered by looking at it. The
+ * default is now the live half, which is a behaviour change and the one worth pinning: a caller
+ * that asks for nothing must not be shown retired content.
+ */
+describe('GET /admin/knowledge-documents — the live/archived split', () => {
+  it('defaults to live entries and hides archived ones', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+
+    await uploadOverHttp(token, { name: 'still-in-use.pdf' });
+
+    const retired = await uploadOverHttp(token, { name: 'retired.pdf' });
+
+    await SELF.fetch(`${BASE_URL}/admin/knowledge-documents/${retired.body.data.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    async function list(query: string): Promise<any> {
+      const response = await SELF.fetch(
+        `${BASE_URL}/admin/knowledge-documents?per_page=100&${query}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      return ((await response.json()) as any).data;
+    }
+
+    const byDefault = await list('');
+    const names = byDefault.items.map((item: any) => item.file_name);
+
+    expect(names).toContain('still-in-use.pdf');
+    expect(names).not.toContain('retired.pdf');
+
+    const archived = await list('archived=archived');
+    const archivedNames = archived.items.map((item: any) => item.file_name);
+
+    expect(archivedNames).toContain('retired.pdf');
+    expect(archivedNames).not.toContain('still-in-use.pdf');
+
+    // Each half paginates over its own total, or the two tabs would disagree about how many pages
+    // they have — which is how a pager ends up offering a page that renders empty.
+    expect(byDefault.pagination.total).toBeGreaterThanOrEqual(1);
+    expect(archived.pagination.total).toBeGreaterThanOrEqual(1);
+
+    const all = await list('archived=all');
+    const allNames = all.items.map((item: any) => item.file_name);
+
+    expect(allNames).toContain('still-in-use.pdf');
+    expect(allNames).toContain('retired.pdf');
+  });
+
+  it('rejects a value that is not one of the three', async () => {
+    const token = await login(await createStaffUser({ role: 'admin' }));
+
+    const response = await SELF.fetch(`${BASE_URL}/admin/knowledge-documents?archived=maybe`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(response.status).toBe(422);
+  });
+
+  it('unarchived live entries keep their chunk counts under the filter', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+    const { body } = await uploadOverHttp(token, { name: 'counted.pdf' });
+
+    const response = await SELF.fetch(
+      `${BASE_URL}/admin/knowledge-documents?per_page=100&archived=live`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const list = (await response.json()) as any;
+    const mine = list.data.items.find((item: any) => item.id === body.data.id);
+
+    // The GROUP BY that produces the count has to narrow with the new predicate, same as it does
+    // for search and status.
+    expect(mine).toMatchObject({ file_name: 'counted.pdf', chunk_count: 0 });
+  });
+});
+
+/**
+ * **Permanent removal** (prompt-driven) — the second button, and the one that cannot be undone.
+ *
+ * Archiving is the everyday act and stays the default; this exists because "we keep everything
+ * forever" is not an answer to a bad paste, a document somebody was not entitled to upload, or a
+ * request to delete personal data. Three things are worth pinning, and each fails quietly:
+ *
+ *   1. **It refuses a live entry.** Removal is always the second of two deliberate decisions about
+ *      something already out of service — never one click on something students are being answered
+ *      from right now.
+ *   2. **Everything goes**: the row, its chunks, and its vectors.
+ *   3. **Questions it answered come back.** Their answer no longer exists, so the gap is real
+ *      again, and the backlog growing with no explanation is how this report lost trust before.
+ */
+describe('DELETE /admin/knowledge-documents/{id}/permanently', () => {
+  async function removePermanently(token: string, id: string) {
+    const response = await SELF.fetch(
+      `${BASE_URL}/admin/knowledge-documents/${id}/permanently`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+    );
+
+    return { status: response.status, body: (await response.json()) as any };
+  }
+
+  it('refuses an entry that has not been archived first', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+    const { body } = await uploadOverHttp(token);
+
+    const refused = await removePermanently(token, body.data.id);
+
+    expect(refused.status).toBe(422);
+    expect(refused.body.errors.document[0]).toMatch(/Archive this entry before removing it/i);
+
+    // Still there, and still exactly as it was.
+    const rows = await createDatabase(env.DB)
+      .select()
+      .from(knowledgeDocuments)
+      .where(eq(knowledgeDocuments.id, body.data.id));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.archivedAt).toBeNull();
+  });
+
+  it('destroys the row and its chunks once it is archived', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+    const { body } = await uploadOverHttp(token);
+    const id = body.data.id as string;
+
+    await SELF.fetch(`${BASE_URL}/admin/knowledge-documents/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const removed = await removePermanently(token, id);
+
+    expect(removed.status).toBe(200);
+    expect(removed.body.message).toMatch(/gone for good/i);
+
+    const database = createDatabase(env.DB);
+
+    expect(
+      await database.select().from(knowledgeDocuments).where(eq(knowledgeDocuments.id, id)),
+    ).toHaveLength(0);
+    expect(
+      await database.select().from(knowledgeChunks).where(eq(knowledgeChunks.documentId, id)),
+    ).toHaveLength(0);
+  });
+
+  it('is gone from both halves of the list afterwards', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+    const { body } = await uploadOverHttp(token, { name: 'destroyed.pdf' });
+    const id = body.data.id as string;
+
+    await SELF.fetch(`${BASE_URL}/admin/knowledge-documents/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    await removePermanently(token, id);
+
+    const response = await SELF.fetch(
+      `${BASE_URL}/admin/knowledge-documents?per_page=100&archived=all`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const list = (await response.json()) as any;
+
+    expect(list.data.items.map((item: any) => item.file_name)).not.toContain('destroyed.pdf');
+  });
+
+  it('records what was destroyed, since nothing else survives to describe it', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+    const { body } = await uploadOverHttp(token, { name: 'audited.pdf' });
+    const id = body.data.id as string;
+
+    await SELF.fetch(`${BASE_URL}/admin/knowledge-documents/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    await removePermanently(token, id);
+
+    const rows = await createDatabase(env.DB)
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.targetId, id));
+    const deletion = rows.find((row) => row.action === 'KNOWLEDGE_DOCUMENT_DELETED');
+
+    expect(deletion).toBeDefined();
+    expect(deletion!.userId).toBe(admin.id);
+    // The title and source, never the text: an audit log is not a place to reconstitute content
+    // somebody asked to have deleted.
+    expect(deletion!.oldValues).toMatchObject({ title: 'audited.pdf', source_type: 'pdf' });
+  });
+
+  it('is refused for a counselor who does not own the entry', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const adminToken = await login(admin);
+    const { body } = await uploadOverHttp(adminToken);
+    const id = body.data.id as string;
+
+    await SELF.fetch(`${BASE_URL}/admin/knowledge-documents/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+
+    const counselorToken = await login(await createStaffUser({ role: 'counselor' }));
+    const response = await SELF.fetch(
+      `${BASE_URL}/counselor/knowledge-documents/${id}/permanently`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${counselorToken}` } },
+    );
+
+    expect(response.status).toBe(404);
+
+    // And it is still there — a refused removal must not half-happen.
+    expect(
+      await createDatabase(env.DB)
+        .select()
+        .from(knowledgeDocuments)
+        .where(eq(knowledgeDocuments.id, id)),
+    ).toHaveLength(1);
   });
 });

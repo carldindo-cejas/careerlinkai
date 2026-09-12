@@ -7,20 +7,34 @@ import { runNightlyCleanup } from '@/jobs/cleanup';
 import {
   api,
   backdateResetToken,
+  backdateSignupRequest,
   countTokensFor,
   createStaffUser,
   db,
   expireTokensFor,
+  findSignupRequest,
   login,
+  setCounselorSignupEnabled,
 } from '../helpers';
 
 /**
  * The nightly Cron housekeeping (FULLPLAN §45 enhancement, audit M11).
  *
- * `runNightlyCleanup` is what the `scheduled` handler in `index.ts` calls. It sweeps the two tables
- * that otherwise accrete rows nothing removes — expired `api_tokens` and stale
- * `password_reset_tokens` — and must leave everything still within its lifetime untouched.
+ * `runNightlyCleanup` is what the `scheduled` handler in `index.ts` calls. It sweeps the three
+ * tables that otherwise accrete rows nothing removes — expired `api_tokens`, stale
+ * `password_reset_tokens`, and abandoned `counselor_signup_requests` — and must leave everything
+ * still within its lifetime untouched.
  */
+
+function signupBody(email: string) {
+  return {
+    email,
+    password: 'SweptAway1x',
+    password_confirmation: 'SweptAway1x',
+    first_name: 'Abandoned',
+    last_name: 'Signup',
+  };
+}
 
 async function resetTokenCount(email: string): Promise<number> {
   const rows = await db()
@@ -62,5 +76,40 @@ describe('runNightlyCleanup', () => {
     // And it counted what it removed (≥ our own rows — storage is shared across the file).
     expect(result.expiredTokens).toBeGreaterThanOrEqual(1);
     expect(result.staleResetTokens).toBeGreaterThanOrEqual(1);
+  });
+
+  /**
+   * Abandoned counselor signups (migration 0034) — the third table, and the first one a public form
+   * writes to.
+   *
+   * Note what this test does **not** claim: that the sweep is what expires a code. It is not —
+   * `verify` refuses an expired code on its own, and has to, or the cron's schedule would silently
+   * become the real TTL. This is garbage collection, so the fresh row surviving matters as much as
+   * the old one going.
+   */
+  it('sweeps abandoned signups past the sweep window, keeping recent ones', async () => {
+    await setCounselorSignupEnabled(true);
+
+    const abandoned = 'abandoned.signup@school.test';
+    const recent = 'recent.signup@school.test';
+
+    await api('POST', '/auth/counselor-signup', {
+      body: signupBody(abandoned),
+      ip: '10.20.30.40',
+    });
+    await api('POST', '/auth/counselor-signup', {
+      body: signupBody(recent),
+      ip: '10.20.30.41',
+    });
+
+    // Past the hour-long sweep window, which is deliberately four times the 15-minute code TTL —
+    // so a row is never deleted out from under a request still in flight.
+    await backdateSignupRequest(abandoned, 61);
+
+    const result = await runNightlyCleanup(env);
+
+    expect(await findSignupRequest(abandoned)).toBeUndefined();
+    expect(await findSignupRequest(recent)).toBeDefined();
+    expect(result.staleSignupRequests).toBeGreaterThanOrEqual(1);
   });
 });

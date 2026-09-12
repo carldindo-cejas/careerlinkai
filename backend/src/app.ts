@@ -14,7 +14,7 @@ import {
 } from '@/modules/assessment/routes';
 import { adminAddressRoutes } from '@/modules/address/routes';
 import { generationRoutes } from '@/modules/ai/generation-routes';
-import { adminAiRoutes } from '@/modules/ai/routes';
+import { adminAiRoutes, counselorAiRoutes } from '@/modules/ai/routes';
 import { builderRoutes } from '@/modules/assessment/builder-routes';
 import { adminRoutes, publicCatalogRoutes } from '@/modules/catalog/routes';
 import { adminClassRoutes, counselorRoutes } from '@/modules/classes/routes';
@@ -118,6 +118,10 @@ export function createApp() {
   // P3-6 (audit F5): class reassignment. The Class module's only /admin endpoint, kept off the
   // /counselor prefix on purpose — `counselor_id` must not be writable by a counselor.
   api.route('/admin', adminClassRoutes);
+  // Prompt-driven (2026-09-11): counselors contribute to the same knowledge corpus admins do.
+  // The same handlers as the /admin mount, scoped per request to the caller's own entries and
+  // their own students' questions — see `createKnowledgeRoutes`.
+  api.route('/counselor', counselorAiRoutes);
   api.route('/counselor', counselorPlatformRoutes);
   api.route('/student', studentPlatformRoutes);
   api.route('/notifications', notificationRoutes);

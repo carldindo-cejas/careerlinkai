@@ -34,6 +34,15 @@ export interface CredentialsLoginFormProps extends LoginOptions {
   description: string;
   /** The reset flow is counselor-facing; the admin screen hides the link. */
   showForgotPassword?: boolean;
+  /**
+   * Offer the counselor sign-up page (migration 0034).
+   *
+   * Always shown when set, whether or not registration is open — the sign-up page itself explains a
+   * closure, the same as the landing page's link. Opt-in per screen rather than global: the
+   * administrator door must never link here, because an admin account is not something anybody
+   * registers for.
+   */
+  showSignupLink?: boolean;
 }
 
 export function CredentialsLoginForm({
@@ -42,6 +51,7 @@ export function CredentialsLoginForm({
   allow,
   refusalMessage,
   showForgotPassword = true,
+  showSignupLink = false,
 }: CredentialsLoginFormProps) {
   const user = useAuthStore((state) => state.user);
   const login = useLogin({ allow, refusalMessage });
@@ -135,6 +145,15 @@ export function CredentialsLoginForm({
             >
               Forgot your password?
             </Link>
+          ) : null}
+
+          {showSignupLink ? (
+            <p className="text-center text-sm text-muted-foreground">
+              Don&apos;t have a counselor account yet?{' '}
+              <Link to={paths.counselorSignup} className="font-medium text-foreground hover:underline">
+                Sign up
+              </Link>
+            </p>
           ) : null}
         </form>
       </CardContent>

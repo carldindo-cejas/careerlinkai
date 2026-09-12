@@ -288,7 +288,7 @@ function StudentRows({
             )}
           >
             <div className="overflow-hidden">
-              {/* The same lists the counselor's own `ClassRecommendationsPanel` renders — one
+              {/* The same lists the counselor's own `RosterStudentDetails` renders — one
                   component, so the two staff views of a student cannot drift apart. */}
               <StudentRecommendationLists
                 careers={student.top_careers}

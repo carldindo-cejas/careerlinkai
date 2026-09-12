@@ -102,7 +102,7 @@ describe('the unanswered-questions report', () => {
       await seedRefusal(common, 'SKIPPED: nothing retrieved — NO_GROUNDING.');
     }
 
-    const report = await new AiInsightsService(db()).unansweredQuestions();
+    const report = (await new AiInsightsService(db()).unansweredQuestions()).items;
     const top = report.find((row) => row.question === common);
 
     expect(top).toBeDefined();
@@ -122,7 +122,7 @@ describe('the unanswered-questions report', () => {
 
     await seedRefusal(outage, 'MODEL_ERROR: the model did not respond.');
 
-    const report = await new AiInsightsService(db()).unansweredQuestions();
+    const report = (await new AiInsightsService(db()).unansweredQuestions()).items;
 
     expect(report.map((row) => row.question)).not.toContain(outage);
   });
@@ -145,7 +145,7 @@ describe('the unanswered-questions report', () => {
     await seedRefusal(requested, 'SKIPPED: nothing retrieved — NO_GROUNDING.');
     await seedKnowledgeRequest(requested);
 
-    const report = await new AiInsightsService(db()).unansweredQuestions();
+    const report = (await new AiInsightsService(db()).unansweredQuestions()).items;
     const row = report.find((entry) => entry.question === requested);
 
     expect(row).toBeDefined();
@@ -348,21 +348,145 @@ describe('the daily generation budget', () => {
   });
 });
 
-describe('GET /admin/ai-insights', () => {
-  it('is admin-only and answers with all four sections', async () => {
+describe('the /ai-insights endpoints', () => {
+  /**
+   * The report used to be one endpoint returning five sections; it is now a header plus one
+   * endpoint per tab. What must not have changed is who may read any of them — the split moved the
+   * payload around, not the authorization — so every route is checked rather than the first one.
+   */
+  const ROUTES = [
+    '/admin/ai-insights',
+    '/admin/ai-insights/unanswered',
+    '/admin/ai-insights/resolved',
+    '/admin/ai-insights/flagged',
+    '/admin/ai-insights/coverage',
+  ];
+
+  it.each(ROUTES)('%s is admin-only', async (path) => {
     const counselor = await createStaffUser({ role: 'counselor' });
 
-    expect(
-      (await api('GET', '/admin/ai-insights', { token: await login(counselor) })).status,
-    ).toBe(403);
+    expect((await api('GET', path, { token: await login(counselor) })).status).toBe(403);
+  });
 
+  it('answers the header with the corpus, the tab counts and the caller permissions', async () => {
     const admin = await createStaffUser({ role: 'admin' });
     const response = await api('GET', '/admin/ai-insights', { token: await login(admin) });
 
     expect(response.status).toBe(200);
-    expect(response.body.data).toHaveProperty('unanswered_questions');
-    expect(response.body.data).toHaveProperty('coverage');
-    expect(response.body.data).toHaveProperty('flagged_answers');
     expect(response.body.data.corpus).toHaveProperty('embedded');
+    expect(response.body.data.counts).toEqual({
+      unanswered: expect.any(Number),
+      resolved: expect.any(Number),
+      flagged: expect.any(Number),
+    });
+    expect(response.body.data.can).toMatchObject({ sync_catalog: true, see_all_knowledge: true });
+
+    // The lists moved out. A client still reading them from here would render an empty screen
+    // rather than fail, which is exactly the sort of regression a shape assertion catches.
+    expect(response.body.data).not.toHaveProperty('unanswered_questions');
+    expect(response.body.data).not.toHaveProperty('coverage');
+  });
+
+  it('pages the backlog, and the pages do not overlap', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+
+    // Five distinct open questions, so two pages of two are both full and a third is partial.
+    for (let i = 0; i < 5; i += 1) {
+      await seedRefusal(`Paged question ${i} ${uuid()}`, 'SKIPPED: nothing retrieved — NO_GROUNDING.');
+    }
+
+    const first = await api('GET', '/admin/ai-insights/unanswered?page=1&per_page=2', { token });
+    const second = await api('GET', '/admin/ai-insights/unanswered?page=2&per_page=2', { token });
+
+    expect(first.status).toBe(200);
+    expect(first.body.data.items).toHaveLength(2);
+    expect(first.body.data.pagination).toMatchObject({ current_page: 1, per_page: 2 });
+    expect(first.body.data.pagination.total).toBeGreaterThanOrEqual(5);
+
+    expect(second.body.data.pagination.current_page).toBe(2);
+
+    // **The claim pagination actually makes.** A pager whose pages share rows is worse than no
+    // pager: it hides as many questions as it repeats.
+    const firstKeys = first.body.data.items.map((row: { key: string }) => row.key);
+    const secondKeys = second.body.data.items.map((row: { key: string }) => row.key);
+
+    expect(firstKeys.filter((key: string) => secondKeys.includes(key))).toHaveLength(0);
+  });
+
+  it('reports the same backlog size on the header badge and the pager', async () => {
+    const admin = await createStaffUser({ role: 'admin' });
+    const token = await login(admin);
+
+    await seedRefusal(`Counted question ${uuid()}`, 'SKIPPED: nothing retrieved — NO_GROUNDING.');
+
+    const header = await api('GET', '/admin/ai-insights', { token });
+    const page = await api('GET', '/admin/ai-insights/unanswered?per_page=1', { token });
+
+    // Two different queries answering one question. A badge that disagrees with the pager under it
+    // is the kind of contradiction that quietly makes a screen untrustworthy.
+    expect(header.body.data.counts.unanswered).toBe(page.body.data.pagination.total);
+  });
+
+  it('pages the resolved list with an exact total', async () => {
+    const token = await login(await createStaffUser({ role: 'admin' }));
+
+    const response = await api('GET', '/admin/ai-insights/resolved?page=1&per_page=5', { token });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.pagination).toMatchObject({ current_page: 1, per_page: 5 });
+    expect(Array.isArray(response.body.data.items)).toBe(true);
+  });
+
+  it('rejects a page number that is not one', async () => {
+    const token = await login(await createStaffUser({ role: 'admin' }));
+
+    expect((await api('GET', '/admin/ai-insights/unanswered?page=0', { token })).status).toBe(422);
+    expect(
+      (await api('GET', '/admin/ai-insights/unanswered?per_page=500', { token })).status,
+    ).toBe(422);
+  });
+
+  it('serves coverage and flagged answers on their own routes', async () => {
+    const token = await login(await createStaffUser({ role: 'admin' }));
+
+    const coverage = await api('GET', '/admin/ai-insights/coverage', { token });
+    const flagged = await api('GET', '/admin/ai-insights/flagged', { token });
+
+    expect(coverage.body.data).toHaveProperty('careers');
+    expect(coverage.body.data).toHaveProperty('gaps');
+    expect(Array.isArray(flagged.body.data)).toBe(true);
+  });
+});
+
+describe('the backlog is student questions', () => {
+  /**
+   * Found testing on production: half the live backlog was the explanation pipeline's own
+   * retrieval strings — "Network Engineer. Designs and operates the networks…" — which no student
+   * typed, named institutions the catalog no longer holds, and invited somebody to write a Q&A for
+   * a question nobody asks. Those gaps are about an entity, and the coverage grid reports them.
+   */
+  it('leaves explanation-pipeline misses to the coverage grid', async () => {
+    const generated = `Network Engineer. Designs and operates the networks ${uuid()}`;
+    const timestamp = now();
+
+    await db().insert(aiRequests).values({
+      id: uuid(),
+      userId: null,
+      requestType: 'RECOMMENDATION_EXPLANATION',
+      inputContext: { retrieval_query: generated, chunk_ids: [] },
+      responseText: null,
+      model: 'stub',
+      tokensUsed: null,
+      latencyMs: 0,
+      status: 'FAILED',
+      failureReason: 'SKIPPED: No knowledge chunks above the similarity threshold — refusing.',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    const report = (await new AiInsightsService(db()).unansweredQuestions()).items;
+
+    expect(report.map((row) => row.question)).not.toContain(generated);
   });
 });

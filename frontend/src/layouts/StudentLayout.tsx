@@ -1,4 +1,4 @@
-import { BookOpenCheck, ChartColumn, Compass, LayoutDashboard, UserRound } from 'lucide-react';
+import { BookOpenCheck, ChartColumn, Compass, LayoutDashboard } from 'lucide-react';
 
 import { ProfilingBanner } from '@/features/student/components/ProfilingBanner';
 import { AppShell, type AppNavItem } from '@/layouts/AppShell';
@@ -20,8 +20,10 @@ const nav: AppNavItem[] = [
   { to: paths.studentAssessments, label: 'Assessments', icon: BookOpenCheck },
   { to: paths.studentResults, label: 'My results', icon: ChartColumn },
   { to: paths.studentRecommendations, label: 'My recommendations', icon: Compass },
-  { to: paths.studentProfile, label: 'My profile', icon: UserRound },
 ];
+
+/** Not a nav row — reached from the name in the top bar and above "Sign out", where accounts live. */
+const profile = { to: paths.studentProfile, label: 'My profile' };
 
 /**
  * Signed-in student shell (FULLPLAN §35, §37).
@@ -39,6 +41,7 @@ export function StudentLayout() {
     <AppShell
       title="Student"
       nav={nav}
+      profile={profile}
       onSignedOut={clearClass}
       /**
        * The profiling warning, on every student route (v1.6). It renders nothing once the required

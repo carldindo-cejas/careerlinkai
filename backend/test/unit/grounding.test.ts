@@ -7,6 +7,7 @@ import {
   offDomainKind,
   offDomainReply,
   parseQaChunk,
+  selfReportedGap,
   unsupportedClaims,
   validateCitations,
 } from '@/lib/grounding';
@@ -257,5 +258,48 @@ describe('answerableFromResults — narrowing the zero-retrieval path (D7)', () 
   it('refuses a question the results cannot possibly answer', () => {
     expect(answerableFromResults('how much is the dormitory fee?', context)).toBe(false);
     expect(answerableFromResults('when is the entrance exam?', context)).toBe(false);
+  });
+});
+
+describe('selfReportedGap — the model admitting it does not know', () => {
+  /**
+   * The replies that passed every other check on production and were recorded as successes, so
+   * the questions behind them never reached the backlog. Verbatim, curly apostrophe included.
+   */
+  it('catches the refusals measured on production', () => {
+    for (const text of [
+      "I don't have any information about a Mechanical Engineering program at Bohol Island State University. I only mentioned the BS Mechanical Engineering at University of Bohol [1].",
+      'I don’t have information about the stress level of being a nurse in the knowledge context I was given. However, based on the career match, nursing suits you.',
+      "I'm happy to help, but I don't have any information about the gym locker combination policy in the materials [1].",
+      'The materials do not mention a tuition fee for this program [2].',
+      'I could not find anything about dormitories.',
+    ]) {
+      expect(selfReportedGap(text), text).toBe(true);
+    }
+  });
+
+  it('leaves ordinary answers alone', () => {
+    for (const text of [
+      'BS Nursing is a four-year program [1].',
+      "You don't have to decide today — the choice is yours.",
+      'Your strongest interests are Investigative and Realistic.',
+      'That is your strongest match on your own results.',
+    ]) {
+      expect(selfReportedGap(text), text).toBe(false);
+    }
+  });
+
+  /**
+   * Strict mode exists for the explanation path, where a match discards the paragraph. A negative
+   * sentence about the student is a fact, not an admission, and must not cost them anything.
+   */
+  it('in strict mode, counts only the model talking about its own material', () => {
+    const fact = 'Your top interests do not include Social, which is why it ranks lower.';
+
+    expect(selfReportedGap(fact)).toBe(true);
+    expect(selfReportedGap(fact, { strict: true })).toBe(false);
+    expect(selfReportedGap("I don't have information about this program.", { strict: true })).toBe(
+      true,
+    );
   });
 });

@@ -108,6 +108,75 @@ export function validateCitations(text: string, sourceCount: number): CitationVe
 }
 
 /**
+ * The ways a model says the material in front of it does not answer the question.
+ *
+ * Mostly the prompt's own wording played back: the chat prompt tells the model to "say plainly
+ * that you do not have that information" and that "I don't have that" beats being approximately
+ * right. So these are not guesses at how an 8B model might phrase a refusal — they are the phrases
+ * it was instructed to use, plus the variants it was measured producing on production.
+ *
+ * Two tiers, because the cost of a false match differs by caller:
+ *
+ *   * **First person** — *"I don't have…"*, *"I couldn't find…"*. The model talking about its own
+ *     material. Almost never a plain fact about the world, so safe everywhere.
+ *   * **Impersonal** — *"…is not mentioned in…"*, *"the materials do not cover…"*. Usually a gap,
+ *     but *"your top interests do not include Social"* is a fact and matches too. Fine where a
+ *     match only files a backlog row; not fine where it discards a paragraph.
+ */
+const FIRST_PERSON_GAP_PATTERN = new RegExp(
+  [
+    // "I don't have any information about…", "I do not have that", "we don't have details on…"
+    String.raw`\b(?:i|we)\s+(?:do not|don't|dont)\s+have\s+(?:any\s+)?(?:specific\s+|more\s+|further\s+|detailed\s+|exact\s+)?(?:information|info|details|data|that)\b`,
+    // "I couldn't find…", "I was unable to find…"
+    String.raw`\b(?:i|we)\s+(?:could not|couldn't|was unable to|am unable to|am not able to|wasn't able to|was not able to)\s+find\b`,
+    // "There is no information about…" — impersonal in grammar, but only ever said about sources.
+    String.raw`\bno (?:specific |further |detailed )?information (?:about|on|regarding|is available|was provided)\b`,
+  ].join('|'),
+  'i',
+);
+
+const IMPERSONAL_GAP_PATTERN = new RegExp(
+  [
+    // "…is not mentioned in the materials", "…are not covered in…"
+    String.raw`\b(?:is|are|was|were)\s+not\s+(?:mentioned|covered|included|provided|stated|specified|listed)\s+in\b`,
+    // "The context does not mention…", "the materials don't cover…"
+    String.raw`\b(?:does|do)(?:\s+not|n't)\s+(?:mention|cover|include|say|specify)\b`,
+  ].join('|'),
+  'i',
+);
+
+/**
+ * **The model admitting it does not know — in an answer that otherwise passes every check.**
+ *
+ * Found testing the AI-gaps screen against production on 2026-09-11. Every refusal *this code*
+ * makes is logged as a gap; a refusal the *model* writes was not, because it is a well-formed,
+ * cited answer: *"I don't have any information about a Mechanical Engineering program at Bohol
+ * Island State University. I only mentioned the BS Mechanical Engineering at University of
+ * Bohol [1]."* That cites a real passage, invents nothing, and passes cite-or-refuse and the claim
+ * check — so it was recorded as a success. The student's actual question never reached the
+ * backlog, and they were never offered *"Request to add to knowledge"*. Three of the sixteen cited
+ * answers on production at the time were this shape.
+ *
+ * What the caller does with a match is its own decision, and the two callers differ on purpose
+ * (see `ChatService.generated` and `ExplanationService`): a chat keeps an honest "I don't have
+ * that, but here is what I do have", while a paragraph attached to a computed score does not.
+ * `strict` is for the second — first-person admissions only, so a plain fact phrased in the
+ * negative cannot cost a student their explanation.
+ *
+ * Curly apostrophes are folded first: a model writes `don’t` as often as `don't`, and a pattern
+ * that saw only one of them would miss half its matches for a reason nobody would guess.
+ */
+export function selfReportedGap(text: string, options: { strict?: boolean } = {}): boolean {
+  const folded = text.replace(/[\u2018\u2019]/g, "'");
+
+  if (FIRST_PERSON_GAP_PATTERN.test(folded)) {
+    return true;
+  }
+
+  return options.strict !== true && IMPERSONAL_GAP_PATTERN.test(folded);
+}
+
+/**
  * Words that are capitalised for reasons other than being a name, plus the ones a guidance
  * conversation uses constantly. Checking these as proper nouns would reject sound answers for
  * saying "I" or starting a clause with "Your".

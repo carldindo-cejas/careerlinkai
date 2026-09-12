@@ -7,8 +7,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { AssignmentPanel } from '@/features/counselor/components/AssignmentPanel';
-import { ClassRecommendationsPanel } from '@/features/counselor/components/ClassRecommendationsPanel';
-import { ClassResultsPanel } from '@/features/counselor/components/ClassResultsPanel';
 import { JoinCodeCard } from '@/features/counselor/components/JoinCodeCard';
 import { RosterBuilder } from '@/features/counselor/components/RosterBuilder';
 import { RosterTable } from '@/features/counselor/components/RosterTable';
@@ -78,8 +76,9 @@ export function ClassDetailPage() {
 
       <JoinCodeCard classRoom={classRoom} />
 
-      {/* Opening a class is nearly always "who is in this class?" — the roster now sits directly
-          under the code, with nothing between them. */}
+      {/* Opening a class is nearly always "who is in this class?" — the roster sits directly under
+          the code. Each student's results and recommendations open inside their own row, which is
+          why the separate Results and Recommendations panels that used to follow are gone. */}
       <RosterTable classId={classRoom.id} />
 
       {/* Paste the names, review the generated usernames, confirm — all inside the modal, which
@@ -97,20 +96,10 @@ export function ClassDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Phase 3: assign an assessment to this class, and watch results arrive (§37). Placed
-          below the roster deliberately — there is no point assigning an assessment to a class
-          with nobody in it, and the page reads top to bottom in the order the counselor works. */}
+      {/* Phase 3: assign an assessment to this class (§37). Placed below the roster deliberately —
+          there is no point assigning an assessment to a class with nobody in it, and the page reads
+          top to bottom in the order the counselor works. */}
       <AssignmentPanel classId={classRoom.id} />
-
-      {/* Phase 6 (D8): the results overview with the §21 retake button. */}
-      <ClassResultsPanel classId={classRoom.id} />
-
-      {/* Audit F2 / P1-1: what those results were turned into. Last on the page because it is the
-          end of the counselor's own sequence — assign, watch results arrive, read what the engine
-          made of them — and because it reads the roster and the results the two panels above have
-          already loaded. */}
-      <ClassRecommendationsPanel classId={classRoom.id} />
     </div>
   );
 }
-

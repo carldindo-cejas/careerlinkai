@@ -152,6 +152,51 @@ describe('RecommendationPage', () => {
     expect(screen.queryByText('Career 4')).not.toBeInTheDocument();
   });
 
+  /** One ranking at a time — a switch, not a long scroll through both lists. */
+  it('switches between careers and programs', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText('Career 1');
+
+    const careersButton = screen.getByRole('button', { name: /^careers/i });
+    const programsButton = screen.getByRole('button', { name: /^programs/i });
+
+    expect(careersButton).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('Program 1')).not.toBeInTheDocument();
+
+    await user.click(programsButton);
+
+    expect(await screen.findByText('Program 1')).toBeInTheDocument();
+    expect(programsButton).toHaveAttribute('aria-pressed', 'true');
+    expect(careersButton).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByText('Career 1')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Programs' })).toBeInTheDocument();
+  });
+
+  /** A match is a one-line peek until it is opened; the details live behind the click. */
+  it('shows each match as a peek that expands on click', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole('button', { name: /^Career 1 / });
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // The reason is in the closed panel, not the peek, and nothing inside it is reachable yet.
+    expect(screen.getByText('Reason 1')).not.toBeVisible();
+    expect(screen.queryByRole('button', { name: /explain more/i })).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Reason 1')).toBeVisible();
+    expect(screen.getAllByRole('button', { name: /explain more/i })).toHaveLength(1);
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
   /** Three by default, five on request — never the full persisted ten. */
   it('expands to five, and no further', async () => {
     const user = userEvent.setup();
@@ -211,6 +256,8 @@ describe('RecommendationPage', () => {
     const user = userEvent.setup();
     renderPage();
 
+    await screen.findByText('Career 1');
+    await user.click(screen.getByRole('button', { name: /^programs/i }));
     await screen.findByText('Program 1');
 
     expect(screen.queryByText('Program 4')).not.toBeInTheDocument();
@@ -238,6 +285,10 @@ describe('RecommendationPage', () => {
     renderPage();
 
     await screen.findByText('Career 1');
+    expect(catalogLinksApi.programsForCareer).not.toHaveBeenCalled();
+
+    // Opening the card shows its details, and still fetches nothing until the disclosure is pressed.
+    await user.click(screen.getByRole('button', { name: /^Career 1 / }));
     expect(catalogLinksApi.programsForCareer).not.toHaveBeenCalled();
 
     // Named for its career since P2-3 — the visible label is still "View related college
@@ -269,7 +320,9 @@ describe('RecommendationPage', () => {
 
     renderPage();
 
-    await screen.findByText('Program 1');
+    await screen.findByText('Career 1');
+    await user.click(screen.getByRole('button', { name: /^programs/i }));
+    await user.click(await screen.findByRole('button', { name: /^Program 1 / }));
 
     const [button] = screen.getAllByRole('button', { name: /view colleges offering Program 1/i });
     await user.click(button!);
@@ -298,7 +351,9 @@ describe('RecommendationPage', () => {
 
     renderPage();
 
-    await screen.findByText('Program 1');
+    await screen.findByText('Career 1');
+    await user.click(screen.getByRole('button', { name: /^programs/i }));
+    await user.click(await screen.findByRole('button', { name: /^Program 1 / }));
 
     const [button] = screen.getAllByRole('button', { name: /view colleges offering Program 1/i });
     await user.click(button!);

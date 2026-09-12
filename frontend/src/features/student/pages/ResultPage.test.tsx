@@ -145,4 +145,24 @@ describe('ResultPage', () => {
     // The scale travels with the number rather than being stated once, far away.
     expect(screen.getAllByText('out of 100').length).toBeGreaterThan(0);
   });
+
+  /** The two printable exports (docs_report/) — RIASEC and SCCT both get the button. */
+  it('offers the printable report for RIASEC and SCCT', async () => {
+    renderResult();
+
+    await screen.findByText('Your Holland Code');
+    expect(screen.getByRole('button', { name: 'Print report' })).toBeInTheDocument();
+
+    vi.mocked(studentAssessmentApi.getResult).mockResolvedValue(
+      riasecResult({
+        assessment: { title: 'SCCT Career Confidence Scale', category: 'SCCT' },
+        result: { result_code: null, overall_summary: 'High Career Confidence.', generated_at: null },
+      }),
+    );
+
+    renderResult();
+
+    await screen.findByText('High Career Confidence.');
+    expect(screen.getAllByRole('button', { name: 'Print report' })).toHaveLength(2);
+  });
 });

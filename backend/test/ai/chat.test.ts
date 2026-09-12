@@ -1,8 +1,13 @@
 /* eslint-disable @typescript-eslint/require-await -- async-interface stubs have nothing to await */
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { chatConversations, knowledgeChunks, knowledgeDocuments } from '@/db/schema';
+import {
+  aiRequests,
+  chatConversations,
+  knowledgeChunks,
+  knowledgeDocuments,
+} from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { AiGatewayService, type WorkersAiClient } from '@/modules/ai/ai-gateway-service';
@@ -464,5 +469,57 @@ describe('the chat endpoints', () => {
 
     expect(asked.body.data.answer.knowledge_request).toBeNull();
     expect(response.status).toBe(404);
+  });
+});
+
+describe('a reply in which the model says it does not know (SELF_REPORTED_GAP)', () => {
+  /**
+   * Found testing on production: a cited, honest "I don't have that" passed every check and was
+   * recorded as a success, so the question never reached the backlog and the student was never
+   * offered the knowledge request. The reply itself was good, so it is kept — only the bookkeeping
+   * changes.
+   */
+  it('keeps the honest reply, files the gap and offers the knowledge request', async () => {
+    await clearConversation();
+
+    const chunkId = await seedChunk('BS Mechanical Engineering is offered at University of Bohol.');
+    const reply =
+      "I don't have any information about that program at another campus. BS Mechanical Engineering is offered at University of Bohol [1].";
+    const { service } = pipeline({ responses: [reply], matches: [{ id: chunkId, score: 0.9 }] });
+    const question = `Is Mechanical Engineering offered at another campus ${uuid()}?`;
+
+    const turn = await service.ask(studentId, question, await currentSet());
+
+    expect(turn.failure).toBeNull();
+    expect(turn.answer.content).toBe(reply);
+    expect(turn.answer.knowledgeRequest).toBe('OFFERED');
+
+    const logged = await db()
+      .select()
+      .from(aiRequests)
+      .where(
+        and(
+          eq(aiRequests.status, 'FAILED'),
+          sql`json_extract(${aiRequests.inputContext}, '$.retrieval_query') = ${question}`,
+        ),
+      );
+
+    // The SKIPPED row is what the AI-gaps backlog reads — without it the report never sees this.
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.failureReason).toMatch(/^SKIPPED: .*SELF_REPORTED_GAP/);
+  });
+
+  it('offers nothing on an ordinary grounded answer', async () => {
+    await clearConversation();
+
+    const chunkId = await seedChunk('Nursing programs at this school require a Grade 11 average.');
+    const { service } = pipeline({
+      responses: ['The materials mention a Grade 11 average [1].'],
+      matches: [{ id: chunkId, score: 0.9 }],
+    });
+
+    const turn = await service.ask(studentId, 'What do I need for nursing?', await currentSet());
+
+    expect(turn.answer.knowledgeRequest).toBeNull();
   });
 });

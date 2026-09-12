@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { SIGNUP_STATUS_QUERY_KEY } from '@/features/auth/hooks/useAuth';
 import { classApi } from '@/services/classApi';
 import { counselorManagementApi } from '@/services/counselorManagementApi';
-import { platformApi } from '@/services/platformApi';
+import { platformApi, type AppSettings } from '@/services/platformApi';
 import type {
   AuditLogFilters,
   CreateCounselorPayload,
@@ -22,7 +23,34 @@ export const platformAdminKeys = {
   counselorStudents: (id: string) => ['admin', 'counselors', id, 'students'] as const,
   counselorClasses: (id: string) => ['admin', 'counselors', id, 'classes'] as const,
   platformUsage: ['admin', 'platform-usage'] as const,
+  settings: ['admin', 'settings'] as const,
 };
+
+/** The operator flags (migration 0034). Admin-only, like every other hook in this file. */
+export function useAppSettings() {
+  return useQuery({
+    queryKey: platformAdminKeys.settings,
+    queryFn: () => platformApi.settings(),
+  });
+}
+
+export function useUpdateAppSettings() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload: Partial<AppSettings>) => platformApi.updateSettings(payload),
+    // The PATCH returns the full settings object, so the cache is written from the server's answer
+    // rather than from what we asked for — a flip that was refused must not leave the switch
+    // looking flipped.
+    onSuccess: (settings) => {
+      queryClient.setQueryData(platformAdminKeys.settings, settings);
+      // The unauthenticated status the sign-in screen reads is the same fact from a different
+      // endpoint; an admin who closes registration and then opens /login in the next tab should
+      // not be shown a stale "Create an account" link.
+      void queryClient.invalidateQueries({ queryKey: SIGNUP_STATUS_QUERY_KEY });
+    },
+  });
+}
 
 export function useAdminDashboard() {
   return useQuery({
@@ -183,15 +211,6 @@ export function useUpdateCounselor() {
   return useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: UpdateCounselorPayload }) =>
       counselorManagementApi.update(id, payload),
-    onSuccess: invalidate,
-  });
-}
-
-export function useDeleteCounselor() {
-  const invalidate = useInvalidateCounselors();
-
-  return useMutation({
-    mutationFn: (id: string) => counselorManagementApi.remove(id),
     onSuccess: invalidate,
   });
 }

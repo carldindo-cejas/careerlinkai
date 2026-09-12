@@ -34,22 +34,44 @@ const LIKERT = [
   { label: 'Strongly Agree', value: '5', score: 5, orderNumber: 5 },
 ];
 
-/** §22's three-tier banding, verbatim. */
-const INTEREST_BANDS = [
-  { min: 0, max: 33.99, label: 'Low Interest' },
-  { min: 34, max: 66.99, label: 'Moderate Interest' },
-  { min: 67, max: 100, label: 'High Interest' },
-];
+/**
+ * The five-tier scale both instruments band on (migration 0035), anchored on the 1–5 item mean:
+ *
+ * | Item mean   | Score        | Label     |
+ * |-------------|--------------|-----------|
+ * | 1.00 – 1.79 | 20.0 – 35.9  | Very Low  |
+ * | 1.80 – 2.59 | 36.0 – 51.9  | Low       |
+ * | 2.60 – 3.39 | 52.0 – 67.9  | Moderate  |
+ * | 3.40 – 4.19 | 68.0 – 83.9  | High      |
+ * | 4.20 – 5.00 | 84.0 – 100.0 | Very High |
+ *
+ * score = mean × 20, because a 5-point item floors at 1 — so equal fifths of the *reachable* range,
+ * not of 0–100. Very Low starts at 0 rather than 20 so a score under the floor (an optional-only
+ * CUSTOM edge, never RIASEC/SCCT) still has a label.
+ *
+ * **Listed highest first, with shared edges, on purpose.** `interpret()` takes the first band that
+ * contains the score, so 84 lands in Very High and 36 in Low, exactly as the table says — and there
+ * is no 35.99…36 gap for a continuous composite index to fall through unlabelled.
+ */
+function likertBands(noun: string) {
+  const suffix = noun === '' ? '' : ` ${noun}`;
 
-const CONFIDENCE_BANDS = [
-  { min: 0, max: 33.99, label: 'Low' },
-  { min: 34, max: 66.99, label: 'Moderate' },
-  { min: 67, max: 79.99, label: 'Moderately High' },
-  { min: 80, max: 100, label: 'High' },
-];
+  return [
+    { min: 84, max: 100, label: `Very High${suffix}` },
+    { min: 68, max: 84, label: `High${suffix}` },
+    { min: 52, max: 68, label: `Moderate${suffix}` },
+    { min: 36, max: 52, label: `Low${suffix}` },
+    { min: 0, max: 36, label: `Very Low${suffix}` },
+  ];
+}
+
+const INTEREST_BANDS = likertBands('Interest');
+
+/** Bare, because the composite's label is always read inside "… Career Confidence." */
+const CONFIDENCE_BANDS = likertBands('');
 
 /**
- * The same four bands, worded for a **single SCCT dimension** rather than the composite.
+ * The same five bands, worded for a **single SCCT dimension** rather than the composite.
  *
  * SCCT's three dimensions were seeded with `INTEREST_BANDS`, so a student who finished the
  * confidence scale was told *"Self-Efficacy 78 · High Interest"* — on a screen headed "Your career
@@ -68,12 +90,7 @@ const CONFIDENCE_BANDS = [
  * Confidence."), because the composite's label is always read inside that sentence and a
  * dimension's is rendered bare, after the score: `78 · High` names no quantity at all.
  */
-const CONFIDENCE_DIMENSION_BANDS = [
-  { min: 0, max: 33.99, label: 'Low Confidence' },
-  { min: 34, max: 66.99, label: 'Moderate Confidence' },
-  { min: 67, max: 79.99, label: 'Moderately High Confidence' },
-  { min: 80, max: 100, label: 'High Confidence' },
-];
+const CONFIDENCE_DIMENSION_BANDS = likertBands('Confidence');
 
 /** 10 items per dimension × 6 = 60 (§22). */
 const RIASEC_ITEMS: Record<string, string[]> = {
@@ -217,7 +234,9 @@ export async function seedAssessmentInstruments(
   const existing = await db
     .select()
     .from(assessmentTemplates)
-    .where(and(eq(assessmentTemplates.category, 'RIASEC'), isNull(assessmentTemplates.deletedAt)))
+    .where(
+      and(eq(assessmentTemplates.category, 'RIASEC'), isNull(assessmentTemplates.deletedAt)),
+    )
     .limit(1);
 
   if (existing.length > 0) {
@@ -225,11 +244,15 @@ export async function seedAssessmentInstruments(
     const [scct] = await db
       .select()
       .from(assessmentTemplates)
-      .where(and(eq(assessmentTemplates.category, 'SCCT'), isNull(assessmentTemplates.deletedAt)))
+      .where(
+        and(eq(assessmentTemplates.category, 'SCCT'), isNull(assessmentTemplates.deletedAt)),
+      )
       .limit(1);
 
-    const riasecVersion = riasec === undefined ? undefined : await builder.assignableVersion(riasec.id);
-    const scctVersion = scct === undefined ? undefined : await builder.assignableVersion(scct.id);
+    const riasecVersion =
+      riasec === undefined ? undefined : await builder.assignableVersion(riasec.id);
+    const scctVersion =
+      scct === undefined ? undefined : await builder.assignableVersion(scct.id);
 
     return {
       riasecVersionId: riasecVersion?.id ?? null,

@@ -154,7 +154,19 @@ export type AuditAction =
   | 'KNOWLEDGE_DOCUMENT_UPLOADED'
   | 'KNOWLEDGE_DOCUMENT_UPDATED'
   | 'KNOWLEDGE_DOCUMENT_ARCHIVED'
+  // Prompt-driven: the entry was destroyed, not retired. Its own action rather than an ARCHIVED
+  // with a flag, because this is the one act in the knowledge module that cannot be undone — and
+  // the audit row is the only surviving record that the entry ever existed.
+  | 'KNOWLEDGE_DOCUMENT_DELETED'
   | 'KNOWLEDGE_DOCUMENT_REPROCESSED'
+  // Migration 0031 — taking a question off the unanswered backlog. Recorded because these are
+  // decisions *about what the platform will not be asked to improve*: an answered question stops
+  // being reported, and a dismissed one stops being reported permanently. "Who decided this was
+  // handled, and when" is the question a term-end review actually asks, and the resolution row
+  // itself cannot answer it after a reopen deletes it.
+  | 'KNOWLEDGE_QUESTION_ANSWERED'
+  | 'KNOWLEDGE_QUESTION_DISMISSED'
+  | 'KNOWLEDGE_QUESTION_REOPENED'
   | 'AI_POLICY_UPDATED'
   // Counselor management (§20, Phase 6). Recorded because these are the account-lifecycle
   // acts on the role that can read every student's results: who was given that access, who
@@ -165,7 +177,17 @@ export type AuditAction =
   // COUNSELOR_UPDATED, because "who reset whose credential, and when" is the question an incident
   // review actually asks, and it must be filterable without reading every update's diff.
   | 'COUNSELOR_PASSWORD_RESET'
-  | 'COUNSELOR_DELETED';
+  | 'COUNSELOR_DELETED'
+  // Counselor self-signup (migration 0034). Two actions rather than one, because the gap between
+  // them is the interesting part: a REQUESTED with no COMPLETED is somebody who never received or
+  // never entered their code, and a run of REQUESTED rows from one address is what abuse of the
+  // open form looks like. `userId` is NULL on REQUESTED — there is no account yet, by design.
+  | 'COUNSELOR_SIGNUP_REQUESTED'
+  | 'COUNSELOR_SIGNUP_COMPLETED'
+  // An operator flag changed (migration 0034). Recorded because the only flag today decides whether
+  // strangers may create accounts that read student results — "who opened registration, and when"
+  // is not a question the current value of a row can answer.
+  | 'APP_SETTING_UPDATED';
 
 /**
  * Why a join attempt failed. Never sent to the client — the API answers every failure
@@ -292,7 +314,14 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   KNOWLEDGE_DOCUMENT_UPLOADED: 'CREATE',
   KNOWLEDGE_DOCUMENT_UPDATED: 'UPDATE',
   KNOWLEDGE_DOCUMENT_ARCHIVED: 'ARCHIVE',
+  KNOWLEDGE_DOCUMENT_DELETED: 'DELETE',
   KNOWLEDGE_DOCUMENT_REPROCESSED: 'UPDATE',
+  /** A resolution row comes into existence, and a backlog item stops being reported. */
+  KNOWLEDGE_QUESTION_ANSWERED: 'CREATE',
+  /** Retiring something without destroying it — the same shape as archiving an entry. */
+  KNOWLEDGE_QUESTION_DISMISSED: 'ARCHIVE',
+  /** The undo: the question goes back on the backlog, exactly as RESTORE reads elsewhere. */
+  KNOWLEDGE_QUESTION_REOPENED: 'RESTORE',
   AI_POLICY_UPDATED: 'UPDATE',
   // Counselor management.
   COUNSELOR_CREATED: 'CREATE',
@@ -302,6 +331,13 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   // same kind of act the same way.
   COUNSELOR_PASSWORD_RESET: 'UPDATE',
   COUNSELOR_DELETED: 'DELETE',
+  // Self-signup. The request creates nothing — there is no account until the code is verified — so
+  // it is OTHER rather than CREATE; filing it under CREATE would put rows in the "what was created"
+  // list for accounts that may never exist. The completion is the CREATE, and it sits beside
+  // COUNSELOR_CREATED because the two produce exactly the same thing by different routes.
+  COUNSELOR_SIGNUP_REQUESTED: 'OTHER',
+  COUNSELOR_SIGNUP_COMPLETED: 'CREATE',
+  APP_SETTING_UPDATED: 'UPDATE',
 };
 
 /** Every action in one group — what the filter turns into, resolved once per module load. */

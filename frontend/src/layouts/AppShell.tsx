@@ -1,4 +1,4 @@
-import { ChevronDown, LogOut, Menu, type LucideIcon } from 'lucide-react';
+import { ChevronDown, LogOut, Menu, UserRound, type LucideIcon } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
@@ -67,6 +67,12 @@ export interface AppShellProps {
    */
   banner?: ReactNode;
   /**
+   * The signed-in person's own page — the student's profile. Given, the name in the top bar and
+   * the identity block above "Sign out" both link to it, which is where an account lives, and it
+   * stays out of the nav among the things the person came to do.
+   */
+  profile?: { to: string; label: string };
+  /**
    * Runs after sign-out settles. The student shell clears the joined-class context here
    * so the next student on a shared lab machine never sees the last one's class.
    */
@@ -80,7 +86,7 @@ export interface AppShellProps {
  * CounselorLayout and StudentLayout compose this; they differ only in title, navigation
  * and the small role-specific chrome passed through props.
  */
-export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppShellProps) {
+export function AppShell({ title, nav, headerBadge, banner, profile, onSignedOut }: AppShellProps) {
   const user = useAuthStore((state) => state.user);
   const logout = useLogout();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -95,6 +101,7 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
       nav={nav}
       pathname={location.pathname}
       expanded
+      profile={profile}
       userName={user?.name ?? null}
       userRole={user?.role ?? null}
       signingOut={logout.isPending}
@@ -184,6 +191,7 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
             nav={nav}
             pathname={location.pathname}
             expanded={railExpanded}
+            profile={profile}
             userName={user?.name ?? null}
             userRole={user?.role ?? null}
             signingOut={logout.isPending}
@@ -223,20 +231,35 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
               </div>
 
               {/* Breadcrumb trail on desktop — the sidebar already carries the brand. */}
-              <Breadcrumbs title={title} nav={nav} pathname={location.pathname} />
+              <Breadcrumbs
+                title={title}
+                nav={nav}
+                profile={profile}
+                pathname={location.pathname}
+              />
 
               {headerBadge}
             </div>
 
             <div className="flex items-center gap-3">
               <NotificationBell />
-              {user ? (
+              {user && profile ? (
+                <NavLink
+                  to={profile.to}
+                  title={profile.label}
+                  aria-label={`${user.name} — ${profile.label}`}
+                  className={({ isActive }) =>
+                    cn(
+                      'hidden items-center gap-2 px-1 py-0.5 transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex',
+                      isActive && 'bg-secondary',
+                    )
+                  }
+                >
+                  <HeaderIdentity name={user.name} />
+                </NavLink>
+              ) : user ? (
                 <span className="hidden items-center gap-2 sm:flex">
-                  <span className="relative flex size-8 items-center justify-center border border-border bg-primary/10 text-sm font-semibold tabular-nums text-primary">
-                    <Corners />
-                    {initials(user.name)}
-                  </span>
-                  <span className="text-sm text-foreground/80">{user.name}</span>
+                  <HeaderIdentity name={user.name} />
                 </span>
               ) : null}
             </div>
@@ -269,22 +292,39 @@ export function AppShell({ title, nav, headerBadge, banner, onSignedOut }: AppSh
 
 }
 
+function HeaderIdentity({ name }: { name: string }) {
+  return (
+    <>
+      <span className="relative flex size-8 items-center justify-center border border-border bg-primary/10 text-sm font-semibold tabular-nums text-primary">
+        <Corners />
+        {initials(name)}
+      </span>
+      <span className="text-sm text-foreground/80">{name}</span>
+    </>
+  );
+}
+
 /**
  * A real trail rather than a bare section label: `Admin / Colleges`, with the root linking to the
  * shell's first nav item (its dashboard). Two levels is all the route data honestly supports —
  * a detail route like /admin/colleges/:id matches its list's prefix, so it names the section it
  * sits under and does not invent a leaf label it has no source for.
+ *
+ * The profile is not in the nav, but it is still somewhere the person can be, so it names its page
+ * here like any destination.
  */
 function Breadcrumbs({
   title,
   nav,
+  profile,
   pathname,
 }: {
   title: string;
   nav: AppNavEntry[];
+  profile?: { to: string; label: string } | undefined;
   pathname: string;
 }) {
-  const items = flatten(nav);
+  const items = [...flatten(nav), ...(profile ? [{ ...profile, icon: UserRound }] : [])];
   const root = items[0];
   const match = items
     .filter((item) => matches(item, pathname))
@@ -328,6 +368,7 @@ function SidebarBody({
   nav,
   pathname,
   expanded,
+  profile,
   userName,
   userRole,
   signingOut,
@@ -337,6 +378,7 @@ function SidebarBody({
   nav: AppNavEntry[];
   pathname: string;
   expanded: boolean;
+  profile?: { to: string; label: string } | undefined;
   userName: string | null;
   userRole: string | null;
   signingOut: boolean;
@@ -393,20 +435,30 @@ function SidebarBody({
       </nav>
 
       <div className="border-t border-sidebar-border p-3">
-        {userName ? (
+        {userName && profile ? (
+          <NavLink
+            to={profile.to}
+            // The rail shows only initials, so the tooltip and the accessible name carry the rest.
+            title={expanded ? undefined : profile.label}
+            aria-label={`${userName} — ${profile.label}`}
+            className={({ isActive }) =>
+              cn(
+                'mb-2 flex items-center gap-3 border-l-2 py-2 transition-colors',
+                expanded ? 'px-2' : 'px-0',
+                isActive
+                  ? 'border-primary bg-sidebar-active'
+                  : 'border-transparent hover:bg-sidebar-active/60',
+              )
+            }
+          >
+            <SidebarIdentity
+              name={userName}
+              detail={expanded ? profile.label : null}
+            />
+          </NavLink>
+        ) : userName ? (
           <div className={cn('flex items-center gap-3 pb-3 pt-1', expanded ? 'px-2' : 'px-0')}>
-            <span className="relative flex size-8 shrink-0 items-center justify-center border border-sidebar-border bg-sidebar-active text-sm font-semibold text-sidebar-active-foreground">
-              <Corners />
-              {initials(userName)}
-            </span>
-            {expanded ? (
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-medium text-sidebar-active-foreground">
-                  {userName}
-                </span>
-                <span className="block text-xs capitalize text-sidebar-muted">{userRole}</span>
-              </span>
-            ) : null}
+            <SidebarIdentity name={userName} detail={expanded ? userRole : null} />
           </div>
         ) : null}
 
@@ -424,6 +476,26 @@ function SidebarBody({
         </button>
       </div>
     </div>
+  );
+}
+
+/** Initials, and — when the rail is open — the name with one line under it. */
+function SidebarIdentity({ name, detail }: { name: string; detail: string | null }) {
+  return (
+    <>
+      <span className="relative flex size-8 shrink-0 items-center justify-center border border-sidebar-border bg-sidebar-active text-sm font-semibold text-sidebar-active-foreground">
+        <Corners />
+        {initials(name)}
+      </span>
+      {detail !== null ? (
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium text-sidebar-active-foreground">
+            {name}
+          </span>
+          <span className="block text-xs capitalize text-sidebar-muted">{detail}</span>
+        </span>
+      ) : null}
+    </>
   );
 }
 

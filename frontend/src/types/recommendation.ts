@@ -87,6 +87,12 @@ export interface ChatMessage {
    * Null is every other message, and offers nothing.
    */
   knowledge_request: 'OFFERED' | 'REQUESTED' | null;
+  /**
+   * When the question behind a REQUESTED refusal was answered (migration 0033). The panel says so,
+   * rather than leaving a student who asked to find out by asking again. Optional only because a
+   * transcript cached from before that deploy does not carry it.
+   */
+  knowledge_answered_at?: string | null;
   created_at: string | null;
 }
 

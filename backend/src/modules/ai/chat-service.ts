@@ -19,6 +19,7 @@ import {
   offDomainKind,
   offDomainReply,
   parseQaChunk,
+  selfReportedGap,
   unsupportedClaims,
   validateCitations,
 } from '@/lib/grounding';
@@ -100,7 +101,9 @@ interface Answer {
   sources: string[];
   /**
    * True on the four paths that end in `NO_COVERAGE_REPLY` — nothing retrieved, a citation the
-   * grounding contract rejected, an unsupported claim, a failed verification.
+   * grounding contract rejected, an unsupported claim, a failed verification — and on a fifth that
+   * does not: an otherwise-accepted answer in which the model itself says its material does not
+   * cover the question (`selfReportedGap`). That one keeps its text; only the button is added.
    *
    * It is what puts *"Request to add to knowledge"* under the answer (migration 0030). Recorded on
    * the row rather than re-derived by matching the reply text, so the button survives a reworded
@@ -598,6 +601,29 @@ export class ChatService {
       }
     }
 
+    /**
+     * **The model said it does not know** (found testing on production, 2026-09-11).
+     *
+     * A reply like *"I don't have any information about a Mechanical Engineering program at Bohol
+     * Island State University…"* passes every check above — it cites a real passage and invents
+     * nothing — so it used to be recorded as a plain success: the student's real question never
+     * reached the backlog, and they were never offered *"Request to add to knowledge"*.
+     *
+     * The text is kept, because it is usually the most honest reply available: it says what is
+     * missing and points at what does exist, which is what the prompt asks for. Only the
+     * bookkeeping changes — the gap is logged as the SKIPPED row the backlog reads, and the answer
+     * carries the button. A false positive therefore costs one extra backlog row and never hides an
+     * answer, which is why this uses the generous tier of `selfReportedGap`.
+     */
+    const gap = selfReportedGap(text);
+
+    if (gap) {
+      await this.gateway.logSkipped(
+        { ...baseOptions, systemPrompt: '', userPrompt: question },
+        'The model answered that its material does not cover the question (SELF_REPORTED_GAP).',
+      );
+    }
+
     return {
       text,
       aiRequestId: result.request.id,
@@ -605,7 +631,7 @@ export class ChatService {
       // Only what the answer actually cited. Naming a passage the model never used would be a
       // worse lie than naming none: the student would check it and find nothing.
       sources: sourceTitlesFor(retrieved, citedIndexes(text)),
-      coverageGap: false,
+      coverageGap: gap,
     };
   }
 
@@ -816,6 +842,8 @@ export class ChatService {
         refusals a student may ask to have answered.
       */
       knowledgeRequest,
+      // Set only when a question the student requested is later answered (migration 0033).
+      knowledgeAnsweredAt: null,
       createdAt: now(),
     };
 

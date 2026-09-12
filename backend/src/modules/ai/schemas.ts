@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { PROCESSING_STATUSES } from '@/db/enums';
+import { PROCESSING_STATUSES, USER_ROLES } from '@/db/enums';
 import { MAX_EXTRACTED_TEXT_CHARS } from '@/modules/ai/knowledge-ingestion-service';
 
 /**
@@ -85,14 +85,86 @@ const textEntrySchema = z.object({
 });
 
 /**
+ * The cap on a question **as the backlog recorded it** — not on a question anyone types.
+ *
+ * Deliberately far above the 300-character Q&A cap, because the two measure different strings and
+ * confusing them is a 422 on exactly the rows that most need dealing with. A backlog row's text
+ * comes from `ai_requests.input_context.retrieval_query`, and while a chat question is capped at
+ * 1000 by `askChatSchema`, `ExplanationService` builds its retrieval query by **joining catalog
+ * text together** — a program name, its college, description fragments — which for a verbose
+ * catalog entry runs well past a thousand characters.
+ *
+ * Those rows no longer reach the unanswered list (it is student chat questions only, since the
+ * production test of 2026-09-11), but resolutions and dismissals written before that carry them,
+ * and a cap that 422s a reopen or an edit of an existing row is the same bug from the other side.
+ * 4000 matches the AI-policy text cap in this module: still a firm bound against an unbounded
+ * write, comfortably clear of anything the pipeline produces.
+ */
+const MAX_BACKLOG_QUESTION_CHARS = 4000;
+
+/**
+ * **Which backlog question this entry was written to answer** (migration 0031).
+ *
+ * Optional, and separate from the entry's own fields for a reason that is easy to miss: the entry
+ * carries the question *as the author finally phrased it*, while this carries the question **as the
+ * backlog recorded it**. Those are routinely different — the report shows the student's retrieval
+ * query, and the first thing anybody does in the Q&A form is tidy it up before saving.
+ *
+ * If the resolution were keyed off the saved entry's question, editing so much as the punctuation
+ * would key it to text no `ai_requests` row ever contained, the backlog item would never clear, and
+ * the bug this migration exists to fix would be back — this time with a row in the resolutions
+ * table insisting it had been handled.
+ *
+ * Absent on an entry written from scratch rather than from the report. Such an entry still
+ * resolves its own question if it is a Q&A pair — see `resolveBacklogItems` in routes.ts.
+ */
+const resolvesQuestion = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_BACKLOG_QUESTION_CHARS)
+  .optional()
+  .transform((value) => (value === '' ? undefined : value));
+
+/**
+ * **Other backlog questions the author says this entry also answers** (found testing on production).
+ *
+ * Students ask one thing many ways — "Where is Holy Name University located?", "HNU located",
+ * "location of HNU" — and each spelling is its own backlog row, so one answer used to leave three
+ * behind. The report suggests similar rows; the author ticks the ones this entry really covers.
+ *
+ * Opt-in on purpose. Lexical similarity cannot tell "colleges offering Computer Science in Cebu"
+ * from "…in Bohol", and a wrong resolution hides a real gap — so nothing is resolved here that a
+ * person did not tick. Capped at 20, which is more than any real family of rephrasings.
+ */
+const alsoResolves = z
+  .array(z.string().trim().min(1).max(MAX_BACKLOG_QUESTION_CHARS))
+  .max(20, 'Choose at most 20 similar questions.')
+  .optional();
+
+/**
  * A discriminated union rather than one loose object with everything optional: the two shapes
  * have genuinely different fields, and `.strict()` on each means sending a `body` alongside a
  * `question` is a 422 instead of a silently ignored half-saved entry.
  */
 export const createKnowledgeEntrySchema = z.discriminatedUnion('type', [
-  qaEntrySchema.strict(),
-  textEntrySchema.strict(),
+  qaEntrySchema.extend({ resolves_question: resolvesQuestion, also_resolves: alsoResolves }).strict(),
+  textEntrySchema.extend({ resolves_question: resolvesQuestion, also_resolves: alsoResolves }).strict(),
 ]);
+
+/**
+ * Taking a question off the backlog without answering it — gibberish, a test, something
+ * off-domain. Admin-only at the route (see `KnowledgeQuestionResolutionService.dismiss`).
+ */
+export const dismissQuestionSchema = z
+  .object({
+    question: z
+      .string()
+      .trim()
+      .min(1, 'A question is required.')
+      .max(MAX_BACKLOG_QUESTION_CHARS, 'That is longer than any question this system records.'),
+  })
+  .strict();
 
 /**
  * The edit form posts the whole entry back, so this is the same union — a partial update of one
@@ -132,11 +204,45 @@ export const listKnowledgeDocumentsQuerySchema = z.object({
     .optional()
     .transform((value) => (value === undefined || value === '' ? undefined : value)),
   status: z.enum(PROCESSING_STATUSES).optional(),
+  /**
+   * Whose entries to show, by role — an admin asking "what have the counselors contributed?".
+   *
+   * A **filter**, never a permission. The counselor's own scoping is applied by the route from
+   * their token and cannot be widened from here: passing `author_role=admin` as a counselor
+   * narrows an already-narrowed list to nothing, which is the correct and boring outcome. The two
+   * are separate arguments to `list()` precisely so this one can never become the only thing
+   * holding the boundary.
+   *
+   * `student` is in the enum because it is the same `USER_ROLES` list the column is typed with,
+   * and there is no such entry today — a filter matching nothing beats a second role vocabulary
+   * that has to be kept in step with the first.
+   */
+  author_role: z.enum(USER_ROLES).optional(),
+  /**
+   * Which half of the library to list — live entries or archived ones (prompt-driven).
+   *
+   * **Defaults to the live half**, which is a behaviour change and the right one: archived entries
+   * used to be mixed into the same list, so a library with a season of retired entries in it buried
+   * the ones the AI can actually answer from among rows that cannot. They are two different
+   * questions ("what does the AI know?" and "what did we retire?") and they now get two lists.
+   *
+   * A tri-state rather than a boolean, because `false` and "don't care" are different requests and
+   * a bare `?archived=false` would otherwise be indistinguishable from omitting it. Nothing in the
+   * UI asks for `all`; it exists so a future caller can, without this becoming two parameters.
+   */
+  archived: z.enum(['live', 'archived', 'all']).default('live'),
   page: z.coerce.number().int().min(1).default(1),
   per_page: z.coerce.number().int().min(1).max(100).default(20),
 });
 
-export const LIST_KNOWLEDGE_QUERY_KEYS = ['search', 'status', 'page', 'per_page'] as const;
+export const LIST_KNOWLEDGE_QUERY_KEYS = [
+  'search',
+  'status',
+  'author_role',
+  'archived',
+  'page',
+  'per_page',
+] as const;
 
 export type ListKnowledgeDocumentsQuery = z.infer<typeof listKnowledgeDocumentsQuerySchema>;
 
@@ -163,3 +269,22 @@ export const askChatSchema = z
   .strict();
 
 export type AskChatInput = z.infer<typeof askChatSchema>;
+
+/**
+ * The AI-gaps report's paging.
+ *
+ * Two revisions on from where it started. It was a fixed 25 rows with no indication there were more
+ * — everything past the 25th question was simply invisible (found testing on production). That was
+ * replaced by a growing `limit` behind a "Show more" button, which made the backlog reachable but
+ * still meant re-fetching every row already on screen to see the next twenty-five.
+ *
+ * Now it is an ordinary page/per_page pager, the same shape as every other list in this system
+ * (`listCounselorsQuerySchema`, the audit viewer, the catalog) — because the screen it feeds is now
+ * a set of tabs with a pager under each, rather than one growing scroll.
+ */
+export const aiInsightsPageQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  per_page: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+export const AI_INSIGHTS_QUERY_KEYS = ['page', 'per_page'] as const;

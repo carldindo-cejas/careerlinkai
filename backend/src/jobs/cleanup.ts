@@ -1,7 +1,7 @@
 import { lt } from 'drizzle-orm';
 
 import { createDatabase } from '@/db/client';
-import { apiTokens, passwordResetTokens } from '@/db/schema';
+import { apiTokens, counselorSignupRequests, passwordResetTokens } from '@/db/schema';
 import type { Env } from '@/env';
 import { queueCatalogSyncContinuation } from '@/jobs/ai-jobs';
 import { now } from '@/lib/datetime';
@@ -20,6 +20,9 @@ import { syncCatalogKnowledge } from '@/modules/ai/catalog-knowledge-service';
  *     returns is never presented again, so its row lingers past expiry forever.
  *   * **`password_reset_tokens`** are single-use and TTL-checked on redemption, but a request
  *     that is never redeemed leaves its row behind.
+ *   * **`counselor_signup_requests`** (migration 0034) are the same story on a public form: an
+ *     abandoned signup — somebody who never received or never entered their code — leaves a staged
+ *     row nothing else will ever touch, and the form is reachable by anyone.
  *
  * Both are pure garbage once past their expiry, and both are cheap to sweep. The sweep is a plain
  * `DELETE ... WHERE <expiry> < now` — idempotent, and safe to run as often as the trigger fires.
@@ -41,9 +44,22 @@ import { syncCatalogKnowledge } from '@/modules/ai/catalog-knowledge-service';
 /** The password-reset TTL, mirrored from `staff-authentication-service.ts` (60 minutes). */
 const RESET_TOKEN_TTL_MINUTES = 60;
 
+/**
+ * How old an abandoned signup must be before it is swept — an hour, four times its 15-minute code
+ * TTL, rather than the TTL itself.
+ *
+ * Not mirrored from `SIGNUP_CODE_TTL_MINUTES` on purpose: these are two different numbers answering
+ * two different questions ("is this code still valid?" and "is this row still worth keeping?"), and
+ * tying them together would make a change to the code's lifetime silently change when rows vanish
+ * from under in-flight requests.
+ */
+const SIGNUP_REQUEST_SWEEP_AFTER_MINUTES = 60;
+
 export interface CleanupResult {
   expiredTokens: number;
   staleResetTokens: number;
+  /** Abandoned counselor signups swept past their code TTL (migration 0034). */
+  staleSignupRequests: number;
   stalledAiRequests: number;
   /** Catalog knowledge entries rewritten and re-queued this run (AiNormalisation Phase 1). */
   catalogEntriesSynced: number;
@@ -61,6 +77,9 @@ export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
   const db = createDatabase(env.DB);
   const currentTime = now();
   const resetCutoff = new Date(Date.now() - RESET_TOKEN_TTL_MINUTES * 60_000).toISOString();
+  const signupCutoff = new Date(
+    Date.now() - SIGNUP_REQUEST_SWEEP_AFTER_MINUTES * 60_000,
+  ).toISOString();
 
   // `.returning()` gives an exact deleted-row count for the structured log, in one statement each.
   const expired = await db
@@ -72,6 +91,22 @@ export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
     .delete(passwordResetTokens)
     .where(lt(passwordResetTokens.createdAt, resetCutoff))
     .returning({ email: passwordResetTokens.email });
+
+  /**
+   * Abandoned signups (migration 0034).
+   *
+   * **This sweep is not what enforces the TTL** — `CounselorSignupService.verify` refuses an
+   * expired code on its own, and has to: if expiry depended on the cron, the real window would be
+   * "15 minutes, or until 03:00 tomorrow, whichever is later", and the schedule would quietly
+   * become a security parameter. This is garbage collection on a table a public form writes to.
+   *
+   * Swept well past the TTL rather than at it, so a row is never deleted out from under somebody
+   * mid-request — the cost of keeping it a few hours longer is a row.
+   */
+  const staleSignups = await db
+    .delete(counselorSignupRequests)
+    .where(lt(counselorSignupRequests.createdAt, signupCutoff))
+    .returning({ email: counselorSignupRequests.email });
 
   // An UPDATE, not a DELETE: a stalled request is evidence, not litter. It is the only record that
   // a reviewer asked for something and the system never answered, and §13.7's audit trail is worth
@@ -127,6 +162,7 @@ export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
   return {
     expiredTokens: expired.length,
     staleResetTokens: stale.length,
+    staleSignupRequests: staleSignups.length,
     stalledAiRequests: stalled,
     catalogEntriesSynced,
     catalogEntriesRetired,

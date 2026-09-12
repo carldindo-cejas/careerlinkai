@@ -34,6 +34,7 @@ export const ROUTE_GROUPS = [
   { name: 'counselor', src: 'src/routes/groups/counselor.ts', screen: '/counselor' },
   { name: 'builder', src: 'src/routes/groups/builder.ts', screen: '/admin/assessment-templates' },
   { name: 'student', src: 'src/routes/groups/student.ts', screen: '/student/recommendations' },
+  { name: 'reports', src: 'src/routes/groups/reports.ts', screen: '/student/reports' },
 ];
 
 /**

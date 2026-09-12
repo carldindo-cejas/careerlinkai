@@ -25,6 +25,20 @@ export interface KnowledgeDocument {
   /** Archived, never deleted (§13.7) — an archived document is unretrievable by the AI. */
   archived_at: string | null;
   chunk_count: number | null;
+  /**
+   * Who wrote this, and in what capacity (migration 0031).
+   *
+   * Counselors contribute to the same corpus admins do, so an entry now has two possible kinds of
+   * author and the difference matters when reviewing a wrong answer: a school-published entry and
+   * one counselor's note are different things to act on even when they read identically.
+   *
+   * `added_by` is the id, and it is what the UI actually branches on — "is this mine?" is the only
+   * question a client can answer locally, and a name is not an identity. The name and role are for
+   * reading. Null on a response that serialized a row without the author join.
+   */
+  added_by: string;
+  added_by_name: string | null;
+  added_by_role: 'admin' | 'counselor' | 'student' | null;
   created_at: string;
   updated_at: string;
 }
@@ -39,8 +53,8 @@ export interface KnowledgeEntryContent extends KnowledgeDocument {
  * a student actually phrases the question, and it is the answer that can be returned verbatim.
  */
 export type KnowledgeEntryPayload =
-  | { type: 'qa'; question: string; answer: string }
-  | { type: 'text'; title: string; body: string };
+  | { type: 'qa'; question: string; answer: string; resolves_question?: string; also_resolves?: string[] }
+  | { type: 'text'; title: string; body: string; resolves_question?: string; also_resolves?: string[] };
 
 export interface CatalogSyncResult {
   total: number;
@@ -54,6 +68,8 @@ export interface CatalogSyncResult {
 
 /** One question students asked that the knowledge base could not answer (Phase 4). */
 export interface UnansweredQuestion {
+  /** The normalised identity — what makes two phrasings one row. A React key, never displayed. */
+  key: string;
   question: string;
   asks: number;
   /**
@@ -64,6 +80,34 @@ export interface UnansweredQuestion {
    */
   requests: number;
   last_asked_at: string;
+  /**
+   * Non-null means: **this already has an answer and was asked again anyway** (migration 0031).
+   *
+   * The rarest and most valuable row on the screen. Somebody wrote an entry for exactly this
+   * question and the pipeline still failed to retrieve it, so writing a second entry is not the
+   * fix — the retrieval is what needs looking at. The `asks` count on such a row covers only the
+   * asks since that answer was written.
+   */
+  answered_at: string | null;
+}
+
+/** A question somebody has already dealt with — the other half of a backlog (migration 0031). */
+export interface ResolvedQuestion {
+  id: string;
+  question: string;
+  resolution: 'ANSWERED' | 'DISMISSED';
+  document_id: string | null;
+  /** Null once the entry is archived or failed — i.e. whenever the resolution has lapsed. */
+  document_title: string | null;
+  /**
+   * False when this no longer suppresses anything and the question is back on the backlog. The
+   * point of showing it: an answer that stopped counting is otherwise completely silent.
+   */
+  live: boolean;
+  resolved_by: string;
+  resolved_by_name: string;
+  resolved_by_role: 'admin' | 'counselor' | 'student';
+  resolved_at: string;
 }
 
 /** A career or program with nothing in the corpus about it. */
@@ -75,22 +119,53 @@ export interface CoverageGap {
   stalled: boolean;
 }
 
+/**
+ * The AI-gaps report **header** — what stays on screen whichever tab is open.
+ *
+ * The lists it used to carry (`unanswered_questions`, `resolved_questions`, `coverage`,
+ * `flagged_answers`) moved to one endpoint each when the screen became four tabs: a response that
+ * carried a page of one list and all of another could not be paginated, and a visit that fetched
+ * all four ran the catalog-coverage scan to render a backlog page nobody asked it of.
+ */
 export interface AiInsights {
-  unanswered_questions: UnansweredQuestion[];
-  coverage: {
-    careers: { total: number; covered: number };
-    programs: { total: number; covered: number };
-    gaps: CoverageGap[];
-  };
-  flagged_answers: {
-    message_id: string;
-    answer: string;
-    question: string | null;
-    ai_request_id: string | null;
-    chunk_ids: string[];
-    created_at: string | null;
-  }[];
   corpus: { entries: number; chunks: number; embedded: number; failed: number };
+  /**
+   * The tab badges, counted server-side rather than read off each tab's pagination — so the number
+   * on a tab is right before anybody has opened it.
+   */
+  counts: {
+    unanswered: number;
+    resolved: number;
+    flagged: number;
+  };
+  /**
+   * What this caller may do, **said by the server** rather than inferred from a role string.
+   *
+   * A client that derives its own permissions is a client that renders a button the API will
+   * refuse — and the rule here is not a simple role test anyway (dismissing is admin-only for a
+   * reason specific to dismissal, not because counselors are second-class contributors).
+   */
+  can: {
+    dismiss_questions: boolean;
+    sync_catalog: boolean;
+    see_all_knowledge: boolean;
+  };
+}
+
+/** One answer a student marked wrong, with the provenance needed to work out why. */
+export interface FlaggedAnswer {
+  message_id: string;
+  answer: string;
+  question: string | null;
+  ai_request_id: string | null;
+  chunk_ids: string[];
+  created_at: string | null;
+}
+
+export interface CoverageReport {
+  careers: { total: number; covered: number };
+  programs: { total: number; covered: number };
+  gaps: CoverageGap[];
 }
 
 export interface AiPolicy {

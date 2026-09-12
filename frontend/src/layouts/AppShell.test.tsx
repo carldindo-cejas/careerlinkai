@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createQueryClient } from '@/app/queryClient';
 import { AppShell, type AppNavEntry } from '@/layouts/AppShell';
+import { useAuthStore } from '@/stores/authStore';
+import type { User } from '@/types/user';
 
 vi.mock('@/features/notifications/components/NotificationBell', () => ({
   NotificationBell: () => null,
@@ -123,5 +125,56 @@ describe('AppShell — grouped navigation', () => {
 
     expect(screen.getAllByRole('link', { name: 'Knowledge' }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('link', { name: 'Careers' }).length).toBeGreaterThan(0);
+  });
+});
+
+const student: User = {
+  id: 'usr_1',
+  name: 'Francisco Mercado',
+  email: 'student@example.test',
+  role: 'student',
+  status: 'active',
+  must_change_password: false,
+  email_verified_at: null,
+  last_login_at: null,
+  created_at: null,
+};
+
+describe('AppShell — the profile link', () => {
+  /** The profile is reached from the person's own name, not from a row among the destinations. */
+  it('links the name in the top bar and above "Sign out" to the profile', () => {
+    useAuthStore.setState({ user: student });
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter initialEntries={['/student']}>
+          <Routes>
+            <Route
+              path="/student"
+              element={
+                <AppShell
+                  title="Student"
+                  nav={[{ to: '/student', label: 'Dashboard', icon: LayoutDashboard, end: true }]}
+                  profile={{ to: '/student/profile', label: 'My profile' }}
+                />
+              }
+            >
+              <Route index element={<p>dashboard</p>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const links = screen.getAllByRole('link', { name: 'Francisco Mercado — My profile' });
+
+    // One in the top bar, one in the sidebar's identity block.
+    expect(links).toHaveLength(2);
+    links.forEach((link) => expect(link).toHaveAttribute('href', '/student/profile'));
+    expect(
+      screen.queryByRole('link', { name: 'My profile' }),
+    ).not.toBeInTheDocument();
+
+    useAuthStore.setState({ user: null });
   });
 });

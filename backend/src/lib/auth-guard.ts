@@ -69,6 +69,48 @@ export const FORGOT_PASSWORD_LIMIT = 3;
 export const FORGOT_PASSWORD_WINDOW_SECONDS = 60 * 60;
 
 /**
+ * Migration 0034: 5 counselor-signup actions per IP per hour, submissions and code re-sends
+ * together. A **usage** limiter — every attempt is charged, allowed or not — and the counter is
+ * charged before anything else in the handler runs.
+ *
+ * That ordering is the point. One submission costs a 600,000-iteration PBKDF2 derivation, a D1
+ * upsert and an outbound email against a Resend free tier of 100 messages a day shared with
+ * password resets. All three are reachable by an unauthenticated caller, so the throttle has to sit
+ * in front of them rather than beside them.
+ *
+ * Keyed on IP rather than on the submitted email for the obvious reason: an attacker chooses the
+ * email, so an email-keyed counter costs them nothing.
+ *
+ * **Five rather than three, because of NAT.** A counter keyed on IP is keyed on a *school*, not a
+ * person — every counselor registering from one campus shares one public address — and the honest
+ * path is rarely one request: mistype the address, start again, ask for a new code, and one person
+ * has spent three. Five leaves room for that while still capping a single connection at five
+ * emails an hour out of a hundred-a-day allowance. Two counselors registering in the same hour from
+ * the same staff room is the case this number is sized for; a whole department doing it at once is
+ * not, and the answer there is the account the administrator can still create by hand — which is
+ * what the closed-sign-up copy on the form already points at.
+ */
+export const SIGNUP_LIMIT = 5;
+export const SIGNUP_WINDOW_SECONDS = 60 * 60;
+
+/**
+ * Migration 0034: 5 **failed** code attempts per staged signup → 15 minutes. The same numbers as
+ * the staff login lockout, and for the same reason — this is a credential check, and the credential
+ * is six digits.
+ *
+ * Without it the code is guessable. A 10^6 space against the `API_RATE_LIMIT_PER_MINUTE` budget is
+ * not a real defence (and that budget is per *authenticated user*, which a caller verifying a code
+ * is not), and the per-IP signup throttle above does not help because verifying is not signing up
+ * and an attacker rotates IPs anyway. Keyed on the email, so the ceiling is per code rather than
+ * per attacker.
+ *
+ * Failures only: the correct code calls `clear()`, so somebody who mistypes twice and then gets it
+ * right walks away with a clean counter.
+ */
+export const SIGNUP_VERIFY_LIMIT = 5;
+export const SIGNUP_VERIFY_WINDOW_SECONDS = 15 * 60;
+
+/**
  * Audit C4: 5 recommendation regenerations per student per 10 minutes. A usage limiter — every
  * attempt is charged, allowed or not.
  *
@@ -185,6 +227,33 @@ export function apiRateLimitGuard(env: Env, userId: string): DurableObjectStub<A
  */
 export function forgotPasswordGuard(env: Env, email: string): DurableObjectStub<AuthGuardDO> {
   return env.AUTH_DO.get(env.AUTH_DO.idFromName(`forgot:${email.trim().toLowerCase()}`));
+}
+
+/**
+ * One instance per **IP** for the counselor-signup throttle (migration 0034) — the only counter in
+ * this file keyed on the caller's address rather than on an account or a user.
+ *
+ * It has to be. Every other limiter here guards a resource that belongs to somebody already known
+ * (their account, their AI budget, their reset token); this one guards a form that anybody can
+ * submit, where the email is a field the submitter chooses. An email-keyed counter would be reset
+ * by typing a different address.
+ *
+ * A null IP (no `CF-Connecting-IP`, which in practice means a test or a direct-to-origin request)
+ * collapses to one shared `unknown` instance, same as `joinThrottleGuard` — a caller we cannot
+ * distinguish is a caller we throttle together.
+ */
+export function signupThrottleGuard(env: Env, ip: string | null): DurableObjectStub<AuthGuardDO> {
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`signup:${ip ?? 'unknown'}`));
+}
+
+/**
+ * One instance per email for the signup code check (migration 0034). A **fourth** possible instance
+ * for one address, alongside the login lockout, the forgot-password throttle, and — briefly — the
+ * derivation guard, for the reason every prefix in this file exists: a wrong verification code must
+ * not lock the address out of signing in, and vice versa.
+ */
+export function signupVerifyGuard(env: Env, email: string): DurableObjectStub<AuthGuardDO> {
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`signup-verify:${email.trim().toLowerCase()}`));
 }
 
 /**

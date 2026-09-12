@@ -25,7 +25,7 @@ export function useMyRecommendations() {
  * classes, so a status code cannot be used to enumerate student ids.
  *
  * `enabled` is a parameter rather than always-on because the caller that needs this is a roster of
- * students with one expanded at a time (`ClassRecommendationsPanel`). There is no bulk endpoint
+ * students with one expanded at a time (`RosterTable`'s dropdown). There is no bulk endpoint
  * here — the admin's roster view gets its rows hydrated server-side, this one does not — so a
  * component that mounted the hook per student eagerly would fire one request per enrolled student
  * on page load, for cards nobody has opened. Same reasoning as `useCareerPrograms` below.

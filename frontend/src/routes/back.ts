@@ -47,6 +47,7 @@ const parents: ReadonlyMap<string, BackTarget> = new Map<string, BackTarget>([
   [paths.login, { to: paths.landing, label: 'home' }],
   [paths.adminLogin, { to: paths.landing, label: 'home' }],
   [paths.studentAccess, { to: paths.landing, label: 'home' }],
+  [paths.studentAccessWithCode, { to: paths.landing, label: 'home' }],
   [paths.forgotPassword, { to: paths.login, label: 'sign in' }],
   [paths.resetPassword, { to: paths.login, label: 'sign in' }],
 

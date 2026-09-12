@@ -28,6 +28,9 @@ interface AuthState {
   clear: () => void;
 }
 
+/** The local-storage key the token is persisted under — shared by every tab on the origin. */
+export const AUTH_STORAGE_KEY = 'careerlinkai.auth';
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
@@ -39,7 +42,7 @@ export const useAuthStore = create<AuthState>()(
       clear: () => set({ token: null, user: null }),
     }),
     {
-      name: 'careerlinkai.auth',
+      name: AUTH_STORAGE_KEY,
       partialize: (state) => ({ token: state.token }),
     },
   ),
