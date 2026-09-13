@@ -119,11 +119,16 @@ describe('catalog sync continuation', () => {
 
     // What is new: if it left anything behind, it queued the rest. With a small fixture catalog
     // the batch does not fill, so the correct behaviour is an empty queue and no backlog.
+    const catalogMessages = sent.filter((message) => message.type === 'SyncCatalogKnowledge');
+
     if (result.catalogEntriesRemaining > 0) {
-      expect(sent).toEqual([{ type: 'SyncCatalogKnowledge', payload: { page: 2 } }]);
+      expect(catalogMessages).toEqual([{ type: 'SyncCatalogKnowledge', payload: { page: 2 } }]);
     } else {
-      expect(sent).toEqual([]);
+      expect(catalogMessages).toEqual([]);
     }
+
+    // The cron also asks for the Guidance corpus sync, on its own message (AI-COVERAGE-PLAN.md).
+    expect(sent).toContainEqual({ type: 'SyncGuidanceKnowledge', payload: { page: 1 } });
   });
 
   it('drains a backlog larger than one batch end to end', async () => {

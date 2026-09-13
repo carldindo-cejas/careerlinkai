@@ -113,6 +113,11 @@ export interface CatalogEntryInput {
   body: string;
   /** SHA-256 of `body`, computed by the caller that already had the text in hand. */
   contentHash: string;
+  /**
+   * `qa` for a Guidance corpus Q&A pair, whose body is already shaped `Q: …\nA: …` so Gate 1 can
+   * return its answer verbatim. Defaults to `catalog`.
+   */
+  sourceType?: 'catalog' | 'qa';
 }
 
 /** The two §43 job messages this pipeline enqueues; consumed in `src/jobs/ai-jobs.ts`. */
@@ -453,7 +458,7 @@ export class KnowledgeIngestionService {
       uploadedBy,
       title: input.title,
       fileName: input.title,
-      sourceType: 'catalog' as const,
+      sourceType: input.sourceType ?? ('catalog' as const),
       storagePath: null,
       entityType: input.entityType,
       entityId: input.entityId,

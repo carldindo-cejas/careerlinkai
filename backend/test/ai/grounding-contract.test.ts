@@ -319,8 +319,14 @@ describe('Gate 4 — refusing rather than inventing', () => {
   });
 });
 
-describe('Gate 3 — cite or refuse, and the claim check', () => {
-  it('discards an answer that used the passages without citing them', async () => {
+describe('Gate 3 — cite or verify, and the claim check', () => {
+  /**
+   * Changed 2026-09-13. A true answer without a marker used to be refused as `NO_CITATION`, and on
+   * production that was 39 of 44 chat failures — mostly correct answers drawn from the student's
+   * own results. The claim check is what stops invention; an uncited answer whose every figure
+   * and name is in the material now stands, with no sources named under it.
+   */
+  it('accepts an uncited answer whose every claim is in the material', async () => {
     await clearConversation();
 
     const chunkId = await seedEntry(
@@ -335,10 +341,26 @@ describe('Gate 3 — cite or refuse, and the claim check', () => {
 
     const turn = await service.ask(studentId, 'what do I submit for nursing admission?', await currentSet());
 
-    // True, as it happens — and discarded anyway. An answer with no marker was written from
-    // somewhere other than the passages supplied, and that is not distinguishable from invention
-    // by reading it.
-    expect(turn.failure).toBe('NO_CITATION');
+    expect(turn.failure).toBeNull();
+    expect(turn.answer.sources).toBeNull();
+  });
+
+  it('still refuses an uncited answer that invents a figure', async () => {
+    await clearConversation();
+
+    const chunkId = await seedEntry(
+      'Admissions Handbook',
+      'Applicants to BS Nursing submit Form 138 and two ID photos before 30 April.',
+    );
+
+    const { service } = pipeline({
+      responses: ['Applicants submit Form 138 and pay a PHP 3,500 fee before 30 April.'],
+      matches: [{ id: chunkId, score: 0.8 }],
+    });
+
+    const turn = await service.ask(studentId, 'what do I submit for nursing admission?', await currentSet());
+
+    expect(turn.failure).toBe('UNSUPPORTED_CLAIM');
 
     /**
      * What the student is told changed on 2026-09-05, and this assertion is the record of why.
@@ -379,7 +401,7 @@ describe('Gate 3 — cite or refuse, and the claim check', () => {
     );
 
     const { service } = pipeline({
-      responses: ['Applicants submit Form 138 and two ID photos before 30 April.'],
+      responses: ['Applicants submit Form 138 and pay a PHP 3,500 fee before 30 April.'],
       matches: [{ id: chunkId, score: 0.8 }],
     });
 
@@ -390,7 +412,7 @@ describe('Gate 3 — cite or refuse, and the claim check', () => {
         (row) =>
           row.status === 'FAILED' &&
           (row.failureReason ?? '').startsWith('SKIPPED') &&
-          (row.failureReason ?? '').includes('NO_CITATION'),
+          (row.failureReason ?? '').includes('UNSUPPORTED_CLAIM'),
       ).length;
 
     const before = await coverageFailures();

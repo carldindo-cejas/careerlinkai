@@ -3,7 +3,7 @@ import { lt } from 'drizzle-orm';
 import { createDatabase } from '@/db/client';
 import { apiTokens, counselorSignupRequests, passwordResetTokens } from '@/db/schema';
 import type { Env } from '@/env';
-import { queueCatalogSyncContinuation } from '@/jobs/ai-jobs';
+import { queueCatalogSyncContinuation, requestGuidanceSync } from '@/jobs/ai-jobs';
 import { now } from '@/lib/datetime';
 import { log } from '@/lib/logger';
 import { reapStaleAiRequests } from '@/modules/ai/assessment-generation-service';
@@ -151,6 +151,10 @@ export async function runNightlyCleanup(env: Env): Promise<CleanupResult> {
      * subrequest budget (§45) and a loop would spend the same invocation's. See `ai-jobs.ts`.
      */
     await queueCatalogSyncContinuation(env, sync, 1);
+
+    // The Guidance corpus, on its own queue message and budget (AI-COVERAGE-PLAN.md Phase 3). A
+    // no-op after the first full run unless `src/knowledge/guidance*.ts` changed.
+    await requestGuidanceSync(env);
   } catch (error) {
     log('error', 'catalog_knowledge.sync_failed', {
       pipeline: 'knowledge_ingestion',

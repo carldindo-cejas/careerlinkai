@@ -98,6 +98,8 @@ export function AiInsightsPage() {
         <>
           <CorpusHealth corpus={data.corpus} mine={!data.can.see_all_knowledge} />
 
+          {data.gates ? <GateDistribution days={data.gates.days} /> : null}
+
           {/*
             A tablist of plain buttons rather than a `Tabs` primitive: `components/ui` has none, and
             adding one for a single screen is more surface than the four buttons it would replace.
@@ -188,6 +190,62 @@ function CorpusHealth({
           </Alert>
         </CardContent>
       ) : null}
+    </Card>
+  );
+}
+
+/**
+ * How the assistant answered over the last two weeks (AI-COVERAGE-PLAN.md Phase 6).
+ *
+ * The coverage measure the plan targets: answers from an admin's words, from exact lookups, and from
+ * grounded generation, against refusals. Lookups and curated answers cost no model call, so their
+ * share is also the share of the day's neuron budget left untouched.
+ */
+function GateDistribution({
+  days,
+}: {
+  days: {
+    date: string;
+    curated: number;
+    lookup: number;
+    generated: number;
+    refused: number;
+    total: number;
+    tokens: number;
+  }[];
+}) {
+  const sum = (key: 'curated' | 'lookup' | 'generated' | 'refused' | 'total' | 'tokens') =>
+    days.reduce((total, day) => total + day[key], 0);
+  const total = sum('total');
+  const share = (value: number) => (total === 0 ? '0%' : `${Math.round((value / total) * 100)}%`);
+  const rows: { label: string; value: number }[] = [
+    { label: 'Your school’s answers', value: sum('curated') },
+    { label: 'Looked up (catalog or results)', value: sum('lookup') },
+    { label: 'Written from sources', value: sum('generated') },
+    { label: 'Not answered', value: sum('refused') },
+  ];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>How the assistant answered</CardTitle>
+        <CardDescription>
+          Last 14 days · {total} answers · {sum('tokens').toLocaleString()} model tokens used
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {rows.map((row) => (
+            <div key={row.label} className="border border-border px-3 py-2">
+              <dt className="text-xs text-muted-foreground">{row.label}</dt>
+              <dd className="text-lg font-semibold tabular-nums text-foreground">
+                {row.value}{' '}
+                <span className="text-xs font-normal text-muted-foreground">{share(row.value)}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </CardContent>
     </Card>
   );
 }

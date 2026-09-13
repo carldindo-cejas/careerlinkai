@@ -50,7 +50,10 @@ import type { VectorFilter, VectorStore } from '@/modules/ai/vector-store';
  * what to consider; a cross-encoder decides what the student sees.
  */
 export const RETRIEVAL_TOP_K = 6;
-export const RETRIEVAL_CANDIDATE_K = 20;
+// 30 since 2026-09-13 (AI-COVERAGE-PLAN.md Phase 3): the corpus now mixes ~300 dense catalog
+// passages with school guidance, and a guidance passage that ranks 25th by cosine similarity is
+// often the one the cross-encoder puts first for a "why" or "how" question.
+export const RETRIEVAL_CANDIDATE_K = 30;
 export const RETRIEVAL_SIMILARITY_THRESHOLD = 0.55;
 
 /** How many keyword hits join the vector candidates before fusion. */
@@ -149,6 +152,39 @@ export class RetrievalService {
     });
 
     return this.rerank(query, candidates, limit);
+  }
+
+  /**
+   * The passages about one catalog row, read straight from D1 (AI-COVERAGE-PLAN.md Phase 5).
+   *
+   * When a student names a college, program or career in an open question — "is BS Nursing at
+   * Holy Name good for me?" — the passage *about* that thing must be in the context, and similarity
+   * search is not a guarantee of that. One indexed query, no embedding and no rerank: the caller
+   * puts these first and lets ordinary retrieval fill the rest. Never throws.
+   */
+  async chunksForEntity(
+    entity: { type: KnowledgeEntityType; id: string },
+    limit = 2,
+  ): Promise<RetrievedChunk[]> {
+    try {
+      const rows = await this.db
+        .select({ chunk: knowledgeChunks, title: knowledgeDocuments.title })
+        .from(knowledgeChunks)
+        .innerJoin(knowledgeDocuments, eq(knowledgeDocuments.id, knowledgeChunks.documentId))
+        .where(
+          and(
+            eq(knowledgeChunks.entityType, entity.type),
+            eq(knowledgeChunks.entityId, entity.id),
+            isNull(knowledgeDocuments.archivedAt),
+          ),
+        )
+        .orderBy(knowledgeChunks.chunkNumber)
+        .limit(limit);
+
+      return rows.map((row) => ({ chunk: row.chunk, score: 1, documentTitle: row.title }));
+    } catch {
+      return [];
+    }
   }
 
   // --- the two halves --------------------------------------------------------------------

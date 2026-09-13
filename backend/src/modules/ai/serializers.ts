@@ -90,6 +90,7 @@ export function serializeChatMessage(message: ChatMessage): Record<string, unkno
     content: message.content,
     ai_request_id: message.aiRequestId,
     sources: message.sources ?? [],
+    answer_kind: message.answerKind,
     feedback: message.feedback,
     /**
      * Whether this answer can be — or has been — nominated for the knowledge base (migration

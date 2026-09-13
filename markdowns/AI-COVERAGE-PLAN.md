@@ -13,6 +13,57 @@ questions that get one of those three instead of a refusal goes from roughly hal
 Written evidence-first, like `AiNormalisation.md`: every finding names the file, line or query
 that establishes it. Read §2 before §4; the phases only make sense against the findings.
 
+## Implementation status (2026-09-13)
+
+**All six phases are implemented in code and pass the hermetic suites. Nothing is deployed yet:**
+migration 0036 has not been applied to production, the Worker has not been deployed, and the
+production data steps below have not been run.
+
+| Phase | Status | Where |
+| --- | --- | --- |
+| 0 — Stop discarding right answers | Done | `chat-service.ts` (cite-or-verify, one row per turn via `markDiscarded`, `answer_kind` on every reply), `catalog-knowledge-service.ts` (college aliases in passages) |
+| 1 — Student Brief | Done | `student-brief-service.ts`, migration `0036_recommendation_components.sql`, `recommendation-chat.v2.ts`, `GET /student/brief` |
+| 2 — Gate 2 | Done | `results-answer-service.ts`, `catalog-index.ts`, `lib/aliases.ts`; plus "what should I choose at this college/town" (2026-09-13, from production), which scores that campus's programs for the student with the §27 formula via `RecommendationService.scoreProgramsFor` instead of listing them |
+| 3 — Guidance corpus | Done, **needs counselor review** | `src/knowledge/guidance*.ts` (29 passages, 17 Q&A pairs), `guidance-knowledge-service.ts`, `SyncGuidanceKnowledge` queue job |
+| 4 — Chat everywhere | Done | `StudentChatLauncher` in `StudentLayout`, brief-driven starter questions, source line |
+| 5 — Retrieval | Done, bge-m3 deferred as planned | `RetrievalService.chunksForEntity`, candidate pool 30, follow-up query rewriting |
+| 6 — Measurement | Done | gate report on `/admin/ai-insights`, `test/ai/gate2-and-brief.test.ts`, `scripts/chat-golden-run.mjs` |
+
+**Deviations from the plan, each for a stated reason:**
+
+- **No `CATALOG` answer kind (no migration 0036 for it).** Widening 0029's CHECK constraint needs a
+  full rebuild of `chat_messages`, the trade migration 0033 already declined. Gate 2 answers are
+  recorded as `CANNED` with a source line; refusals are `CANNED` with none. The insights gate report
+  tells them apart that way.
+- **College aliases are computed, not stored** (no `colleges.aliases` column). `lib/aliases.ts`
+  derives HNU, BISU, UB, BIT and the rest from the names, so the Region VII seed needs no change and
+  regenerating it cannot lose them.
+- **Follow-up entities are re-resolved from the loaded transcript**, not stored per message. Same
+  result, no migration.
+- **Guidance text is a TypeScript module**, not `.md` files — a Worker cannot read files at
+  runtime. There is no `managed` flag: the existing catalog rule already keeps an admin's edit until
+  the source text changes, and an archive is permanent.
+- **The guidance sync is its own queue job** with its own 20-entry budget, not part of the catalog
+  sync, so it never spends the cron's subrequests and the catalog sync's "second run changes
+  nothing" contract still holds.
+- **The hermetic golden set is `gate2-and-brief.test.ts`** against a small fixture catalog; the full
+  §6 set, which needs the real Bohol catalog, runs against a deployment with
+  `scripts/chat-golden-run.mjs`.
+- **Phase 2b (`student_profiles.town_id` for "near me") is not built** — it was an open decision.
+  "Which of my programs is near Ubay" works when the student names the town.
+
+**To ship, in order:**
+
+1. A counselor reads every passage in `backend/src/knowledge/guidance*.ts`.
+2. `npm run db:migrate:production` (applies 0036).
+3. `npm run deploy:production`.
+4. Press **Sync catalog** on the admin knowledge screen once: it rewrites the 22 college passages
+   (now carrying aliases) and queues the Guidance corpus sync.
+5. Regenerate recommendations for existing students so `components` is filled (scores do not move).
+6. Archive the five `SMOKE TEST` Q&A entries from the knowledge screen (F6c). Their source is not in
+   this repository, so the smoke test itself could not be changed here.
+7. Run `scripts/chat-golden-run.mjs` with a test student's token.
+
 ---
 
 ## 0. The one-paragraph version
@@ -278,7 +329,7 @@ Each phase ships on its own, is measured against the golden set in §6, and is s
 
 No new tables. Do first; every later measurement depends on it.
 
-- [ ] **F1.** In `ChatService.generated`, replace *cite-or-refuse* with *cite-or-verify*: when
+- [x] **F1.** *(Done 2026-09-13, not yet deployed.)* In `ChatService.generated`, replace *cite-or-refuse* with *cite-or-verify*: when
       `validateCitations` returns `NO_CITATION`, do not refuse; fall through to `unsupportedClaims`
       against `[...chunks, brief]`. Refuse only if a claim fails. Keep `CITATION_OUT_OF_RANGE` as a
       hard refusal (it is invented evidence). `sources` stays empty for an uncited answer.
@@ -341,6 +392,13 @@ subjects should I focus on"* names the student's grades; a student with only RIA
 an answer about their Holland code rather than an apology.
 
 ### Phase 2 — Gate 2: catalog and brief lookups, zero neurons · ~3 days
+
+**Started 2026-09-13, not yet deployed:** `backend/src/modules/ai/results-answer-service.ts` answers
+the WHY intent (a career or program in the student's results, from the stored reason) and the WHERE
+intent (by rank, by name in the results, or by name in the catalog). It was driven by two production
+refusals: *"why certified public accountant?"* and *"Where to study my first top program
+recommendation"*. Tests are in `test/ai/results-answers.test.ts`. The remaining intents below extend
+that service rather than a new one.
 
 `backend/src/modules/ai/catalog-answer-service.ts`, called from `ChatService.answer` between
 Gate 1 and generation. A resolver, not a classifier: it tries to bind the question to entities and

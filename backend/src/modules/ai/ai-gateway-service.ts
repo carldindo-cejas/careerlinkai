@@ -602,6 +602,23 @@ export class AiGatewayService {
     });
   }
 
+  /**
+   * Mark a generation the caller threw away (AI-COVERAGE-PLAN.md F6a, 2026-09-13).
+   *
+   * A reply the grounding contract rejected used to leave **two** rows: this gateway's SUCCESS,
+   * carrying the discarded text, and a second SKIPPED row the caller wrote to explain the refusal.
+   * Counting `status` over-reported success by every refusal, and the admin reports had to be
+   * written around it. One call, one row: the row that holds the text becomes the FAILED row, with
+   * the same `SKIPPED:` reason the backlog already reads. `response_text` is kept, because what the
+   * model said is exactly what an admin reviewing a refusal needs to see.
+   */
+  async markDiscarded(requestId: string, note: string): Promise<void> {
+    await this.db
+      .update(aiRequests)
+      .set({ status: 'FAILED', failureReason: `SKIPPED: ${note}`, updatedAt: now() })
+      .where(eq(aiRequests.id, requestId));
+  }
+
   // --- internals ---------------------------------------------------------------------
 
   /**

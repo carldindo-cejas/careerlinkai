@@ -30,7 +30,9 @@ import {
   serializeProgram,
 } from '@/modules/catalog/serializers';
 import { RecommendationService } from '@/modules/recommendation/recommendation-service';
+import { serializeBrief } from '@/modules/recommendation/brief-serializer';
 import { serializeRecommendationSet } from '@/modules/recommendation/serializers';
+import { StudentBriefService } from '@/modules/recommendation/student-brief-service';
 import { authorizeStudentRecommendations } from '@/policies/recommendation';
 
 /**
@@ -84,6 +86,9 @@ async function chatServiceForAsync(db: Database, c: Context<AppEnv>): Promise<Ch
     retrievalFrom(db, c.env),
     policy,
     aiVerifierEnabled(c.env),
+    // The catalog-index cache for Gate 2 (AI-COVERAGE-PLAN.md Phase 2). Optional: absent in the
+    // suite, where every turn builds the index from D1.
+    c.env.KV,
   );
 }
 
@@ -330,6 +335,18 @@ studentRecommendationRoutes.get('/programs/:id/colleges', async (c) => {
 // Three endpoints, all "mine": read the transcript, add a turn, clear it. Same reasoning as the
 // rest of this router — there is no student id in any URL, so none of these can be made to mean
 // somebody else's conversation by editing a parameter.
+
+/**
+ * `GET /student/brief` — what the assistant knows about this student, and questions to start with
+ * (AI-COVERAGE-PLAN.md Phase 4). Scoped by the bearer token; never by a URL id.
+ */
+studentRecommendationRoutes.get('/brief', async (c) => {
+  const brief = await new StudentBriefService(createDatabase(c.env.DB)).briefFor(
+    requireUser(c).id,
+  );
+
+  return c.json(successEnvelope(serializeBrief(brief), 'Student brief retrieved.'));
+});
 
 /** `GET /student/chat` — the transcript, or an empty one. Never a 404: "no messages" is a state. */
 studentRecommendationRoutes.get('/chat', async (c) => {

@@ -62,6 +62,12 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   /**
+   * Which gate answered (migration 0029, recorded since 2026-09-13). CURATED: an admin's words.
+   * KNOWLEDGE: a generation that passed the grounding contract. CANNED: a lookup from the catalog or
+   * the student's results (it names a source) or a refusal (it does not). Null on older messages.
+   */
+  answer_kind?: 'CURATED' | 'KNOWLEDGE' | 'WEB' | 'GENERAL' | 'CANNED' | null;
+  /**
    * The `ai_requests` row behind an assistant message, or null.
    *
    * Its absence is **meaningful**, not incidental: an assistant message with no request behind it
@@ -99,6 +105,34 @@ export interface ChatMessage {
 export interface ChatTranscript {
   conversation_id: string | null;
   messages: ChatMessage[];
+}
+
+/** One RIASEC or SCCT dimension in the Student Brief. */
+export interface BriefDimension {
+  code: string;
+  name: string;
+  score: number;
+  band: string | null;
+}
+
+/** `GET /student/brief` — what the assistant knows about the signed-in student (AI-COVERAGE-PLAN.md). */
+export interface StudentBrief {
+  profile: {
+    grade_level: string | null;
+    strand: string | null;
+    grades: { math: number | null; science: number | null; english: number | null };
+    average: number | null;
+  };
+  riasec: { complete: boolean; holland_code: string | null; dimensions: BriefDimension[] };
+  scct: {
+    complete: boolean;
+    confidence_index: number | null;
+    band: string | null;
+    dimensions: BriefDimension[];
+  };
+  has_recommendations: boolean;
+  /** Starter questions, each one answered without a model call. */
+  suggestions: string[];
 }
 
 export interface ChatTurn {

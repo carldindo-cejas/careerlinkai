@@ -6,6 +6,7 @@ import type {
   ChatTurn,
   ProgramCollegesResponse,
   RecommendationSet,
+  StudentBrief,
 } from '@/types/recommendation';
 
 /**
@@ -87,6 +88,11 @@ export const chatApi = {
 
   ask(message: string): Promise<ChatTurn> {
     return unwrap(httpClient.post<ApiSuccess<ChatTurn>>('/student/chat', { message }));
+  },
+
+  /** The Student Brief and starter questions (AI-COVERAGE-PLAN.md Phase 4). */
+  getBrief(): Promise<StudentBrief> {
+    return unwrap(httpClient.get<ApiSuccess<StudentBrief>>('/student/brief'));
   },
 
   async clear(): Promise<void> {

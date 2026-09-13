@@ -18,7 +18,8 @@ export interface KnowledgeDocument {
   file_name: string;
   source_type: KnowledgeSourceType;
   /** Set only on catalog-synced entries: which career, program or college this is about. */
-  entity_type: 'career' | 'program' | 'college' | null;
+  /** `guide` is a Guidance corpus entry (AI-COVERAGE-PLAN.md Phase 3). */
+  entity_type: 'career' | 'program' | 'college' | 'guide' | null;
   entity_id: string | null;
   processing_status: ProcessingStatus;
   visibility: 'GLOBAL' | 'COUNSELOR_PRIVATE';
@@ -129,6 +130,21 @@ export interface CoverageGap {
  */
 export interface AiInsights {
   corpus: { entries: number; chunks: number; embedded: number; failed: number };
+  /**
+   * Which gate answered, per day, over the last two weeks (AI-COVERAGE-PLAN.md Phase 6). `tokens` is
+   * the text model's token use that day — the input to the daily neuron budget.
+   */
+  gates?: {
+    days: {
+      date: string;
+      curated: number;
+      lookup: number;
+      generated: number;
+      refused: number;
+      total: number;
+      tokens: number;
+    }[];
+  };
   /**
    * The tab badges, counted server-side rather than read off each tab's pagination — so the number
    * on a tab is right before anybody has opened it.

@@ -585,7 +585,12 @@ function EditEntryBody({
 
   return (
     <div className="flex flex-col gap-3">
-      {document.source_type === 'catalog' ? (
+      {document.entity_type === 'guide' ? (
+        <p className="text-sm text-muted-foreground">
+          This entry is part of CareerLinkAI&apos;s built-in guidance for students. Your edit stays
+          until that guidance is updated in a new release. Archive it to stop the assistant using it.
+        </p>
+      ) : document.source_type === 'catalog' ? (
         <p className="text-sm text-muted-foreground">
           This entry is generated from its career or program. Your edit stays until that record
           changes — the next sync after a change regenerates this text. To make a change permanent,
@@ -836,7 +841,9 @@ function DocumentRow({ document }: { document: KnowledgeDocument }) {
             to: nobody wrote it, and printing a person's name against generated text invites
             somebody to go and ask them about wording they never chose.
           */}
-          {document.source_type === 'catalog'
+          {document.entity_type === 'guide'
+            ? ' · built-in guidance'
+            : document.source_type === 'catalog'
             ? ' · from the catalog'
             : document.added_by_name
               ? ` · ${document.added_by_name}${

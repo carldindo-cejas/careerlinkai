@@ -14,6 +14,7 @@ import {
   users,
 } from '@/db/schema';
 import type { Env } from '@/env';
+import { collegeAliases } from '@/lib/aliases';
 import { log } from '@/lib/logger';
 import { ingestionFrom } from '@/modules/ai/factory';
 
@@ -143,9 +144,13 @@ function collegePassage(college: {
     .join(', ');
 
   const offered = namedList(college.programNames, COLLEGE_PROGRAM_BUDGET);
+  // 2026-09-13: "HNU located" was refused because no passage contained "HNU". Stating the short
+  // names students use makes them retrievable by keyword and known to the claim check.
+  const aliases = collegeAliases(college.name);
 
   return [
     `College: ${college.name}.`,
+    aliases.length === 0 ? null : `Also called: ${aliases.join(', ')}.`,
     location === '' ? null : `${college.name} is located in ${location}.`,
     college.description === null || college.description.trim() === ''
       ? null
@@ -572,14 +577,14 @@ function appendTo(map: Map<string, string[]>, key: string, value: string): void 
 }
 
 /** Hex SHA-256 of the composed passage — the stored "has this changed?" answer (migration 0024). */
-async function sha256(value: string): Promise<string> {
+export async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
 
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /** The earliest active admin — a real, checkable owner for cron-generated rows. */
-async function firstAdminId(db: Database): Promise<string | undefined> {
+export async function firstAdminId(db: Database): Promise<string | undefined> {
   const [admin] = await db
     .select({ id: users.id })
     .from(users)

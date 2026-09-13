@@ -159,7 +159,8 @@ export type KnowledgeSourceType = (typeof KNOWLEDGE_SOURCE_TYPES)[number];
  * `entity_type` is an unconstrained TEXT column, so widening this list is a code change and not a
  * migration.
  */
-export const KNOWLEDGE_ENTITY_TYPES = ['career', 'program', 'college'] as const;
+// `guide` added 2026-09-13 (AI-COVERAGE-PLAN.md Phase 3): a Guidance corpus entry, keyed by slug.
+export const KNOWLEDGE_ENTITY_TYPES = ['career', 'program', 'college', 'guide'] as const;
 export type KnowledgeEntityType = (typeof KNOWLEDGE_ENTITY_TYPES)[number];
 
 /** The source types an admin may author or edit in place — the rest are derived or uploaded. */

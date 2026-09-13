@@ -19,6 +19,7 @@ import {
   useFlagAnswer,
   useRequestKnowledge,
 } from '@/features/student/hooks/useRecommendations';
+import { useStudentBrief } from '@/features/student/hooks/useStudentBrief';
 import { toast } from '@/stores/toastStore';
 import type { ChatMessage } from '@/types/recommendation';
 
@@ -113,6 +114,61 @@ export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendat
           </div>
         ) : null}
       </div>
+    </>
+  );
+}
+
+/**
+ * The assistant on every other student page (AI-COVERAGE-PLAN.md Phase 4).
+ *
+ * 38 of the first 58 production questions came from students who had not finished both
+ * assessments — and the only place the assistant existed was the recommendations page. This is the
+ * same conversation, opened from a button on the dashboard, assessments and results pages. The
+ * recommendations page keeps its column and does not render this.
+ *
+ * A bottom sheet on a phone, a right-hand drawer from `sm` up.
+ */
+export function StudentChatLauncher() {
+  const [open, setOpen] = useState(false);
+  const brief = useStudentBrief();
+  const hasRecommendations = brief.data?.has_recommendations ?? false;
+
+  return (
+    <>
+      <Button
+        className="fixed bottom-5 right-5 z-40 shadow-lg"
+        onClick={() => setOpen(true)}
+        aria-expanded={open}
+      >
+        <MessageSquare className="size-4" aria-hidden="true" />
+        Ask CareerLinkAI
+      </Button>
+
+      {open ? (
+        <div
+          className="fixed inset-0 z-50 flex flex-col bg-black/50 sm:flex-row"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Ask CareerLinkAI"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setOpen(false);
+          }}
+        >
+          <button
+            type="button"
+            className="flex-1"
+            aria-label="Close the assistant"
+            onClick={() => setOpen(false)}
+          />
+          <div className="h-[85vh] bg-card sm:h-full sm:w-105">
+            <ChatSurface
+              hasRecommendations={hasRecommendations}
+              className="h-full"
+              onClose={() => setOpen(false)}
+            />
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -336,28 +392,22 @@ function EmptyState({
   hasRecommendations: boolean;
   onPick: (message: string) => void;
 }) {
-  if (!hasRecommendations) {
-    return (
-      <div className="flex flex-col gap-2 text-sm text-muted-foreground">
-        <p>
-          Once you have finished both assessments your recommendations appear here, and I can talk
-          you through them.
-        </p>
-      </div>
-    );
-  }
-
-  const suggestions = [
-    'Why is this my top career match?',
-    'What is the difference between my top two programs?',
-    'What subjects should I focus on for these?',
-  ];
+  // Starter questions come from the Student Brief (AI-COVERAGE-PLAN.md Phase 4): each one is
+  // answered from the catalog or the student's own results, with no model call. A student with no
+  // recommendations still gets questions — catalog questions do not depend on their results.
+  const brief = useStudentBrief();
+  const suggestions =
+    brief.data?.suggestions ??
+    (hasRecommendations
+      ? ['What are my top 5 careers?', 'Which of my top careers pays the best?', 'What can you do?']
+      : ['What can you do?', 'What colleges are in Bohol?']);
 
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
-        Ask me anything about your recommendations. I can explain how a score was reached, compare
-        two options, or tell you what a program involves.
+        {hasRecommendations
+          ? 'Ask me anything about your recommendations. I can explain how a score was reached, compare two options, or tell you what a program involves.'
+          : 'Ask me about colleges, programs and careers in Bohol. Once you finish both assessments, I can explain your recommendations too.'}
       </p>
       <ul className="flex flex-col gap-2">
         {suggestions.map((suggestion) => (
@@ -433,6 +483,15 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         >
           {message.content}
         </div>
+
+        {/*
+          Where a looked-up or grounded answer came from (AI-COVERAGE-PLAN.md Phase 4) — one short
+          line, only when a source is named and the answer kind was recorded, so a refusal and every
+          message written before answer kinds existed stay as they were.
+        */}
+        {!isStudent && message.sources.length > 0 && message.answer_kind ? (
+          <p className="text-xs text-muted-foreground">From: {message.sources.join(' · ')}</p>
+        ) : null}
 
         {/*
           Reporting a wrong answer (Phase 4). Offered only on generated answers: the flag's value is

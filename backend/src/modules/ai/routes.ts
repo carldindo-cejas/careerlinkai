@@ -3,7 +3,7 @@ import { Hono, type Context } from 'hono';
 import { createDatabase } from '@/db/client';
 import type { User } from '@/db/schema';
 import type { AppEnv } from '@/env';
-import { queueCatalogSyncContinuation } from '@/jobs/ai-jobs';
+import { queueCatalogSyncContinuation, requestGuidanceSync } from '@/jobs/ai-jobs';
 import { successEnvelope, ApiError } from '@/lib/envelope';
 import { clientIp, parseBody, parseQuery } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
@@ -388,11 +388,12 @@ function createKnowledgeRoutes() {
     const scope = insightsScope(user);
     const isAdmin = user.role === 'admin';
 
-    const [health, unanswered, resolved, flagged] = await Promise.all([
+    const [health, unanswered, resolved, flagged, gates] = await Promise.all([
       service.corpusHealth(authorScope(user)),
       service.unansweredCount(scope),
       service.resolvedCount(scope),
       service.flaggedAnswers(scope),
+      service.gateDistribution(scope),
     ]);
 
     return c.json(
@@ -411,6 +412,8 @@ function createKnowledgeRoutes() {
            * to this report now runs only when somebody opens that tab.
            */
           counts: { unanswered, resolved, flagged: flagged.length },
+          // Which gate answered, per day (AI-COVERAGE-PLAN.md Phase 6).
+          gates,
           // What this caller is allowed to do, said by the server rather than inferred by the
           // client from a role string. A UI that derives its own permissions is a UI that shows a
           // button the API will refuse.
@@ -757,6 +760,8 @@ adminAiRoutes.post('/knowledge-catalog-sync', async (c) => {
   // The rest of the catalog finishes on the queue rather than on the admin's patience. One batch
   // still runs inline so the response reports real numbers instead of "queued, check back".
   await queueCatalogSyncContinuation(c.env, result, 1);
+  // The same button refreshes the Guidance corpus, in the background on its own budget.
+  await requestGuidanceSync(c.env);
 
   return c.json(
     successEnvelope(

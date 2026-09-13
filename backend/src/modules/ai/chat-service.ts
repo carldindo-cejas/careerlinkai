@@ -9,7 +9,7 @@ import {
   type ChatConversation,
   type ChatMessage,
 } from '@/db/schema';
-import type { KnowledgeRequestState } from '@/db/enums';
+import type { ChatAnswerKind, KnowledgeRequestState } from '@/db/enums';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import {
@@ -23,18 +23,26 @@ import {
   unsupportedClaims,
   validateCitations,
 } from '@/lib/grounding';
+// v2 since 2026-09-13 (AI-COVERAGE-PLAN.md Phase 1): the prompt that knows about the Student Brief.
 import {
-  RECOMMENDATION_CHAT_PROMPT_VERSION,
-  RECOMMENDATION_CHAT_SYSTEM_PROMPT,
-} from '@/prompts/recommendation-chat.v1';
+  RECOMMENDATION_CHAT_V2_PROMPT_VERSION as RECOMMENDATION_CHAT_PROMPT_VERSION,
+  RECOMMENDATION_CHAT_V2_SYSTEM_PROMPT as RECOMMENDATION_CHAT_SYSTEM_PROMPT,
+} from '@/prompts/recommendation-chat.v2';
 import type { AiGatewayService, GenerateOptions } from '@/modules/ai/ai-gateway-service';
 import {
+  RETRIEVAL_TOP_K,
   toFtsQuery,
   type RetrievalService,
   type RetrievedChunk,
 } from '@/modules/ai/retrieval-service';
+import { ResultsAnswerService } from '@/modules/ai/results-answer-service';
 import { sourceTitlesFor } from '@/modules/ai/sources';
 import type { RecommendationSet } from '@/modules/recommendation/recommendation-service';
+import {
+  briefToProse,
+  StudentBriefService,
+  type StudentBrief,
+} from '@/modules/recommendation/student-brief-service';
 
 /**
  * `ChatService` — the recommendations-page assistant (prompt-driven, 2026-07-27).
@@ -110,6 +118,14 @@ interface Answer {
    * refusal and a transcript reloaded next week.
    */
   coverageGap: boolean;
+  /**
+   * Which gate produced it (migration 0029), now actually recorded. CURATED is Gate 1; KNOWLEDGE is
+   * a generation that passed the grounding contract; CANNED is everything deterministic — a Gate 2
+   * lookup (which carries a source line) and every refusal or redirect (which does not). No new
+   * value was added for Gate 2: 0029's CHECK constraint would need a table rebuild, the same trade
+   * migration 0033 declined for the same reason.
+   */
+  kind: ChatAnswerKind;
 }
 
 export interface ChatTurn {
@@ -134,7 +150,21 @@ export class ChatService {
      * grounding contract that spends neurons, so it is a budget decision rather than a code one.
      */
     private readonly verifier = false,
+    /** KV for Gate 2's catalog index. Optional — without it the index is read from D1 each turn. */
+    private readonly cache?: KVNamespace,
   ) {}
+
+  /** The Student Brief, or null if it cannot be built — a turn never fails for want of it. */
+  private async briefFor(
+    studentId: string,
+    recommendations: RecommendationSet | null,
+  ): Promise<StudentBrief | null> {
+    try {
+      return await new StudentBriefService(this.db).briefFor(studentId, recommendations);
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * The student's current conversation, or null.
@@ -288,6 +318,7 @@ export class ChatService {
       outcome.aiRequestId,
       outcome.sources,
       outcome.coverageGap ? 'OFFERED' : null,
+      outcome.kind,
     );
 
     await this.db
@@ -327,6 +358,7 @@ export class ChatService {
         // Declined by design, not for want of material: there is nothing here for an admin to
         // write, and offering to add homework help to the corpus would invite exactly that.
         coverageGap: false,
+        kind: 'CANNED',
       };
     }
 
@@ -348,10 +380,33 @@ export class ChatService {
         failure: null,
         sources: [canned.title],
         coverageGap: false,
+        kind: 'CURATED',
       };
     }
 
-    return this.generated(studentId, question, history, recommendations);
+    /**
+     * **Gate 2 — the student's own results and the catalog answer this exactly** (2026-09-13).
+     *
+     * "Why is X my match?" and "where can I study X?" are lookups, not writing. Answered from the
+     * rows with no model call, they cost nothing and cannot pair a score with the wrong name — see
+     * `ResultsAnswerService`. Null means the question did not bind cleanly and goes on as before.
+     */
+    const brief = await this.briefFor(studentId, recommendations);
+    const gate2 = new ResultsAnswerService(this.db, this.cache);
+    const exact = await gate2.answer(question, recommendations, brief, history, studentId);
+
+    if (exact !== null) {
+      return {
+        text: exact.text,
+        aiRequestId: null,
+        failure: null,
+        sources: exact.sources,
+        coverageGap: false,
+        kind: 'CANNED',
+      };
+    }
+
+    return this.generated(studentId, question, history, recommendations, brief, gate2);
   }
 
   /**
@@ -412,6 +467,8 @@ export class ChatService {
     question: string,
     history: ChatMessage[],
     recommendations: RecommendationSet | null,
+    brief: StudentBrief | null = null,
+    gate2: ResultsAnswerService = new ResultsAnswerService(this.db, this.cache),
   ): Promise<Answer> {
     const baseOptions: Omit<GenerateOptions, 'systemPrompt' | 'userPrompt'> = {
       userId: studentId,
@@ -438,14 +495,33 @@ export class ChatService {
      * right. What does **not** change is that nothing is answered from the model's own general
      * knowledge — the prompt's first rule is to say so when neither source covers the question.
      */
+    /**
+     * **What the question is about** (AI-COVERAGE-PLAN.md Phase 5). When it names a college,
+     * program or career — or points back at one with "it" or "there" — the passage about that
+     * thing goes first in the context, read straight from D1, and a follow-up's query carries the
+     * name so retrieval is not searching for the word "it".
+     */
+    const binding = await gate2.bindEntity(question, recommendations, history);
+    const query = binding?.fromHistory === true ? `${binding.name}: ${question}` : question;
+
     let retrieved: RetrievedChunk[];
 
     try {
-      retrieved = await this.retrieval.retrieve(question);
+      retrieved = await this.retrieval.retrieve(query);
     } catch {
       // An empty context block is the fallback: retrieval being down degrades the answer's
       // grounding, it does not stop the student getting one.
       retrieved = [];
+    }
+
+    if (binding?.entity) {
+      const pinned = await this.retrieval.chunksForEntity(binding.entity);
+      const pinnedIds = new Set(pinned.map(({ chunk }) => chunk.id));
+
+      retrieved = [
+        ...pinned,
+        ...retrieved.filter(({ chunk }) => !pinnedIds.has(chunk.id)),
+      ].slice(0, RETRIEVAL_TOP_K);
     }
 
     /**
@@ -462,7 +538,7 @@ export class ChatService {
      * actually answer. Everything else refuses, honestly, and the refusal is logged as the gap it
      * is — which is what turns it into an admin's backlog item rather than a dead end.
      */
-    const resultsContext = this.resultsContextFor(recommendations);
+    const resultsContext = this.resultsContextFor(recommendations, brief);
 
     if (retrieved.length === 0 && !answerableFromResults(question, resultsContext)) {
       await this.gateway.logSkipped(
@@ -476,6 +552,7 @@ export class ChatService {
         failure: 'NO_GROUNDING',
         sources: [],
         coverageGap: true,
+        kind: 'CANNED',
       };
     }
 
@@ -486,7 +563,7 @@ export class ChatService {
         chunk_ids: retrieved.map(({ chunk }) => chunk.id),
       },
       systemPrompt: this.systemPrompt(),
-      userPrompt: this.userPrompt(question, history, recommendations, retrieved),
+      userPrompt: this.userPrompt(question, history, recommendations, retrieved, brief),
       maxTokens: 500,
     };
 
@@ -503,6 +580,7 @@ export class ChatService {
         // The model being down is an operational problem. No amount of admin writing fixes it,
         // and filing it as a knowledge gap would bury the real ones on exactly the bad days.
         coverageGap: false,
+        kind: 'CANNED',
       };
     }
 
@@ -519,6 +597,7 @@ export class ChatService {
         failure: 'FAILED_VALIDATION',
         sources: [],
         coverageGap: false,
+        kind: 'CANNED',
       };
     }
 
@@ -527,12 +606,22 @@ export class ChatService {
      * student's own computed results has no passages behind it, and demanding a marker there
      * would reject the one class of answer that is arithmetic rather than retrieval.
      */
+    /*
+      **Cite or verify** (2026-09-13). A missing marker is no longer a refusal on its own.
+
+      Retrieval returns something for nearly every question, so an answer drawn from the
+      student's own results — which carry no marker — was refused as `NO_CITATION`: 39 of 44
+      chat failures on production, most of them correct ("why certified public accountant?").
+      The claim check below is what actually stops invention, and it runs either way. A marker
+      that points at a passage that was never supplied is still refused: that is invented
+      evidence.
+    */
     if (retrieved.length > 0) {
       const citations = validateCitations(text, retrieved.length);
 
-      if (!citations.ok) {
-        await this.gateway.logSkipped(
-          { ...baseOptions, systemPrompt: '', userPrompt: question },
+      if (!citations.ok && citations.reason === 'CITATION_OUT_OF_RANGE') {
+        await this.gateway.markDiscarded(
+          result.request.id,
           `Rejected by the grounding contract: ${citations.reason}.`,
         );
 
@@ -542,6 +631,7 @@ export class ChatService {
           failure: citations.reason,
           sources: [],
           coverageGap: true,
+          kind: 'CANNED',
         };
       }
     }
@@ -558,8 +648,8 @@ export class ChatService {
     ]);
 
     if (unsupported.length > 0) {
-      await this.gateway.logSkipped(
-        { ...baseOptions, systemPrompt: '', userPrompt: question },
+      await this.gateway.markDiscarded(
+        result.request.id,
         `Rejected by the grounding contract: UNSUPPORTED_CLAIM (${unsupported
           .map((claim) => `${claim.kind}:${claim.token}`)
           .join(', ')}).`,
@@ -571,6 +661,7 @@ export class ChatService {
         failure: 'UNSUPPORTED_CLAIM',
         sources: [],
         coverageGap: true,
+        kind: 'CANNED',
       };
     }
 
@@ -586,8 +677,8 @@ export class ChatService {
       );
 
       if (!supported) {
-        await this.gateway.logSkipped(
-          { ...baseOptions, systemPrompt: '', userPrompt: question },
+        await this.gateway.markDiscarded(
+          result.request.id,
           'Rejected by the grounding contract: UNSUPPORTED_CLAIM (verifier).',
         );
 
@@ -597,6 +688,7 @@ export class ChatService {
           failure: 'UNSUPPORTED_CLAIM',
           sources: [],
           coverageGap: true,
+          kind: 'CANNED',
         };
       }
     }
@@ -632,6 +724,7 @@ export class ChatService {
       // worse lie than naming none: the student would check it and find nothing.
       sources: sourceTitlesFor(retrieved, citedIndexes(text)),
       coverageGap: gap,
+      kind: 'KNOWLEDGE',
     };
   }
 
@@ -643,7 +736,15 @@ export class ChatService {
    * because a match score of 87% is grounded by §26 arithmetic, and a check that did not know
    * that would reject the truest sentence in the answer.
    */
-  private resultsContextFor(recommendations: RecommendationSet | null): string {
+  private resultsContextFor(
+    recommendations: RecommendationSet | null,
+    brief: StudentBrief | null = null,
+  ): string {
+    // The brief is exactly what the model was shown, so it is exactly what the claim check needs.
+    if (brief !== null) {
+      return briefToProse(brief);
+    }
+
     if (recommendations === null) {
       return '';
     }
@@ -722,10 +823,13 @@ export class ChatService {
     history: ChatMessage[],
     recommendations: RecommendationSet | null,
     retrieved: RetrievedChunk[],
+    brief: StudentBrief | null = null,
   ): string {
     const sections: string[] = [];
 
-    if (recommendations === null) {
+    if (brief !== null) {
+      sections.push(briefToProse(brief));
+    } else if (recommendations === null) {
       sections.push(
         'THE STUDENT HAS NO RECOMMENDATIONS YET',
         'They have not completed both required assessments. Say so plainly if they ask about their results.',
@@ -818,6 +922,7 @@ export class ChatService {
     aiRequestId: string | null,
     sources: string[] = [],
     knowledgeRequest: KnowledgeRequestState | null = null,
+    answerKind: ChatAnswerKind | null = null,
   ): Promise<ChatMessage> {
     const message: ChatMessage = {
       id: uuid(),
@@ -834,7 +939,7 @@ export class ChatService {
         not a claim that no gate answered — it is the absence of a claim, which is the only
         honest value while nothing records one.
       */
-      answerKind: null,
+      answerKind,
       feedback: null,
       /*
         `OFFERED` on a no-coverage refusal, NULL on everything else (migration 0030). Written here

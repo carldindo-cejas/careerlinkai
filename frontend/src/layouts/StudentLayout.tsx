@@ -3,6 +3,9 @@ import { BookOpenCheck, ChartColumn, Compass, LayoutDashboard } from 'lucide-rea
 import { ProfilingBanner } from '@/features/student/components/ProfilingBanner';
 import { AppShell, type AppNavItem } from '@/layouts/AppShell';
 import { paths } from '@/routes/paths';
+import { useLocation } from 'react-router-dom';
+
+import { StudentChatLauncher } from '@/features/student/components/RecommendationChatPanel';
 import { useStudentClassStore } from '@/stores/studentClassStore';
 
 /**
@@ -37,7 +40,12 @@ export function StudentLayout() {
   const classRoom = useStudentClassStore((state) => state.classRoom);
   const clearClass = useStudentClassStore((state) => state.clear);
 
+  // The recommendations page has the assistant as a column already (AI-COVERAGE-PLAN.md Phase 4).
+  const onRecommendations = useLocation().pathname.startsWith(paths.studentRecommendations);
+
   return (
+    <>
+    {onRecommendations ? null : <StudentChatLauncher />}
     <AppShell
       title="Student"
       nav={nav}
@@ -56,5 +64,6 @@ export function StudentLayout() {
         ) : null
       }
     />
+    </>
   );
 }

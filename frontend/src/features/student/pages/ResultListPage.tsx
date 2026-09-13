@@ -110,7 +110,7 @@ export function ResultListPage() {
           ) : null}
         </div>
 
-        <p className="mx-auto max-w-prose text-center text-sm text-muted-foreground">
+        <p className="text-center text-sm text-muted-foreground">
           Your RIASEC interest profile and your SCCT career confidence, then every other assessment
           you have finished. Each score is out of 100 and shows how strongly something came through
           in your answers — not how well you did. There is no pass mark.
@@ -172,7 +172,7 @@ export function ResultListPage() {
             </CardContent>
           </Card>
 
-          <p className="mx-auto max-w-prose text-center text-xs text-muted-foreground">
+          <p className="text-center text-xs text-muted-foreground">
             {ACKNOWLEDGEMENT}
           </p>
         </>

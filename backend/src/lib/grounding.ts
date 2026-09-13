@@ -447,8 +447,11 @@ export function offDomainReply(kind: OffDomain): string {
  * it names something that is actually in the student's recommendation set. Anything else, with no
  * retrieval behind it, is refused rather than answered.
  */
+// Widened 2026-09-13 (AI-COVERAGE-PLAN.md Phase 1): the prompt now carries the Student Brief —
+// grades, SCCT constructs, the Holland code and band labels — so questions about those are
+// answerable from the student's own data too.
 const RESULTS_VOCABULARY =
-  /\b(match|matches|matched|score|scores|scoring|rank|ranked|ranking|result|results|recommend|recommended|recommendation|recommendations|top|first|second|third|best|why|riasec|scct|interest|interests|assessment|strand|percent|percentage|my list|these)\b/i;
+  /\b(match|matches|matched|score|scores|scoring|rank|ranked|ranking|result|results|recommend|recommended|recommendation|recommendations|top|first|second|third|best|why|riasec|scct|interest|interests|assessment|strand|percent|percentage|my list|these|grade|grades|subject|subjects|math|science|english|average|confidence|efficacy|self efficacy|outcome|outcomes|goal|goals|holland|code|realistic|investigative|artistic|social|enterprising|conventional|band|profile|strength|strengths|weakness|weaknesses)\b/i;
 
 export function answerableFromResults(question: string, resultsContext: string): boolean {
   if (RESULTS_VOCABULARY.test(question)) {

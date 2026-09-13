@@ -6,6 +6,7 @@ import { assessmentGenerationMaxQuestions } from '@/lib/config';
 import { log } from '@/lib/logger';
 import { AiPolicyService } from '@/modules/ai/ai-policy-service';
 import { syncCatalogKnowledge } from '@/modules/ai/catalog-knowledge-service';
+import { syncGuidanceKnowledge } from '@/modules/ai/guidance-knowledge-service';
 import { AssessmentGenerationService } from '@/modules/ai/assessment-generation-service';
 import { ExplanationService } from '@/modules/ai/explanation-service';
 import { aiGatewayFrom, ingestionFrom, retrievalFrom } from '@/modules/ai/factory';
@@ -170,8 +171,58 @@ export async function handleAiJob(env: Env, message: AiJobMessage): Promise<bool
       return true;
     }
 
+    /**
+     * `SyncGuidanceKnowledge` (AI-COVERAGE-PLAN.md Phase 3) — the Guidance corpus, on its own
+     * message and its own 20-entry budget, chaining a continuation exactly like the catalog sync.
+     */
+    case 'SyncGuidanceKnowledge': {
+      const page = typeof message.payload.page === 'number' ? message.payload.page : 1;
+
+      await continueGuidanceSync(env, db, page);
+
+      return true;
+    }
+
     default:
       return false;
+  }
+}
+
+/** The Guidance corpus is ~50 entries; 10 pages of 20 is a generous ceiling for a re-arming chain. */
+const MAX_GUIDANCE_SYNC_PAGES = 10;
+
+/** Run one guidance-sync page and queue the next if the batch filled up. */
+export async function continueGuidanceSync(
+  env: Env,
+  db: ReturnType<typeof createDatabase>,
+  page: number,
+): Promise<void> {
+  if (page > MAX_GUIDANCE_SYNC_PAGES) {
+    log('error', 'guidance_knowledge.sync_page_cap', { pipeline: 'knowledge_ingestion', page });
+
+    return;
+  }
+
+  const result = await syncGuidanceKnowledge(db, env);
+
+  // Both, as with the catalog: a run that reports work left has necessarily done a full batch.
+  if (result.remaining > 0 && result.changed > 0) {
+    await env.QUEUE_AI.send({ type: 'SyncGuidanceKnowledge', payload: { page: page + 1 } });
+  }
+}
+
+/**
+ * Ask for a guidance sync. One subrequest; the consumer does the work with a fresh budget. Never
+ * throws — the nightly cron asks again, so a dropped message is a delay, not a loss.
+ */
+export async function requestGuidanceSync(env: Env): Promise<void> {
+  try {
+    await env.QUEUE_AI.send({ type: 'SyncGuidanceKnowledge', payload: { page: 1 } });
+  } catch (error) {
+    log('error', 'guidance_knowledge.sync_request_failed', {
+      pipeline: 'knowledge_ingestion',
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

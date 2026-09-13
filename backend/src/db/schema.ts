@@ -1129,6 +1129,11 @@ export const recommendations = sqliteTable(
     /** 1 = best **within its own type**. A career's 69.1 and a program's 76.1 are not comparable. */
     ranking: integer('ranking').notNull(),
     reason: text('reason').notNull(),
+    /**
+     * The §27 components behind `matchScore`, unrounded (migration 0036). NULL on rows generated
+     * before it. Read by the Student Brief so the assistant can say which component carried a score.
+     */
+    components: text('components', { mode: 'json' }).$type<Record<string, number>>(),
     createdAt: createdAt(),
   },
   (table) => [

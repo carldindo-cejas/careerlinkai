@@ -740,6 +740,101 @@ export class AiInsightsService {
    * platform-wide total is not theirs to act on and a "3 failed" banner about somebody else's
    * uploads is a banner they can do nothing about.
    */
+  /**
+   * **Which gate answered, per day** (AI-COVERAGE-PLAN.md Phase 6).
+   *
+   * The measure of whether the assistant is covering what students ask: curated (Gate 1, an
+   * admin's words), lookup (Gate 2, from the catalog or the student's results), generated (Gate 3,
+   * passed the grounding contract) and refused (every refusal and redirect). Lookups and refusals
+   * share the `CANNED` kind and are told apart by whether a source was named — see `ChatService`.
+   *
+   * `tokens` is the text model's daily token use from `ai_requests`, the input to the Free plan's
+   * 10,000-neuron budget. Assistant messages written before answer kinds were recorded (NULL) are
+   * counted in `total` only.
+   */
+  async gateDistribution(
+    scope: InsightsScope = null,
+    days = 14,
+  ): Promise<{
+    days: {
+      date: string;
+      curated: number;
+      lookup: number;
+      generated: number;
+      refused: number;
+      total: number;
+      tokens: number;
+    }[];
+  }> {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    const studentScope =
+      scope === null
+        ? undefined
+        : sql`${chatConversations.studentId} IN ${studentsOfCounselor(scope.counselorId)}`;
+
+    const answers = await this.db
+      .select({
+        date: sql<string>`substr(${chatMessages.createdAt}, 1, 10)`,
+        curated: sql<number>`sum(case when ${chatMessages.answerKind} = 'CURATED' then 1 else 0 end)`,
+        lookup: sql<number>`sum(case when ${chatMessages.answerKind} = 'CANNED' and ${chatMessages.sources} is not null then 1 else 0 end)`,
+        generated: sql<number>`sum(case when ${chatMessages.answerKind} = 'KNOWLEDGE' then 1 else 0 end)`,
+        refused: sql<number>`sum(case when ${chatMessages.answerKind} = 'CANNED' and ${chatMessages.sources} is null then 1 else 0 end)`,
+        total: count(),
+      })
+      .from(chatMessages)
+      .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+      .where(
+        and(
+          eq(chatMessages.role, 'assistant'),
+          sql`${chatMessages.createdAt} >= ${since}`,
+          studentScope,
+        ),
+      )
+      .groupBy(sql`substr(${chatMessages.createdAt}, 1, 10)`);
+
+    const tokens = await this.db
+      .select({
+        date: sql<string>`substr(${aiRequests.createdAt}, 1, 10)`,
+        tokens: sql<number>`coalesce(sum(${aiRequests.tokensUsed}), 0)`,
+      })
+      .from(aiRequests)
+      .where(
+        and(
+          sql`${aiRequests.createdAt} >= ${since}`,
+          scope === null
+            ? undefined
+            : sql`${aiRequests.userId} IN ${studentsOfCounselor(scope.counselorId)}`,
+        ),
+      )
+      .groupBy(sql`substr(${aiRequests.createdAt}, 1, 10)`);
+
+    const byDate = new Map<string, { curated: number; lookup: number; generated: number; refused: number; total: number; tokens: number }>();
+
+    for (const row of answers) {
+      byDate.set(row.date, {
+        curated: Number(row.curated ?? 0),
+        lookup: Number(row.lookup ?? 0),
+        generated: Number(row.generated ?? 0),
+        refused: Number(row.refused ?? 0),
+        total: Number(row.total ?? 0),
+        tokens: 0,
+      });
+    }
+
+    for (const row of tokens) {
+      const entry = byDate.get(row.date) ?? { curated: 0, lookup: 0, generated: 0, refused: 0, total: 0, tokens: 0 };
+
+      entry.tokens = Number(row.tokens ?? 0);
+      byDate.set(row.date, entry);
+    }
+
+    return {
+      days: [...byDate.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, entry]) => ({ date, ...entry })),
+    };
+  }
+
   async corpusHealth(
     authorId?: string,
   ): Promise<{ entries: number; chunks: number; embedded: number; failed: number }> {
