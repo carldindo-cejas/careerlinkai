@@ -171,6 +171,14 @@ const NEAR = /\b(?:near|nearest|closest|close to|around|in)\b/;
 const CHOOSE =
   /\b(?:what|which)(?: program| course| one| degree)? (?:should i|shall i|do i|to|can i|would you) (?:choose|take|pick|study|enrol|enroll|get|recommend)\b|\bbased on my (?:results?|assessments?|assessment results|scores?|interests?|profile)\b|\b(?:best|good|right) (?:for|fit for) me\b|\b(?:suits?|fits?) me\b|\bmy best (?:option|choice|program|course)\b|\bbest (?:program|course|option|choice) for me\b/;
 
+/**
+ * A question that plausibly points back at what was just discussed ("what programs do they offer",
+ * "where is it"). Only these inherit a subject from history. Without the check, any question naming
+ * nothing borrowed the last subject — "what is the purpose of the career guidance program in senior
+ * high school?" was answered with the previous college's program list (production, 2026-09-13).
+ */
+const REFERS_BACK =
+  /\b(?:it|its|there|that|this|they|them|their|the program|the course|the school|the college)\b/;
 const PROGRAM_WORDS = /\b(?:program|programs|course|courses|degree|degrees)\b/;
 const CAREER_WORDS = /\b(?:career|careers|job|jobs|work|profession)\b/;
 
@@ -250,13 +258,7 @@ export class ResultsAnswerService {
       if (own !== null) return own;
 
       // Only a question that plausibly points back ("it", "there", "that program") inherits.
-      if (
-        !/\b(?:it|its|there|that|this|they|them|their|the program|the course|the school|the college)\b/.test(
-          asked,
-        )
-      ) {
-        return null;
-      }
+      if (!REFERS_BACK.test(asked)) return null;
 
       for (const text of recentTexts(history)) {
         const inherited = bindingFrom(this.mentions(normaliseQuestion(text), set, index), true);
@@ -371,7 +373,7 @@ export class ResultsAnswerService {
     }
 
     // A follow-up: the intent is here, the thing it is about was named a moment ago.
-    if (!named && m.place === null && rankOf(asked) === null) {
+    if (!named && m.place === null && rankOf(asked) === null && REFERS_BACK.test(asked)) {
       for (const text of recentTexts(history)) {
         const earlier = this.mentions(normaliseQuestion(text), set, index);
 

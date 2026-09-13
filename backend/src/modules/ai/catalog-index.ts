@@ -313,6 +313,10 @@ const NOT_A_PLACE = new Set([
   'math',
   'science',
   'high',
+  // "…program in senior high school" named a place called "senior" (production, 2026-09-13).
+  'senior',
+  'junior',
+  'shs',
   'grade',
   'public',
   'private',

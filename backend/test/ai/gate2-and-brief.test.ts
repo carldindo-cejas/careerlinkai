@@ -225,6 +225,24 @@ describe('Gate 2 intents', () => {
     expect(turn.answer.content).toContain('BS Computer Science');
   });
 
+  // Production, 2026-09-13: both were answered from the previous subject — a college's program list,
+  // then "careers after BS Computer Science" — instead of reaching the knowledge base.
+  it('does not borrow the last subject for a question that does not point back', async () => {
+    await fresh();
+    await ask('Where is Holy Name University?');
+
+    for (const question of [
+      'What is the purpose of the career guidance program in senior high school?',
+      'How can I prepare for choosing a career after Grade 12?',
+    ]) {
+      const { turn } = await ask(question);
+
+      expect(turn.answer.content, question).not.toContain('offers:');
+      expect(turn.answer.content, question).not.toContain('commonly go into these careers');
+      expect(turn.answer.content, question).not.toContain('lists colleges in');
+    }
+  });
+
   it('lists the careers a program leads to, with pay', async () => {
     await fresh();
     const { turn } = await ask('What careers can I take after BS Computer Science?');
