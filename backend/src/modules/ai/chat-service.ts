@@ -1,21 +1,48 @@
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
 import {
   chatConversations,
   chatMessages,
+  knowledgeChunks,
+  knowledgeDocuments,
   type ChatConversation,
   type ChatMessage,
 } from '@/db/schema';
+import type { ChatAnswerKind, KnowledgeRequestState } from '@/db/enums';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import {
-  RECOMMENDATION_CHAT_PROMPT_VERSION,
-  RECOMMENDATION_CHAT_SYSTEM_PROMPT,
-} from '@/prompts/recommendation-chat.v1';
+  answerableFromResults,
+  citedIndexes,
+  normaliseQuestion,
+  offDomainKind,
+  offDomainReply,
+  parseQaChunk,
+  selfReportedGap,
+  unsupportedClaims,
+  validateCitations,
+} from '@/lib/grounding';
+// v2 since 2026-09-13 (AI-COVERAGE-PLAN.md Phase 1): the prompt that knows about the Student Brief.
+import {
+  RECOMMENDATION_CHAT_V2_PROMPT_VERSION as RECOMMENDATION_CHAT_PROMPT_VERSION,
+  RECOMMENDATION_CHAT_V2_SYSTEM_PROMPT as RECOMMENDATION_CHAT_SYSTEM_PROMPT,
+} from '@/prompts/recommendation-chat.v2';
 import type { AiGatewayService, GenerateOptions } from '@/modules/ai/ai-gateway-service';
-import type { RetrievalService, RetrievedChunk } from '@/modules/ai/retrieval-service';
+import {
+  RETRIEVAL_TOP_K,
+  toFtsQuery,
+  type RetrievalService,
+  type RetrievedChunk,
+} from '@/modules/ai/retrieval-service';
+import { ResultsAnswerService } from '@/modules/ai/results-answer-service';
+import { sourceTitlesFor } from '@/modules/ai/sources';
 import type { RecommendationSet } from '@/modules/recommendation/recommendation-service';
+import {
+  briefToProse,
+  StudentBriefService,
+  type StudentBrief,
+} from '@/modules/recommendation/student-brief-service';
 
 /**
  * `ChatService` — the recommendations-page assistant (prompt-driven, 2026-07-27).
@@ -59,6 +86,48 @@ const ABSOLUTE_CLAIM_PATTERN =
 /** Bounded so one student cannot bank an unbounded transcript against the daily neuron quota. */
 export const MAX_QUESTION_CHARS = 1000;
 
+/** How many Q&A candidates Gate 1 pulls before comparing normalised question text. */
+const GATE_ONE_CANDIDATES = 10;
+
+/**
+ * What a student is told when nothing covers their question.
+ *
+ * Deliberately not an apology and not a dead end: it says what is missing, and it routes to the
+ * person who can actually answer. Every one of these also writes an `ai_requests` row carrying
+ * the exact question — which is the backlog an admin closes with one Q&A entry, after which this
+ * same question is answered by Gate 1 for free, forever.
+ */
+const NO_COVERAGE_REPLY =
+  'I don’t have anything in the school’s guidance materials that answers that, so I would rather not guess. Your guidance counselor can help — and if you tell them what you asked, they can add it here for next time. I can still explain anything about your own assessment results, matches and scores.';
+
+/** One answer, whichever gate produced it. */
+interface Answer {
+  text: string;
+  aiRequestId: string | null;
+  failure: string | null;
+  /** Knowledge entries to name under the answer. Empty for anything not drawn from documents. */
+  sources: string[];
+  /**
+   * True on the four paths that end in `NO_COVERAGE_REPLY` — nothing retrieved, a citation the
+   * grounding contract rejected, an unsupported claim, a failed verification — and on a fifth that
+   * does not: an otherwise-accepted answer in which the model itself says its material does not
+   * cover the question (`selfReportedGap`). That one keeps its text; only the button is added.
+   *
+   * It is what puts *"Request to add to knowledge"* under the answer (migration 0030). Recorded on
+   * the row rather than re-derived by matching the reply text, so the button survives a reworded
+   * refusal and a transcript reloaded next week.
+   */
+  coverageGap: boolean;
+  /**
+   * Which gate produced it (migration 0029), now actually recorded. CURATED is Gate 1; KNOWLEDGE is
+   * a generation that passed the grounding contract; CANNED is everything deterministic — a Gate 2
+   * lookup (which carries a source line) and every refusal or redirect (which does not). No new
+   * value was added for Gate 2: 0029's CHECK constraint would need a table rebuild, the same trade
+   * migration 0033 declined for the same reason.
+   */
+  kind: ChatAnswerKind;
+}
+
 export interface ChatTurn {
   conversation: ChatConversation;
   question: ChatMessage;
@@ -76,7 +145,26 @@ export class ChatService {
       instructions: string | null;
       restrictions: string | null;
     } | null,
+    /**
+     * The §34 verifier pass (`AI_VERIFIER_ENABLED`). Off by default — it is the only check in the
+     * grounding contract that spends neurons, so it is a budget decision rather than a code one.
+     */
+    private readonly verifier = false,
+    /** KV for Gate 2's catalog index. Optional — without it the index is read from D1 each turn. */
+    private readonly cache?: KVNamespace,
   ) {}
+
+  /** The Student Brief, or null if it cannot be built — a turn never fails for want of it. */
+  private async briefFor(
+    studentId: string,
+    recommendations: RecommendationSet | null,
+  ): Promise<StudentBrief | null> {
+    try {
+      return await new StudentBriefService(this.db).briefFor(studentId, recommendations);
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * The student's current conversation, or null.
@@ -116,6 +204,90 @@ export class ChatService {
       .orderBy(asc(chatMessages.createdAt), asc(chatMessages.id));
   }
 
+  /**
+   * Flag an answer as wrong (AiNormalisation Phase 4).
+   *
+   * Scoped by student through the conversation, like every other read here: a message id alone is
+   * not authority to touch it. Idempotent — flagging twice is the same state, and a student
+   * clicking again should not be an error.
+   *
+   * Deliberately no un-flagging in v1. The signal goes to an admin review queue, and a
+   * disappearing item is worse than a stale one: it removes the evidence before anyone has looked
+   * at it, and the admin has no way to know it was ever there.
+   */
+  async flagAnswer(studentId: string, messageId: string): Promise<boolean> {
+    const [message] = await this.db
+      .select({ id: chatMessages.id })
+      .from(chatMessages)
+      .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.role, 'assistant'),
+          eq(chatConversations.studentId, studentId),
+        ),
+      )
+      .limit(1);
+
+    if (message === undefined) {
+      return false;
+    }
+
+    await this.db
+      .update(chatMessages)
+      .set({ feedback: 'DOWN' })
+      .where(eq(chatMessages.id, messageId));
+
+    return true;
+  }
+
+  /**
+   * *"Request to add to knowledge"* — a student asking for a gap to be filled (migration 0030).
+   *
+   * Only ever on an answer the service itself marked `OFFERED`: a no-coverage refusal. That is the
+   * whole authorisation story beyond the ownership check — a student cannot nominate a generated
+   * answer, an off-domain redirect or somebody else's message, because none of those carry the
+   * state this transition starts from.
+   *
+   * The question itself is **already** in the admin's backlog: every one of these refusals wrote a
+   * SKIPPED `ai_requests` row carrying the exact text, and `/admin/ai-insights` has been reading
+   * that since Phase 4. What this adds is the student's own voice on top of the pipeline's — a
+   * question two students asked to have answered is a better use of an admin's afternoon than one
+   * the retrieval merely missed, and nothing recorded that difference before.
+   *
+   * Idempotent, and one direction only, exactly like `flagAnswer`: pressing twice is the same
+   * state, and a backlog item that can vanish before anyone has looked at it is worse than a
+   * stale one.
+   */
+  async requestKnowledge(studentId: string, messageId: string): Promise<boolean> {
+    const [message] = await this.db
+      .select({ id: chatMessages.id })
+      .from(chatMessages)
+      .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+      .where(
+        and(
+          eq(chatMessages.id, messageId),
+          eq(chatMessages.role, 'assistant'),
+          eq(chatConversations.studentId, studentId),
+          // `OFFERED` or `REQUESTED` — the second is the idempotent re-press, which is a success
+          // rather than a 404. NULL is not a request anyone was invited to make.
+          isNotNull(chatMessages.knowledgeRequest),
+        ),
+      )
+      .limit(1);
+
+    if (message === undefined) {
+      return false;
+    }
+
+    await this.db
+      .update(chatMessages)
+      .set({ knowledgeRequest: 'REQUESTED' })
+      .where(eq(chatMessages.id, messageId));
+
+    return true;
+  }
+
   /** Wipe the transcript. The student's own data, and their own decision to clear it. */
   async clearFor(studentId: string): Promise<void> {
     // The `chat_messages` FK cascades, so deleting the conversation takes its messages with it.
@@ -144,6 +316,9 @@ export class ChatService {
       'assistant',
       outcome.text,
       outcome.aiRequestId,
+      outcome.sources,
+      outcome.coverageGap ? 'OFFERED' : null,
+      outcome.kind,
     );
 
     await this.db
@@ -166,7 +341,135 @@ export class ChatService {
     question: string,
     history: ChatMessage[],
     recommendations: RecommendationSet | null,
-  ): Promise<{ text: string; aiRequestId: string | null; failure: string | null }> {
+  ): Promise<Answer> {
+    /**
+     * **Gate 0 — scope.** Declined by design (§34), before anything is retrieved or generated.
+     * A guidance assistant that answers homework has quietly become a homework tool that is bad
+     * at homework; a student bringing a personal problem gets pointed at a person instead.
+     */
+    const offDomain = offDomainKind(question);
+
+    if (offDomain !== null) {
+      return {
+        text: offDomainReply(offDomain),
+        aiRequestId: null,
+        failure: `OUT_OF_SCOPE_${offDomain}`,
+        sources: [],
+        // Declined by design, not for want of material: there is nothing here for an admin to
+        // write, and offering to add homework help to the corpus would invite exactly that.
+        coverageGap: false,
+        kind: 'CANNED',
+      };
+    }
+
+    /**
+     * **Gate 1 — an admin already answered this.** Zero neurons, zero hallucination, and the
+     * admin's words reach the student unaltered.
+     *
+     * The exact-match half runs first because it is free: a keyword lookup over Q&A entries, then
+     * a normalised string comparison. No embedding, no vector query, no generation. This is the
+     * gate the whole flywheel turns on — the questions students repeat most are the ones that
+     * never reach the model at all.
+     */
+    const canned = await this.cannedAnswerFor(question);
+
+    if (canned !== null) {
+      return {
+        text: canned.answer,
+        aiRequestId: null,
+        failure: null,
+        sources: [canned.title],
+        coverageGap: false,
+        kind: 'CURATED',
+      };
+    }
+
+    /**
+     * **Gate 2 — the student's own results and the catalog answer this exactly** (2026-09-13).
+     *
+     * "Why is X my match?" and "where can I study X?" are lookups, not writing. Answered from the
+     * rows with no model call, they cost nothing and cannot pair a score with the wrong name — see
+     * `ResultsAnswerService`. Null means the question did not bind cleanly and goes on as before.
+     */
+    const brief = await this.briefFor(studentId, recommendations);
+    const gate2 = new ResultsAnswerService(this.db, this.cache);
+    const exact = await gate2.answer(question, recommendations, brief, history, studentId);
+
+    if (exact !== null) {
+      return {
+        text: exact.text,
+        aiRequestId: null,
+        failure: null,
+        sources: exact.sources,
+        coverageGap: false,
+        kind: 'CANNED',
+      };
+    }
+
+    return this.generated(studentId, question, history, recommendations, brief, gate2);
+  }
+
+  /**
+   * An admin-authored answer to exactly this question, or null.
+   *
+   * Matching is on the normalised question text — case, punctuation and diacritics removed —
+   * because none of that variation changes which written answer is correct. It is deliberately
+   * *exact* after normalisation rather than fuzzy: Gate 1 returns an admin's words verbatim, with
+   * no model in the loop to notice that the question was actually a different one.
+   *
+   * FTS5 narrows the candidates to Q&A entries sharing the question's words, so this is one D1
+   * query regardless of corpus size. Never throws: a lookup failure means the question goes
+   * through the normal pipeline, which is a slower answer rather than no answer.
+   */
+  private async cannedAnswerFor(question: string): Promise<{ answer: string; title: string } | null> {
+    const match = toFtsQuery(question);
+
+    if (match === null) {
+      return null;
+    }
+
+    try {
+      const rows = await this.db
+        .select({ content: knowledgeChunks.content, title: knowledgeDocuments.title })
+        .from(knowledgeChunks)
+        .innerJoin(
+          sql`knowledge_chunks_fts`,
+          sql`knowledge_chunks_fts.rowid = ${knowledgeChunks}.rowid`,
+        )
+        .innerJoin(knowledgeDocuments, eq(knowledgeDocuments.id, knowledgeChunks.documentId))
+        .where(
+          and(
+            sql`knowledge_chunks_fts MATCH ${match}`,
+            eq(knowledgeChunks.sourceType, 'qa'),
+            isNull(knowledgeDocuments.archivedAt),
+          ),
+        )
+        .limit(GATE_ONE_CANDIDATES);
+
+      const asked = normaliseQuestion(question);
+
+      for (const row of rows) {
+        const pair = parseQaChunk(row.content);
+
+        if (pair !== null && normaliseQuestion(pair.question) === asked) {
+          return { answer: pair.answer, title: row.title };
+        }
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async generated(
+    studentId: string,
+    question: string,
+    history: ChatMessage[],
+    recommendations: RecommendationSet | null,
+    brief: StudentBrief | null = null,
+    gate2: ResultsAnswerService = new ResultsAnswerService(this.db, this.cache),
+  ): Promise<Answer> {
     const baseOptions: Omit<GenerateOptions, 'systemPrompt' | 'userPrompt'> = {
       userId: studentId,
       requestType: 'CHAT',
@@ -192,14 +495,65 @@ export class ChatService {
      * right. What does **not** change is that nothing is answered from the model's own general
      * knowledge — the prompt's first rule is to say so when neither source covers the question.
      */
+    /**
+     * **What the question is about** (AI-COVERAGE-PLAN.md Phase 5). When it names a college,
+     * program or career — or points back at one with "it" or "there" — the passage about that
+     * thing goes first in the context, read straight from D1, and a follow-up's query carries the
+     * name so retrieval is not searching for the word "it".
+     */
+    const binding = await gate2.bindEntity(question, recommendations, history);
+    const query = binding?.fromHistory === true ? `${binding.name}: ${question}` : question;
+
     let retrieved: RetrievedChunk[];
 
     try {
-      retrieved = await this.retrieval.retrieve(question);
+      retrieved = await this.retrieval.retrieve(query);
     } catch {
       // An empty context block is the fallback: retrieval being down degrades the answer's
       // grounding, it does not stop the student getting one.
       retrieved = [];
+    }
+
+    if (binding?.entity) {
+      const pinned = await this.retrieval.chunksForEntity(binding.entity);
+      const pinnedIds = new Set(pinned.map(({ chunk }) => chunk.id));
+
+      retrieved = [
+        ...pinned,
+        ...retrieved.filter(({ chunk }) => !pinnedIds.has(chunk.id)),
+      ].slice(0, RETRIEVAL_TOP_K);
+    }
+
+    /**
+     * **D7, narrowed** (AiNormalisation Phase 3). The reasoning above is sound for *"which of my
+     * top three pays best?"* and exactly wrong for *"how much is tuition at that college?"*.
+     *
+     * In the second case nothing has been retrieved, the recommendation set says nothing about
+     * fees, and the only thing standing between the student and an invented figure is the
+     * prompt's first rule — which an 8B model obeys perhaps four times in five. Four times in
+     * five is not a guarantee; it is a coin weighted slightly in our favour, handed to a
+     * seventeen-year-old making a decision about their future.
+     *
+     * So the zero-retrieval path survives only for questions the student's own results can
+     * actually answer. Everything else refuses, honestly, and the refusal is logged as the gap it
+     * is — which is what turns it into an admin's backlog item rather than a dead end.
+     */
+    const resultsContext = this.resultsContextFor(recommendations, brief);
+
+    if (retrieved.length === 0 && !answerableFromResults(question, resultsContext)) {
+      await this.gateway.logSkipped(
+        { ...baseOptions, systemPrompt: '', userPrompt: question },
+        'Nothing retrieved and the question is not answerable from the student’s own results — refusing to generate ungrounded (§30).',
+      );
+
+      return {
+        text: NO_COVERAGE_REPLY,
+        aiRequestId: null,
+        failure: 'NO_GROUNDING',
+        sources: [],
+        coverageGap: true,
+        kind: 'CANNED',
+      };
     }
 
     const options: GenerateOptions = {
@@ -209,7 +563,7 @@ export class ChatService {
         chunk_ids: retrieved.map(({ chunk }) => chunk.id),
       },
       systemPrompt: this.systemPrompt(),
-      userPrompt: this.userPrompt(question, history, recommendations, retrieved),
+      userPrompt: this.userPrompt(question, history, recommendations, retrieved, brief),
       maxTokens: 500,
     };
 
@@ -222,6 +576,11 @@ export class ChatService {
         // output, and pointing a fallback message at an `ai_requests` row would record it as one.
         aiRequestId: null,
         failure: result.reason,
+        sources: [],
+        // The model being down is an operational problem. No amount of admin writing fixes it,
+        // and filing it as a knowledge gap would bury the real ones on exactly the bad days.
+        coverageGap: false,
+        kind: 'CANNED',
       };
     }
 
@@ -236,10 +595,170 @@ export class ChatService {
         text: this.deterministicReply(recommendations),
         aiRequestId: null,
         failure: 'FAILED_VALIDATION',
+        sources: [],
+        coverageGap: false,
+        kind: 'CANNED',
       };
     }
 
-    return { text, aiRequestId: result.request.id, failure: null };
+    /**
+     * **Cite or refuse** — but only when there was something to cite. An answer built from the
+     * student's own computed results has no passages behind it, and demanding a marker there
+     * would reject the one class of answer that is arithmetic rather than retrieval.
+     */
+    /*
+      **Cite or verify** (2026-09-13). A missing marker is no longer a refusal on its own.
+
+      Retrieval returns something for nearly every question, so an answer drawn from the
+      student's own results — which carry no marker — was refused as `NO_CITATION`: 39 of 44
+      chat failures on production, most of them correct ("why certified public accountant?").
+      The claim check below is what actually stops invention, and it runs either way. A marker
+      that points at a passage that was never supplied is still refused: that is invented
+      evidence.
+    */
+    if (retrieved.length > 0) {
+      const citations = validateCitations(text, retrieved.length);
+
+      if (!citations.ok && citations.reason === 'CITATION_OUT_OF_RANGE') {
+        await this.gateway.markDiscarded(
+          result.request.id,
+          `Rejected by the grounding contract: ${citations.reason}.`,
+        );
+
+        return {
+          text: NO_COVERAGE_REPLY,
+          aiRequestId: null,
+          failure: citations.reason,
+          sources: [],
+          coverageGap: true,
+          kind: 'CANNED',
+        };
+      }
+    }
+
+    /**
+     * **The claim check.** This is where the invented tuition fee dies: a figure or a name the
+     * model wrote that appears in none of the material it was given did not come from that
+     * material. Citing correctly and inventing within the cited sentence is a thing models do,
+     * so the marker is checked and then ignored.
+     */
+    const unsupported = unsupportedClaims(text, [
+      ...retrieved.map(({ chunk }) => chunk.content),
+      resultsContext,
+    ]);
+
+    if (unsupported.length > 0) {
+      await this.gateway.markDiscarded(
+        result.request.id,
+        `Rejected by the grounding contract: UNSUPPORTED_CLAIM (${unsupported
+          .map((claim) => `${claim.kind}:${claim.token}`)
+          .join(', ')}).`,
+      );
+
+      return {
+        text: NO_COVERAGE_REPLY,
+        aiRequestId: null,
+        failure: 'UNSUPPORTED_CLAIM',
+        sources: [],
+        coverageGap: true,
+        kind: 'CANNED',
+      };
+    }
+
+    /**
+     * The one paid check, and only where it earns its neurons: an answer that survived everything
+     * above **and still asserts a figure**. Those are the claims a student acts on and the ones a
+     * reader cannot sanity-check by eye, so they are worth ~30 tokens when the budget allows.
+     */
+    if (this.verifier && /\d{3,}/.test(text)) {
+      const supported = await this.gateway.verifyClaim(
+        [...retrieved.map(({ chunk }) => chunk.content), resultsContext].join('\n'),
+        text,
+      );
+
+      if (!supported) {
+        await this.gateway.markDiscarded(
+          result.request.id,
+          'Rejected by the grounding contract: UNSUPPORTED_CLAIM (verifier).',
+        );
+
+        return {
+          text: NO_COVERAGE_REPLY,
+          aiRequestId: null,
+          failure: 'UNSUPPORTED_CLAIM',
+          sources: [],
+          coverageGap: true,
+          kind: 'CANNED',
+        };
+      }
+    }
+
+    /**
+     * **The model said it does not know** (found testing on production, 2026-09-11).
+     *
+     * A reply like *"I don't have any information about a Mechanical Engineering program at Bohol
+     * Island State University…"* passes every check above — it cites a real passage and invents
+     * nothing — so it used to be recorded as a plain success: the student's real question never
+     * reached the backlog, and they were never offered *"Request to add to knowledge"*.
+     *
+     * The text is kept, because it is usually the most honest reply available: it says what is
+     * missing and points at what does exist, which is what the prompt asks for. Only the
+     * bookkeeping changes — the gap is logged as the SKIPPED row the backlog reads, and the answer
+     * carries the button. A false positive therefore costs one extra backlog row and never hides an
+     * answer, which is why this uses the generous tier of `selfReportedGap`.
+     */
+    const gap = selfReportedGap(text);
+
+    if (gap) {
+      await this.gateway.logSkipped(
+        { ...baseOptions, systemPrompt: '', userPrompt: question },
+        'The model answered that its material does not cover the question (SELF_REPORTED_GAP).',
+      );
+    }
+
+    return {
+      text,
+      aiRequestId: result.request.id,
+      failure: null,
+      // Only what the answer actually cited. Naming a passage the model never used would be a
+      // worse lie than naming none: the student would check it and find nothing.
+      sources: sourceTitlesFor(retrieved, citedIndexes(text)),
+      coverageGap: gap,
+      kind: 'KNOWLEDGE',
+    };
+  }
+
+  /**
+   * The student's own results as one searchable string.
+   *
+   * Two jobs, both about honesty rather than presentation: it is what `answerableFromResults`
+   * tests a question against, and it is the non-document half of the claim check's sources —
+   * because a match score of 87% is grounded by §26 arithmetic, and a check that did not know
+   * that would reject the truest sentence in the answer.
+   */
+  private resultsContextFor(
+    recommendations: RecommendationSet | null,
+    brief: StudentBrief | null = null,
+  ): string {
+    // The brief is exactly what the model was shown, so it is exactly what the claim check needs.
+    if (brief !== null) {
+      return briefToProse(brief);
+    }
+
+    if (recommendations === null) {
+      return '';
+    }
+
+    return [
+      ...recommendations.careers.map(
+        ({ recommendation, career }) =>
+          `${career.title} ${recommendation.matchScore}% ${recommendation.reason}`,
+      ),
+      ...recommendations.programs.map(
+        ({ recommendation, program, college }) =>
+          `${program.name} ${college.name} ${recommendation.matchScore}% ${recommendation.reason}`,
+      ),
+    ].join('\n');
   }
 
   /**
@@ -248,6 +767,14 @@ export class ChatService {
    * It is a real answer, not an apology: their top matches with the §27 reasons already computed
    * for them. Those sentences are reproducible arithmetic (§26) and were going to be true whatever
    * the model did.
+   *
+   * **Reserved for the model actually being unavailable** — a failed call, or a reply so malformed
+   * that another attempt might genuinely produce a better one. It used to serve the grounding
+   * rejections too, and that was measured on production as a lie: a student who asked about
+   * tuition was told the assistant was *"unavailable at the moment"* and to *"try again in a
+   * moment"*, when the truth was that the corpus holds no tuition figure and never would on a
+   * retry. Those paths now answer with `NO_COVERAGE_REPLY`, which says what is missing and routes
+   * to someone who can fix it.
    */
   private deterministicReply(recommendations: RecommendationSet | null): string {
     if (recommendations === null) {
@@ -296,10 +823,13 @@ export class ChatService {
     history: ChatMessage[],
     recommendations: RecommendationSet | null,
     retrieved: RetrievedChunk[],
+    brief: StudentBrief | null = null,
   ): string {
     const sections: string[] = [];
 
-    if (recommendations === null) {
+    if (brief !== null) {
+      sections.push(briefToProse(brief));
+    } else if (recommendations === null) {
       sections.push(
         'THE STUDENT HAS NO RECOMMENDATIONS YET',
         'They have not completed both required assessments. Say so plainly if they ask about their results.',
@@ -390,6 +920,9 @@ export class ChatService {
     role: 'user' | 'assistant',
     content: string,
     aiRequestId: string | null,
+    sources: string[] = [],
+    knowledgeRequest: KnowledgeRequestState | null = null,
+    answerKind: ChatAnswerKind | null = null,
   ): Promise<ChatMessage> {
     const message: ChatMessage = {
       id: uuid(),
@@ -397,6 +930,25 @@ export class ChatService {
       role,
       content,
       aiRequestId,
+      // NULL, not [], for "nothing to name" — the two would render identically and mean the same
+      // thing, and the absence of a source line is what tells a student this is not a cited fact.
+      sources: sources.length === 0 ? null : sources,
+      /*
+        NULL until Gate 3/4 is wired up, which is exactly what migration 0029 specifies for a
+        message written before the tiers exist: the panel treats NULL as it always did. It is
+        not a claim that no gate answered — it is the absence of a claim, which is the only
+        honest value while nothing records one.
+      */
+      answerKind,
+      feedback: null,
+      /*
+        `OFFERED` on a no-coverage refusal, NULL on everything else (migration 0030). Written here
+        rather than derived on read, so a transcript reloaded next term still knows which of its
+        refusals a student may ask to have answered.
+      */
+      knowledgeRequest,
+      // Set only when a question the student requested is later answered (migration 0033).
+      knowledgeAnsweredAt: null,
       createdAt: now(),
     };
 

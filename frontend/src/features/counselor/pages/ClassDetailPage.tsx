@@ -1,17 +1,16 @@
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { Loader2, UserPlus } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { AssignmentPanel } from '@/features/counselor/components/AssignmentPanel';
-import { ClassRecommendationsPanel } from '@/features/counselor/components/ClassRecommendationsPanel';
-import { ClassResultsPanel } from '@/features/counselor/components/ClassResultsPanel';
 import { JoinCodeCard } from '@/features/counselor/components/JoinCodeCard';
 import { RosterBuilder } from '@/features/counselor/components/RosterBuilder';
 import { RosterTable } from '@/features/counselor/components/RosterTable';
 import { useClass } from '@/features/counselor/hooks/useClasses';
-import { paths } from '@/routes/paths';
 
 /**
  * One class: its code, its roster, and the roster builder (FULLPLAN §57, Phase 1A/1B).
@@ -22,6 +21,7 @@ import { paths } from '@/routes/paths';
 export function ClassDetailPage() {
   const { classId = '' } = useParams<{ classId: string }>();
   const [enrolled, setEnrolled] = useState<number | null>(null);
+  const [isAdding, setIsAdding] = useState(false);
 
   const { data: classRoom, isPending, isError, error } = useClass(classId);
 
@@ -35,30 +35,35 @@ export function ClassDetailPage() {
   }
 
   if (isError) {
-    return (
-      <div className="flex flex-col gap-4">
-        <BackLink />
-        <Alert>{error.message}</Alert>
-      </div>
-    );
+    return <Alert>{error.message}</Alert>;
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <BackLink />
+      {/* "All classes" used to sit here and in the error branch above; the shell's back control
+          (AppShell) now stands one step above every page, error state included. */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-semibold text-foreground">{classRoom.name}</h1>
+            <Badge tone={classRoom.status === 'active' ? 'success' : 'neutral'}>
+              {classRoom.status}
+            </Badge>
+          </div>
 
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-foreground">{classRoom.name}</h1>
-          <Badge tone={classRoom.status === 'active' ? 'success' : 'neutral'}>
-            {classRoom.status}
-          </Badge>
+          <p className="text-sm text-muted-foreground">
+            {classRoom.academic_year}
+            {classRoom.grade_level ? ` · ${classRoom.grade_level}` : null}
+          </p>
         </div>
 
-        <p className="text-sm text-muted-foreground">
-          {classRoom.academic_year}
-          {classRoom.grade_level ? ` · ${classRoom.grade_level}` : null}
-        </p>
+        {/* Adding students is an occasional errand, not something the counselor reads on every
+            visit — so it is one button up here and a modal, rather than a permanent two-step
+            panel standing between the class code and the roster. */}
+        <Button onClick={() => setIsAdding(true)}>
+          <UserPlus className="size-4" aria-hidden="true" />
+          Add students
+        </Button>
       </div>
 
       {enrolled !== null ? (
@@ -71,35 +76,30 @@ export function ClassDetailPage() {
 
       <JoinCodeCard classRoom={classRoom} />
 
-      <RosterBuilder classId={classRoom.id} onConfirmed={setEnrolled} />
-
+      {/* Opening a class is nearly always "who is in this class?" — the roster sits directly under
+          the code. Each student's results and recommendations open inside their own row, which is
+          why the separate Results and Recommendations panels that used to follow are gone. */}
       <RosterTable classId={classRoom.id} />
 
-      {/* Phase 3: assign an assessment to this class, and watch results arrive (§37). Placed
-          below the roster deliberately — there is no point assigning an assessment to a class
-          with nobody in it, and the page reads top to bottom in the order the counselor works. */}
+      {/* Paste the names, review the generated usernames, confirm — all inside the modal, which
+          closes on success. It is unmounted while shut, so each open starts on a clean step 1. */}
+      <Dialog open={isAdding} onOpenChange={setIsAdding}>
+        <DialogContent title="Add students">
+          <RosterBuilder
+            classId={classRoom.id}
+            // The confirmation lands on the page behind, beside the roster it just changed.
+            onConfirmed={(count) => {
+              setEnrolled(count);
+              setIsAdding(false);
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      {/* Phase 3: assign an assessment to this class (§37). Placed below the roster deliberately —
+          there is no point assigning an assessment to a class with nobody in it, and the page reads
+          top to bottom in the order the counselor works. */}
       <AssignmentPanel classId={classRoom.id} />
-
-      {/* Phase 6 (D8): the results overview with the §21 retake button. */}
-      <ClassResultsPanel classId={classRoom.id} />
-
-      {/* Audit F2 / P1-1: what those results were turned into. Last on the page because it is the
-          end of the counselor's own sequence — assign, watch results arrive, read what the engine
-          made of them — and because it reads the roster and the results the two panels above have
-          already loaded. */}
-      <ClassRecommendationsPanel classId={classRoom.id} />
     </div>
-  );
-}
-
-function BackLink() {
-  return (
-    <Link
-      to={paths.counselorClasses}
-      className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-    >
-      <ArrowLeft className="size-4" aria-hidden="true" />
-      All classes
-    </Link>
   );
 }

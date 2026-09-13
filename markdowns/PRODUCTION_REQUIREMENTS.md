@@ -10,9 +10,11 @@
 >    always right; the prose would have led someone to stop verifying six migrations early.
 > 2. **The catalog seed named here was the demo fixture.** `seeds/0002_academic_catalog.sql` holds
 >    5 colleges, 10 careers and 16 programs, and §27 keeps a top **ten** — so seeding production
->    with it gives every student the entire career catalog, reordered. Production must be seeded
->    with **`seeds/0004_academic_catalog_expansion.sql`** (20 HEIs, 68 careers, 48 canonical
->    programs, 309 offerings, 933 mappings). See audit finding C1.
+>    with it gives every student the entire career catalog, reordered. See audit finding C1.
+>    *(Superseded 2026-09-05: the fix was seed 0004, and the live catalog is now
+>    `seeds/0005_region7_catalog_reset.sql`. Superseded again 2026-09-09: that catalog is now
+>    **Bohol only**, generated from `colleges.md`, and seeds 0002 and 0004 have been **deleted** —
+>    either one would have put Manila and Cebu institutions back alongside it. See §3a.)*
 > 3. **Installing RIASEC and SCCT was not listed at all.** A freshly migrated database has **no
 >    assessments**. The instruments arrive only via
 >    `POST /api/v1/admin/assessment-templates/seed-instruments`, which now has an
@@ -65,16 +67,50 @@ After migrating: staff accounts, academic catalog, AI policy.
 Staff **must** go through the bootstrap script (it derives PBKDF2 hashes at run time — never the
 committed `seeds/0001_staff_accounts.sql`, which publishes the password it encodes).
 
-The catalog seed is **0004, not 0002**. `0002` is the 10-career demo fixture; because §27 keeps a
-top ten, seeding production with it hands every student the whole catalog in a different order and
-the recommendation engine appears to do nothing (audit C1). `0004` is the real catalog and is
-idempotent, so re-running it is safe.
+The catalog seed is **0005**, and as of 2026-09-09 it is the **only** catalog seed —
+**`seeds/0005_region7_catalog_reset.sql`**, the 22 Bohol campuses of `colleges.md`: 41 canonical
+programmes, 126 offerings, 86 careers, 549 mappings. It is generated; edit
+`backend/scripts/build-region7-seed.mjs` and re-run `npm run seed:region7`, never the `.sql`.
+
+`0002` (the 10-career Manila demo fixture behind audit C1) and `0004` (the nationwide catalog that
+fixed C1, 20 institutions from Diliman to Iligan) were **deleted**, not demoted. Being local-only
+was enough while the catalog was national; it stopped being enough once the catalog became one
+province. Neither file collides with 0005 by name, so `INSERT OR IGNORE` collides on nothing and
+running either one *after* 0005 adds a second catalog rather than replacing the first — a student
+in Tagbilaran gets offered a programme in Manila. `test/platform/seed-chain.test.ts` fails if
+either file reappears or if any seed runner points somewhere other than 0005. Git history has them
+if the catalog is ever widened again.
+
+0005 is idempotent, so re-running it is safe. It is also a **reset**: it deletes every college,
+programme, career and mapping before inserting, which cascades to every student's stored
+recommendations. On a first cutover there are none. On a re-seed of a live database, see
+[the re-seed note](#re-seeding-a-live-catalog) below.
 
 ```bash
 node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
-npm run db:seed:catalog:full:production    # seeds/0004 — 20 HEIs, 68 careers, 48 programs
-npm run db:seed:ai-policy:production       # seeds/0003
+npm run db:seed:catalog:region7:production  # seeds/0005 — 22 Bohol campuses, 41 programmes, 86 careers
+npm run db:seed:ai-policy:production        # seeds/0003
 ```
+
+**Then sync the AI knowledge base.** The assistant does not read the catalog tables; it reads a
+corpus derived from them, and SQL cannot update that. Press **Sync catalog** on
+`/admin/knowledge` (or `POST /api/v1/admin/knowledge-catalog-sync`) after seeding. One press is
+now enough — the run does a batch inline and queues the rest, which finishes on its own.
+
+Skipping it fails quietly and looks like an AI problem. Measured on production on 2026-09-05,
+after the seed and before any sync: **Explain more** cited *"BS Chemical Engineering at De La
+Salle University"* and *"at Mapúa University"*, both already deleted, and the chat assistant said
+*"I don't have that information"* when asked where to study Chemical Engineering in Cebu — while
+USC, USJ-R and CIT-U all offer it.
+
+<a id="re-seeding-a-live-catalog"></a>
+**Re-seeding a live catalog.** Because 0005 replaces the catalog rather than adding to it, every
+`recommendations` row is deleted — each one targets a career or programme that is about to stop
+existing, and the foreign keys are `ON DELETE CASCADE`. Nothing a student authored is affected:
+assessment attempts, results, answers and chat conversations are untouched, and §27 recomputes a
+ranking from the stored result on demand. A student who opens the recommendations page after a
+re-seed sees the empty state with its **Regenerate** action (audit C4), not an error. Tell students
+before re-seeding a live term, or regenerate on their behalf from the counselor screen.
 
 Bootstrap prints the temp password **once**; accounts land with `must_change_password = 1` so first
 login forces rotation.
@@ -161,13 +197,16 @@ single-Worker consolidation removed the separate frontend artifact entirely.
 3. npx wrangler d1 migrations list CareerLinkAI_Main --remote --env production   # expect none pending
 4. node scripts/bootstrap-staff.mjs --database CareerLinkAI_Main --env production
                                                    # prints the temp password ONCE — capture it
-5. npm run db:seed:catalog:full:production         # seeds/0004 (NOT 0002 — see blocker 3)
+5. npm run db:seed:catalog:region7:production      # seeds/0005 — the only catalog seed there is
 6. npm run db:seed:ai-policy:production
 7. npm run deploy:production                       # publishes SPA + API in one versioned deploy
 8. curl https://careerlinkai.online/api/v1/health  # expect {"environment":"production"}
 9. Sign in as admin → forced password rotation → /admin/assessment-templates →
    "Install RIASEC & SCCT"                         # without this there are no assessments at all
-10. End-to-end smoke: create a class, join as a student, complete RIASEC + SCCT,
+10. /admin/knowledge → "Sync catalog"              # the AI reads a corpus derived from the
+                                                   # catalog, not the catalog. Skip it and the
+                                                   # assistant describes the catalog you replaced.
+11. End-to-end smoke: create a class, join as a student, complete RIASEC + SCCT,
     confirm recommendations appear and differ from another student's profile
 ```
 

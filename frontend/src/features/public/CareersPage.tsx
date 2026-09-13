@@ -2,34 +2,57 @@ import { Briefcase, Loader2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Pagination } from '@/components/ui/pagination';
+import { RangeSlider } from '@/components/ui/range-slider';
 import { Select } from '@/components/ui/select';
 import {
   usePublicCareers,
   usePublicEmploymentOutlooks,
 } from '@/features/public/hooks/usePublicCatalog';
-import { describeHollandCode, formatSalaryRange, type Career } from '@/types/catalog';
+import { useClientPagination } from '@/hooks/useClientPagination';
+import {
+  describeHollandCode,
+  formatSalaryRange,
+  formatThousands,
+  type Career,
+} from '@/types/catalog';
 
 /**
  * The public Careers page (prompt-driven, v1.5). Every career, filterable by employment outlook and a
  * salary window — the three filters compose, and the list updates as they change.
  *
  * Filtering is client-side over a single fetch of the whole (small) active-career set, so results
- * update instantly with no request per keystroke. Salary is a *range overlap*: a career matches the
+ * update instantly with no request per drag. Salary is a *range overlap*: a career matches the
  * window when its own range intersects it, and a career with no salary on file is only shown when no
  * salary filter is active (it cannot be confirmed to match one).
  */
 
-/** Parse a salary input to a whole number, or null when empty/invalid. Negatives are treated as empty. */
-function parseSalary(value: string): number | null {
-  const trimmed = value.trim();
-  if (trimmed === '') return null;
+/** Five rows of the three-column grid. */
+const PER_PAGE = 15;
 
-  const parsed = Number(trimmed.replace(/,/g, ''));
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
+/** The slider's step, and the multiple its ends are rounded to. Salaries move in thousands. */
+const SALARY_STEP = 1000;
 
-  return Math.floor(parsed);
+/** The window shown before any career has loaded, so the slider is never a zero-width track. */
+const FALLBACK_BOUNDS: [number, number] = [0, 100_000];
+
+/**
+ * The slider's travel: the whole span of salaries actually on file, widened out to round thousands
+ * so the ends read as `₱15,000` rather than `₱14,750`. Derived from the data instead of hardcoded
+ * because a fixed ceiling silently hides every career above it once the catalog grows.
+ */
+function salaryBounds(careers: Career[]): [number, number] {
+  const values = careers.flatMap((career) =>
+    [career.salary_min, career.salary_max].filter((value): value is number => value !== null),
+  );
+  if (values.length === 0) return FALLBACK_BOUNDS;
+
+  const low = Math.floor(Math.min(...values) / SALARY_STEP) * SALARY_STEP;
+  const high = Math.ceil(Math.max(...values) / SALARY_STEP) * SALARY_STEP;
+
+  // One career, or many on the same salary — give the track something to travel across.
+  return low === high ? [low, low + SALARY_STEP] : [low, high];
 }
 
 function matchesSalary(career: Career, min: number | null, max: number | null): boolean {
@@ -49,15 +72,25 @@ function matchesSalary(career: Career, min: number | null, max: number | null): 
 
 export function CareersPage() {
   const [outlookId, setOutlookId] = useState<string>('');
-  const [minInput, setMinInput] = useState('');
-  const [maxInput, setMaxInput] = useState('');
+  /** null until the reader touches the slider — before that it simply spans the whole catalog. */
+  const [salaryRange, setSalaryRange] = useState<[number, number] | null>(null);
 
   const careers = usePublicCareers();
   const outlooks = usePublicEmploymentOutlooks();
 
-  const min = parseSalary(minInput);
-  const max = parseSalary(maxInput);
-  const invalidRange = min !== null && max !== null && min > max;
+  const bounds = useMemo(() => salaryBounds(careers.data ?? []), [careers.data]);
+
+  // The bounds are only known once the careers land, so a range set against the old ones is
+  // clamped rather than trusted.
+  const range: [number, number] = salaryRange
+    ? [Math.max(salaryRange[0], bounds[0]), Math.min(salaryRange[1], bounds[1])]
+    : bounds;
+
+  // A slider parked on both ends is not a filter — it is the whole catalog, and narrowing to it
+  // must not hide the careers with no salary on file.
+  const salaryFiltered = range[0] > bounds[0] || range[1] < bounds[1];
+  const min = salaryFiltered ? range[0] : null;
+  const max = salaryFiltered ? range[1] : null;
 
   const filtered = useMemo(() => {
     const all = careers.data ?? [];
@@ -70,12 +103,13 @@ export function CareersPage() {
     });
   }, [careers.data, outlookId, min, max]);
 
-  const hasFilters = outlookId !== '' || minInput !== '' || maxInput !== '';
+  const { pageItems, pagination, setPage } = useClientPagination(filtered, PER_PAGE);
+
+  const hasFilters = outlookId !== '' || salaryFiltered;
 
   function clearFilters() {
     setOutlookId('');
-    setMinInput('');
-    setMaxInput('');
+    setSalaryRange(null);
   }
 
   return (
@@ -115,46 +149,22 @@ export function CareersPage() {
               </Select>
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="min-salary" className="text-sidebar-foreground">
-                Minimum salary (₱ / mo)
-              </Label>
-              <Input
-                id="min-salary"
-                type="number"
-                inputMode="numeric"
-                min={0}
-                step={1000}
-                placeholder="e.g. 20000"
-                value={minInput}
-                onChange={(event) => setMinInput(event.target.value)}
-                className="border-sidebar-border bg-sidebar text-sidebar-active-foreground placeholder:text-sidebar-muted"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="max-salary" className="text-sidebar-foreground">
-                Maximum salary (₱ / mo)
-              </Label>
-              <Input
-                id="max-salary"
-                type="number"
-                inputMode="numeric"
-                min={0}
-                step={1000}
-                placeholder="e.g. 80000"
-                value={maxInput}
-                onChange={(event) => setMaxInput(event.target.value)}
-                className="border-sidebar-border bg-sidebar text-sidebar-active-foreground placeholder:text-sidebar-muted"
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
+              <Label className="text-sidebar-foreground">Monthly salary (₱)</Label>
+              <RangeSlider
+                min={bounds[0]}
+                max={bounds[1]}
+                step={SALARY_STEP}
+                value={range}
+                onChange={setSalaryRange}
+                format={(value) => `₱${formatThousands(value)}`}
+                minLabel="Minimum monthly salary in pesos"
+                maxLabel="Maximum monthly salary in pesos"
+                disabled={careers.isPending}
+                className="text-sidebar-active-foreground"
               />
             </div>
           </div>
-
-          {invalidRange ? (
-            <p className="mt-3 text-sm text-accent">
-              The minimum salary is higher than the maximum — no career can match that range.
-            </p>
-          ) : null}
 
           {hasFilters ? (
             <button
@@ -200,9 +210,13 @@ export function CareersPage() {
                 {hasFilters ? ' match your filters' : ''}
               </p>
               <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                {filtered.map((career) => (
+                {pageItems.map((career) => (
                   <CareerCard key={career.id} career={career} />
                 ))}
+              </div>
+
+              <div className="mt-8">
+                <Pagination pagination={pagination} onPageChange={setPage} noun="careers" />
               </div>
             </>
           ) : null}

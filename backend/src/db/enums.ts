@@ -129,12 +129,62 @@ export const PROCESSING_STATUSES = ['UPLOADED', 'PROCESSING', 'COMPLETED', 'FAIL
 export type ProcessingStatus = (typeof PROCESSING_STATUSES)[number];
 
 /**
+ * Where a knowledge entry came from (migration 0022).
+ *
+ * This replaced `file_type`, which could only be `pdf | docx` — and that column was the whole
+ * reason the corpus stayed empty: knowledge could only enter the system as a file somebody
+ * uploaded. The values are ordered by how the content was authored, not by format:
+ *
+ *   * `pdf` / `docx` — an uploaded file, extracted in the admin's browser (§33 v1.5).
+ *   * `text` — a pasted note, or an uploaded `.txt`/`.md` (no parser needed either way).
+ *   * `qa` — one admin-authored question and its authoritative answer. The highest-value input:
+ *     it embeds close to how a student actually phrases the question, and it is what Gate 1
+ *     returns verbatim with no model call at all.
+ *   * `catalog` — generated from a `careers` or `programs` row this system already holds, so
+ *     every recommendation target has grounding *about itself* without anyone uploading anything.
+ */
+export const KNOWLEDGE_SOURCE_TYPES = ['pdf', 'docx', 'text', 'qa', 'catalog'] as const;
+export type KnowledgeSourceType = (typeof KNOWLEDGE_SOURCE_TYPES)[number];
+
+/**
+ * The catalog things a `catalog` entry can be about (migration 0022; `college` added 2026-09-09).
+ *
+ * `college` is the subject the corpus was missing. Location and the list of offerings lived only
+ * inside each *program* entry, whose subject is the program — so "where is Holy Name University?"
+ * and "what colleges in Cebu offer BS Computer Science?" retrieved career passages and were
+ * refused, while "tell me about BS Accountancy at Holy Name University" answered correctly from a
+ * chunk containing the very address the first question asked for. A question about an institution
+ * needs a passage whose subject is that institution.
+ *
+ * `entity_type` is an unconstrained TEXT column, so widening this list is a code change and not a
+ * migration.
+ */
+// `guide` added 2026-09-13 (AI-COVERAGE-PLAN.md Phase 3): a Guidance corpus entry, keyed by slug.
+export const KNOWLEDGE_ENTITY_TYPES = ['career', 'program', 'college', 'guide'] as const;
+export type KnowledgeEntityType = (typeof KNOWLEDGE_ENTITY_TYPES)[number];
+
+/** The source types an admin may author or edit in place — the rest are derived or uploaded. */
+export const AUTHORED_SOURCE_TYPES = ['text', 'qa'] as const;
+
+/**
  * §13.7 (v1.2): v1 uses only `GLOBAL`. `COUNSELOR_PRIVATE` is deferred to §63 — it shipped in
  * v1.1 with no retrieval-scoping rule, which made it a cross-tenant leak waiting to happen.
  * The value stays in the enum so restoring it later is not a migration.
  */
 export const KNOWLEDGE_VISIBILITIES = ['GLOBAL', 'COUNSELOR_PRIVATE'] as const;
 export type KnowledgeVisibility = (typeof KNOWLEDGE_VISIBILITIES)[number];
+
+/**
+ * How a question left the unanswered backlog (migration 0031).
+ *
+ * `ANSWERED` carries a `document_id` and expires with it — archive or fail that entry and the
+ * question comes back, because it is genuinely unanswered again. `DISMISSED` carries no document
+ * and so cannot expire: it is the judgement "nobody will ever write an entry for this", which is
+ * the only honest disposition for the gibberish and test questions that otherwise accumulate in
+ * the backlog forever. Reversible either way — the row is deleted to reopen the question.
+ */
+export const QUESTION_RESOLUTIONS = ['ANSWERED', 'DISMISSED'] as const;
+export type QuestionResolution = (typeof QUESTION_RESOLUTIONS)[number];
 
 // --- Platform (§13.8) ------------------------------------------------------------------
 
@@ -194,3 +244,31 @@ export type AiPolicyScope = (typeof AI_POLICY_SCOPES)[number];
  */
 export const CHAT_ROLES = ['user', 'assistant'] as const;
 export type ChatRole = (typeof CHAT_ROLES)[number];
+
+/**
+ * Which gate produced an assistant message (migration 0029).
+ *
+ * Recorded rather than inferred. The panel used to derive "this was not generated" from
+ * `ai_request_id IS NULL`, which was already wrong for a Gate 1 answer — an admin's own words are
+ * the *best* answer this system gives, not a degraded one — and became unrecoverable once two
+ * ungrounded-adjacent tiers existed: "generated, no sources" would mean either "from the student's
+ * own computed results" or "from the model's general knowledge", and a student is entitled to know
+ * which of those they are reading.
+ *
+ * Ordered from most grounded to least, which is also the order the gates run in.
+ */
+export const CHAT_ANSWER_KINDS = ['CURATED', 'KNOWLEDGE', 'WEB', 'GENERAL', 'CANNED'] as const;
+export type ChatAnswerKind = (typeof CHAT_ANSWER_KINDS)[number];
+
+/**
+ * The "Request to add to knowledge" lifecycle on a chat answer (migration 0030).
+ *
+ * `OFFERED` is written when the assistant refuses for want of coverage — the state that puts the
+ * button on screen. `REQUESTED` is the student having pressed it, and is what ranks the admin's
+ * backlog: a question two students asked to have answered outranks one the pipeline merely failed.
+ *
+ * NULL is every other message, and is not a claim about them — a refusal written before this
+ * column existed simply does not offer the button.
+ */
+export const KNOWLEDGE_REQUEST_STATES = ['OFFERED', 'REQUESTED'] as const;
+export type KnowledgeRequestState = (typeof KNOWLEDGE_REQUEST_STATES)[number];

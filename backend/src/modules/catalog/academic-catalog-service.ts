@@ -340,20 +340,36 @@ export class AcademicCatalogService {
   // --- Programs ------------------------------------------------------------------------
 
   /** Unpaginated (§20) — one institution's program list is tens of rows, not thousands. */
-  async listPrograms(collegeId: string): Promise<{ program: Program; careers: Career[] }[]> {
+  /**
+   * A college's programs, each with its linked careers **and the canonical entry it is matched to**
+   * (migration 0018).
+   *
+   * The canonical join is a left join because `program_catalog_id` is nullable and NULL is a real
+   * state — "nobody has decided what this offering is" — which the admin form states rather than
+   * hides. It travels because the edit form now opens with the canonical picker: without it the
+   * picker renders empty for a program that *is* matched, and an admin correcting a typo in the
+   * name would have been shown "nothing selected" for a link that exists.
+   */
+  async listPrograms(
+    collegeId: string,
+  ): Promise<{ program: Program; careers: Career[]; canonical: ProgramCatalogEntry | null }[]> {
     await this.findCollege(collegeId);
 
     const rows = await this.db
-      .select()
+      .select({ program: programs, canonical: programCatalog })
       .from(programs)
+      .leftJoin(programCatalog, eq(programCatalog.id, programs.programCatalogId))
       .where(and(eq(programs.collegeId, collegeId), isNull(programs.deletedAt)))
       .orderBy(asc(programs.code));
 
-    const mapping = await this.careersFor(rows.map((row) => row.id));
+    const mapping = await this.careersFor(rows.map((row) => row.program.id));
 
-    return rows.map((program) => ({
-      program,
-      careers: mapping.get(program.id) ?? [],
+    return rows.map((row) => ({
+      program: row.program,
+      careers: mapping.get(row.program.id) ?? [],
+      // A soft-deleted canonical entry is not a link anyone should act on — the join has no way to
+      // exclude it without turning the left join into a filter on the programs themselves.
+      canonical: row.canonical?.deletedAt === null ? row.canonical : null,
     }));
   }
 

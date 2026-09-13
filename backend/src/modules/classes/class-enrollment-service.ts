@@ -1,8 +1,10 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
 
 import type { Database } from '@/db/client';
 import {
+  assessmentAssignments,
+  assessmentAttempts,
   classStudents,
   shsStrands,
   studentProfiles,
@@ -50,6 +52,19 @@ export interface RosterEntry {
   removed_at: string | null;
   first_name: string | null;
   last_name: string | null;
+  /**
+   * How this student stands on the class's assessments — the counselor's "0/4, 1/4, 4/4".
+   *
+   * The denominator is a property of the *class*, not of the student: every assignment ever made
+   * to this class, `CLOSED` ones included. A closed assignment a student never submitted is a
+   * thing they did not do, not a thing that stops having been asked of them — and a denominator
+   * that shrank on close would quietly turn a 1/4 into a 1/3 without anyone completing anything.
+   */
+  assessments_assigned: number;
+  /** `SUBMITTED` or `SCORED`. `EXPIRED` attempts never count (§21) — that is what a reset undoes. */
+  assessments_completed: number;
+  /** Started and not finished. Distinguishes "untouched" from "part-way through". */
+  assessments_in_progress: number;
 }
 
 export class ClassEnrollmentService {
@@ -266,6 +281,11 @@ export class ClassEnrollmentService {
       .where(and(eq(classStudents.classId, classRoom.id), eq(classStudents.status, 'active')))
       .orderBy(asc(classStudents.username));
 
+    const progress = await this.assessmentProgress(
+      classRoom.id,
+      rows.map((row) => row.studentId),
+    );
+
     return rows.map((row) => ({
       id: row.id,
       class_id: row.classId,
@@ -276,7 +296,66 @@ export class ClassEnrollmentService {
       removed_at: row.removedAt,
       first_name: row.firstName,
       last_name: row.lastName,
+      assessments_assigned: progress.assigned,
+      assessments_completed: progress.completedByStudent.get(row.studentId) ?? 0,
+      assessments_in_progress: progress.inProgressByStudent.get(row.studentId) ?? 0,
     }));
+  }
+
+  /**
+   * Every rostered student's assessment standing, in two queries for the whole roster rather
+   * than two per student — the same H5 rule the assignment list is written to.
+   *
+   * The attempt counts are grouped rather than fetched per row because the interesting number is
+   * per student, not per (student, assignment) pair.
+   */
+  private async assessmentProgress(
+    classId: string,
+    studentIds: string[],
+  ): Promise<{
+    assigned: number;
+    completedByStudent: Map<string, number>;
+    inProgressByStudent: Map<string, number>;
+  }> {
+    const assignments = await this.db
+      .select({ id: assessmentAssignments.id })
+      .from(assessmentAssignments)
+      .where(eq(assessmentAssignments.classId, classId));
+
+    const progress = {
+      assigned: assignments.length,
+      completedByStudent: new Map<string, number>(),
+      inProgressByStudent: new Map<string, number>(),
+    };
+
+    if (assignments.length === 0 || studentIds.length === 0) {
+      return progress;
+    }
+
+    const counts = await this.db
+      .select({
+        studentId: assessmentAttempts.studentId,
+        completed: sql<number>`sum(case when ${assessmentAttempts.status} in ('SUBMITTED', 'SCORED') then 1 else 0 end)`,
+        inProgress: sql<number>`sum(case when ${assessmentAttempts.status} = 'IN_PROGRESS' then 1 else 0 end)`,
+      })
+      .from(assessmentAttempts)
+      .where(
+        and(
+          inArray(
+            assessmentAttempts.assignmentId,
+            assignments.map((assignment) => assignment.id),
+          ),
+          inArray(assessmentAttempts.studentId, studentIds),
+        ),
+      )
+      .groupBy(assessmentAttempts.studentId);
+
+    for (const row of counts) {
+      progress.completedByStudent.set(row.studentId, Number(row.completed));
+      progress.inProgressByStudent.set(row.studentId, Number(row.inProgress));
+    }
+
+    return progress;
   }
 
   /**

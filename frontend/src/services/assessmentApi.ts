@@ -3,6 +3,7 @@ import type { ApiSuccess } from '@/types/api';
 import type {
   AssessmentAssignment,
   AssessmentAttempt,
+  AssessmentReport,
   AssessmentResult,
   AssessmentTemplate,
   ProfileOptions,
@@ -122,6 +123,13 @@ export const studentAssessmentApi = {
 
   getResult(attemptId: string): Promise<AssessmentResult> {
     return unwrap(httpClient.get<ApiSuccess<AssessmentResult>>(`/student/results/${attemptId}`));
+  },
+
+  /** The printable export. 422 until the attempt is scored — the appendix is an answer key before then. */
+  getReport(attemptId: string): Promise<AssessmentReport> {
+    return unwrap(
+      httpClient.get<ApiSuccess<AssessmentReport>>(`/student/results/${attemptId}/report`),
+    );
   },
 };
 

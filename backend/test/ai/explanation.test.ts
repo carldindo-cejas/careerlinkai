@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
   aiRequests,
+  careers,
   knowledgeChunks,
   knowledgeDocuments,
   recommendationExplanations,
@@ -112,8 +113,9 @@ async function seedChunk(content: string): Promise<string> {
   await db().insert(knowledgeDocuments).values({
     id: documentId,
     uploadedBy: admin.id,
+    title: 'seeded.pdf',
     fileName: 'seeded.pdf',
-    fileType: 'pdf',
+    sourceType: 'pdf',
     storagePath: `knowledge/${documentId}/seeded.pdf`,
     processingStatus: 'COMPLETED',
     visibility: 'GLOBAL',
@@ -162,9 +164,15 @@ function pipeline(options: {
     },
   };
 
+  const filters: (Record<string, unknown> | undefined)[] = [];
+
   const vectors: VectorStore = {
     upsert: async () => undefined,
-    query: async () => ({ matches: options.matches }),
+    query: async (_vector, queryOptions) => {
+      filters.push(queryOptions.filter);
+
+      return { matches: options.matches };
+    },
     deleteByIds: async () => undefined,
   };
 
@@ -179,8 +187,22 @@ function pipeline(options: {
   return {
     service,
     prompts,
+    filters,
     generationCalls: () => generationCalls,
   };
+}
+
+/**
+ * Empty the corpus.
+ *
+ * Needed since AiNormalisation Phase 2 made retrieval **hybrid**: the keyword half searches D1
+ * directly, so a chunk this file seeded three tests ago is genuinely found by a query built from
+ * a career called "Software Engineer" — which is the feature working, not a leak. A test asserting
+ * *zero retrieval* therefore has to arrange zero retrievable content, rather than relying on a
+ * vector stub that returns nothing while a real FTS index sits behind it.
+ */
+async function clearCorpus(): Promise<void> {
+  await db().delete(knowledgeChunks);
 }
 
 async function clearExplanationFor(recommendationId: string): Promise<void> {
@@ -198,8 +220,11 @@ describe('the §30 pipeline (stubbed model + vector store)', () => {
     const chunkId = await seedChunk(
       'Software engineering suits Investigative students who enjoy structured problem solving.',
     );
+    // Cites the passage it was given, and asserts nothing the passage and the student's own
+    // computed results do not already say — which is what the Phase 3 contract requires of every
+    // answer that ships.
     const grounded =
-      'Because your Investigative interest is strong, careers like this fit the structured problem solving described in our guidance materials.';
+      'Because your Investigative interest is strong, careers like this fit the structured problem solving described in our guidance materials [1].';
     const { service } = pipeline({
       responses: [grounded],
       matches: [{ id: chunkId, score: 0.91 }],
@@ -266,10 +291,11 @@ describe('the §30 pipeline (stubbed model + vector store)', () => {
 
   it('refuses to generate ungrounded: zero retrieval → FAILED row, no model call, deterministic fallback (§30)', async () => {
     await clearExplanationFor(recommendation.id);
+    await clearCorpus();
 
     const { service, generationCalls } = pipeline({
       responses: ['should never be generated'],
-      // A match below the 0.75 similarity floor is not grounding.
+      // A match below the similarity floor is not grounding.
       matches: [{ id: uuid(), score: 0.4 }],
     });
 
@@ -288,6 +314,77 @@ describe('the §30 pipeline (stubbed model + vector store)', () => {
     );
 
     expect(mine).toBeDefined();
+  });
+
+  /**
+   * AiNormalisation D4. The query used to be a synthetic sentence — *"… college program for a
+   * student whose strongest interests are Social, Investigative"* — that no guidance document
+   * is written anything like, so it matched the corpus on little but the target's name. The
+   * target's own catalog description is written in the register of the material being searched.
+   * The student's interests did not disappear: they are in the prompt, which is where context
+   * about *who is being answered* belongs, as distinct from what to search for.
+   */
+  it('retrieves on the target’s own title and description, not a synthetic interest sentence', async () => {
+    await clearExplanationFor(recommendation.id);
+    // The assertion is on the query that was *issued*, which is only logged when retrieval comes
+    // back empty — so the corpus has to be empty for the skip row to exist at all.
+    await clearCorpus();
+
+    const description = 'Designs, builds and maintains software systems for hospitals and clinics.';
+
+    await db()
+      .update(careers)
+      .set({ description })
+      .where(eq(careers.id, recommendation.targetCareerId!));
+
+    const { service } = pipeline({
+      responses: ['unused'],
+      matches: [{ id: uuid(), score: 0.1 }],
+    });
+
+    await service.explain(recommendation, null);
+
+    const failed = await db().select().from(aiRequests).where(eq(aiRequests.status, 'FAILED'));
+    const mine = failed.find(
+      (request) => (request.inputContext as any)?.retrieval_query?.includes(description) === true,
+    );
+
+    expect(mine).toBeDefined();
+    expect((mine!.inputContext as any).retrieval_query).not.toContain('strongest interests');
+  });
+
+  /**
+   * **Two-pass retrieval** (AiNormalisation Phase 2).
+   *
+   * One pass over the whole corpus ranks everything on similarity alone, so a well-written
+   * general passage about "choosing a healthcare career" can outrank the catalog entry for the
+   * exact career being explained — and the paragraph the student reads then says nothing specific
+   * about their own match. The first pass is filtered to this target's `entity_id`, so the entry
+   * *about this career* is in the context by construction rather than by winning a contest.
+   *
+   * Asserted at the seam that proves it: the filter reaching Vectorize. The second call carries
+   * none, because the remaining slots are for the general theory chunks that connect those facts
+   * to a RIASEC profile — an explanation built only from catalog facts reads like a brochure.
+   */
+  it('retrieves this target\u2019s own chunks first, then general material for the rest', async () => {
+    await clearExplanationFor(recommendation.id);
+
+    const chunkId = await seedChunk('Guidance material about structured problem solving.');
+    const { service, filters } = pipeline({
+      responses: [
+        'Your Investigative interest fits the structured problem solving this field is built on, according to our guidance materials.',
+      ],
+      matches: [{ id: chunkId, score: 0.8 }],
+    });
+
+    await service.explain(recommendation, null);
+
+    expect(filters).toHaveLength(2);
+    expect(filters[0]).toEqual({
+      entity_type: 'career',
+      entity_id: recommendation.targetCareerId,
+    });
+    expect(filters[1]).toBeUndefined();
   });
 
   it('regenerates once on an absolute claim, then falls back rather than showing it (§34)', async () => {
@@ -370,7 +467,7 @@ describe('POST /student/recommendations/{id}/explain', () => {
     // Persist one through the pipeline, then fetch it over HTTP.
     const chunkId = await seedChunk('Content for the cached-path test.');
     const { service } = pipeline({
-      responses: ['A cached explanation that the endpoint should simply return.'],
+      responses: ['A cached explanation that the endpoint should simply return [1].'],
       matches: [{ id: chunkId, score: 0.9 }],
     });
 
@@ -383,7 +480,7 @@ describe('POST /student/recommendations/{id}/explain', () => {
     expect(response.status).toBe(200);
     expect(response.body.data.explanation).toMatchObject({
       recommendation_id: recommendation.id,
-      explanation_text: 'A cached explanation that the endpoint should simply return.',
+      explanation_text: 'A cached explanation that the endpoint should simply return [1].',
     });
     expect(response.body.data.failure).toBeNull();
   });

@@ -28,9 +28,10 @@ vi.mock('@/services/aiApi');
  *   1. **The shortlist is the engine's top five**, and the sort control re-orders that set without
  *      changing its membership. A sort that reached further into the persisted ten would be a
  *      second ranking the engine never made — the thing §26/§27 exist to prevent.
- *   2. **A deterministic chat reply is labelled as one.** The whole trust model rests on a student
- *      being able to tell a computed fact from a generated sentence (§29), and the tell is the
- *      absence of `ai_request_id`.
+ *   2. **What sits under a chat answer is only what the student can act on.** The provenance
+ *      notices that used to print under every turn are gone; a generated answer keeps its report
+ *      control, a no-coverage refusal gains one (migration 0030), and everything else carries
+ *      nothing. The claims are still recorded on the row — they are simply not furniture.
  */
 
 function career(id: string, title: string, salaryMax: number, outlookOrder: number): Career {
@@ -151,6 +152,51 @@ describe('RecommendationPage', () => {
     expect(screen.queryByText('Career 4')).not.toBeInTheDocument();
   });
 
+  /** One ranking at a time — a switch, not a long scroll through both lists. */
+  it('switches between careers and programs', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText('Career 1');
+
+    const careersButton = screen.getByRole('button', { name: /^careers/i });
+    const programsButton = screen.getByRole('button', { name: /^programs/i });
+
+    expect(careersButton).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('Program 1')).not.toBeInTheDocument();
+
+    await user.click(programsButton);
+
+    expect(await screen.findByText('Program 1')).toBeInTheDocument();
+    expect(programsButton).toHaveAttribute('aria-pressed', 'true');
+    expect(careersButton).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByText('Career 1')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Programs' })).toBeInTheDocument();
+  });
+
+  /** A match is a one-line peek until it is opened; the details live behind the click. */
+  it('shows each match as a peek that expands on click', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole('button', { name: /^Career 1 / });
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // The reason is in the closed panel, not the peek, and nothing inside it is reachable yet.
+    expect(screen.getByText('Reason 1')).not.toBeVisible();
+    expect(screen.queryByRole('button', { name: /explain more/i })).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Reason 1')).toBeVisible();
+    expect(screen.getAllByRole('button', { name: /explain more/i })).toHaveLength(1);
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
   /** Three by default, five on request — never the full persisted ten. */
   it('expands to five, and no further', async () => {
     const user = userEvent.setup();
@@ -210,6 +256,8 @@ describe('RecommendationPage', () => {
     const user = userEvent.setup();
     renderPage();
 
+    await screen.findByText('Career 1');
+    await user.click(screen.getByRole('button', { name: /^programs/i }));
     await screen.findByText('Program 1');
 
     expect(screen.queryByText('Program 4')).not.toBeInTheDocument();
@@ -237,6 +285,10 @@ describe('RecommendationPage', () => {
     renderPage();
 
     await screen.findByText('Career 1');
+    expect(catalogLinksApi.programsForCareer).not.toHaveBeenCalled();
+
+    // Opening the card shows its details, and still fetches nothing until the disclosure is pressed.
+    await user.click(screen.getByRole('button', { name: /^Career 1 / }));
     expect(catalogLinksApi.programsForCareer).not.toHaveBeenCalled();
 
     // Named for its career since P2-3 — the visible label is still "View related college
@@ -268,7 +320,9 @@ describe('RecommendationPage', () => {
 
     renderPage();
 
-    await screen.findByText('Program 1');
+    await screen.findByText('Career 1');
+    await user.click(screen.getByRole('button', { name: /^programs/i }));
+    await user.click(await screen.findByRole('button', { name: /^Program 1 / }));
 
     const [button] = screen.getAllByRole('button', { name: /view colleges offering Program 1/i });
     await user.click(button!);
@@ -297,7 +351,9 @@ describe('RecommendationPage', () => {
 
     renderPage();
 
-    await screen.findByText('Program 1');
+    await screen.findByText('Career 1');
+    await user.click(screen.getByRole('button', { name: /^programs/i }));
+    await user.click(await screen.findByRole('button', { name: /^Program 1 / }));
 
     const [button] = screen.getAllByRole('button', { name: /view colleges offering Program 1/i });
     await user.click(button!);
@@ -314,6 +370,9 @@ describe('RecommendationPage', () => {
         role: 'user',
         content: 'Why is Career 1 my top match?',
         ai_request_id: null,
+        sources: [],
+        feedback: null,
+        knowledge_request: null,
         created_at: null,
       },
       answer: {
@@ -321,6 +380,9 @@ describe('RecommendationPage', () => {
         role: 'assistant',
         content: 'It leans Investigative, which is your strongest interest.',
         ai_request_id: 'ai-1',
+        sources: [],
+        feedback: null,
+        knowledge_request: null,
         created_at: null,
       },
       failure: null,
@@ -330,7 +392,7 @@ describe('RecommendationPage', () => {
 
     await screen.findByText('Career 1');
 
-    await user.type(screen.getByLabelText(/your question/i), 'Why is Career 1 my top match?');
+    await user.type((await screen.findByLabelText(/your question/i)), 'Why is Career 1 my top match?');
     await user.click(screen.getByRole('button', { name: /^send$/i }));
 
     expect(
@@ -340,11 +402,17 @@ describe('RecommendationPage', () => {
   });
 
   /**
-   * §29's whole posture, on screen: when the model is unavailable the student still gets a true
-   * answer built from their computed results — **and it is labelled**, because presenting computed
-   * text as a generation is the confusion the AI/deterministic split exists to prevent.
+   * The provenance furniture is gone from under the answers.
+   *
+   * Two notices used to print under every turn — *"A standard reply from CareerLinkAI — not
+   * written by the AI"* and *"Based on: …"*. Both true, and four exchanges into a conversation
+   * about a student's future, most of the panel. Provenance is still on the row and is what the
+   * admin review screens read; it is no longer furniture in a student's conversation.
+   *
+   * What is left under an answer is only what the student can act on — which for a deterministic
+   * fallback is nothing at all.
    */
-  it('labels a deterministic fallback answer as one', async () => {
+  it('prints no provenance notice under a canned reply', async () => {
     const user = userEvent.setup();
     vi.mocked(chatApi.ask).mockResolvedValue({
       conversation_id: 'conversation-1',
@@ -353,14 +421,21 @@ describe('RecommendationPage', () => {
         role: 'user',
         content: 'Anything?',
         ai_request_id: null,
+        sources: [],
+        feedback: null,
+        knowledge_request: null,
         created_at: null,
       },
       answer: {
         id: 'message-2',
         role: 'assistant',
         content: 'The assistant is unavailable at the moment, so here is what your results say.',
-        // The tell: no request behind it.
+        // No request behind it, nothing to cite — and, being an operational failure rather than a
+        // gap in the corpus, nothing for the student to ask the school to write either.
         ai_request_id: null,
+        sources: [],
+        feedback: null,
+        knowledge_request: null,
         created_at: null,
       },
       failure: 'MODEL_UNAVAILABLE',
@@ -370,12 +445,130 @@ describe('RecommendationPage', () => {
 
     await screen.findByText('Career 1');
 
-    await user.type(screen.getByLabelText(/your question/i), 'Anything?');
+    await user.type((await screen.findByLabelText(/your question/i)), 'Anything?');
     await user.click(screen.getByRole('button', { name: /^send$/i }));
 
     expect(
-      await screen.findByText(/from your computed results — the assistant was unavailable/i),
+      await screen.findByText(
+        'The assistant is unavailable at the moment, so here is what your results say.',
+      ),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/not written by the ai/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /this answer looks wrong/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /request to add to knowledge/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * The other half of an honest refusal (migration 0030).
+   *
+   * When nothing in the corpus covers a question the assistant says so and points at a counselor.
+   * That was the whole interaction: the question *was* logged as a gap, and the student had no way
+   * to know it, let alone to say the gap mattered to them. Now the refusal carries a button, and
+   * pressing it puts their own voice on the admin's backlog — which is what ranks it above the
+   * questions the retrieval merely missed.
+   */
+  it('offers to have a no-coverage refusal added to the knowledge base', async () => {
+    const user = userEvent.setup();
+    vi.mocked(chatApi.requestKnowledge).mockResolvedValue({ message_id: 'message-2' });
+    vi.mocked(chatApi.ask).mockResolvedValue({
+      conversation_id: 'conversation-1',
+      question: {
+        id: 'message-1',
+        role: 'user',
+        content: 'When do applications close?',
+        ai_request_id: null,
+        sources: [],
+        feedback: null,
+        knowledge_request: null,
+        created_at: null,
+      },
+      answer: {
+        id: 'message-2',
+        role: 'assistant',
+        content: 'I have nothing in the school’s guidance materials that answers that.',
+        ai_request_id: null,
+        sources: [],
+        feedback: null,
+        // The server's own mark, not something the panel derives by matching the reply text.
+        knowledge_request: 'OFFERED',
+        created_at: null,
+      },
+      failure: 'NO_GROUNDING',
+    });
+
+    renderPage();
+
+    await screen.findByText('Career 1');
+
+    await user.type((await screen.findByLabelText(/your question/i)), 'When do applications close?');
+    await user.click(screen.getByRole('button', { name: /^send$/i }));
+
+    await user.click(await screen.findByRole('button', { name: /request to add to knowledge/i }));
+
+    expect(chatApi.requestKnowledge).toHaveBeenCalledWith('message-2');
+    // Optimistic: a student who presses a button and sees nothing change assumes it did nothing.
+    expect(
+      await screen.findByText(/your school has been asked to answer this/i),
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * **Gate 1 is an answer, and it is presented as one.** An admin's own words, returned verbatim
+   * with no model in the loop — the best answer this system gives and the flywheel the AI-gaps
+   * screen exists to turn.
+   *
+   * It carries no `ai_request_id`, which the panel once read as "deterministic fallback" and
+   * labelled accordingly, telling a student the truest sentence in the system was a stand-in for
+   * an unavailable assistant. Nothing is labelled now, so what this guards is that nothing crept
+   * back: no fallback notice, and no control, because there is nothing here to report or to ask
+   * the school to write.
+   */
+  it('presents an admin-authored answer plainly, with no notice under it', async () => {
+    const user = userEvent.setup();
+    vi.mocked(chatApi.ask).mockResolvedValue({
+      conversation_id: 'conversation-1',
+      question: {
+        id: 'message-1',
+        role: 'user',
+        content: 'When do applications close?',
+        ai_request_id: null,
+        sources: [],
+        feedback: null,
+        knowledge_request: null,
+        created_at: null,
+      },
+      answer: {
+        id: 'message-2',
+        role: 'assistant',
+        content: 'Applications close on 30 April.',
+        // Gate 1: no model call, but a named source — the admin's own entry.
+        ai_request_id: null,
+        sources: ['2026 Admissions Handbook'],
+        feedback: null,
+        knowledge_request: null,
+        created_at: null,
+      },
+      failure: null,
+    });
+
+    renderPage();
+
+    await screen.findByText('Career 1');
+
+    await user.type((await screen.findByLabelText(/your question/i)), 'When do applications close?');
+    await user.click(screen.getByRole('button', { name: /^send$/i }));
+
+    expect(await screen.findByText('Applications close on 30 April.')).toBeInTheDocument();
+    expect(screen.queryByText(/not written by the ai/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/from your computed results/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/based on:/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /request to add to knowledge/i }),
+    ).not.toBeInTheDocument();
   });
 
   /** D11: a failed load is not an empty one, and the two must not look alike. */

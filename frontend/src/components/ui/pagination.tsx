@@ -20,10 +20,22 @@ export interface PaginationProps {
   noun: string;
   /** True while a page is in flight, so the buttons cannot queue a second jump. */
   isFetching?: boolean;
+  /**
+   * Keep the pager on a one-page list (still nothing for an empty one). For lists a student
+   * expects to grow — "My results" — where a pager that appears only at six rows reads as a
+   * missing control.
+   */
+  showSinglePage?: boolean;
 }
 
-export function Pagination({ pagination, onPageChange, noun, isFetching = false }: PaginationProps) {
-  if (pagination.last_page <= 1) return null;
+export function Pagination({
+  pagination,
+  onPageChange,
+  noun,
+  isFetching = false,
+  showSinglePage = false,
+}: PaginationProps) {
+  if (pagination.total === 0 || (pagination.last_page <= 1 && !showSinglePage)) return null;
 
   const { current_page: page, last_page: lastPage, total } = pagination;
 

@@ -14,7 +14,9 @@ import {
   assessmentVersions,
   classStudents,
   dimensionScores,
+  questionDimensions,
   questionOptions,
+  studentProfiles,
   users,
   type AssessmentAssignment,
   type AssessmentAttempt,
@@ -84,6 +86,36 @@ export interface StudentResultRow {
   id: string;
   name: string;
   username: string | null;
+}
+
+/** One administered item, as the printable report lists it in Appendix A. */
+export interface ReportItem {
+  orderNumber: number;
+  questionText: string;
+  /** Every dimension the item loads onto, with its weight — RIASEC items load onto exactly one. */
+  loadsOn: { code: string; weight: number }[];
+  /** The highest score any of the question's options carries — the engine's `maxOptionScore`. */
+  maxScore: number;
+  /** Null for an optional item the student skipped: no response, no score, prorated out. */
+  answer: { label: string | null; score: number } | null;
+}
+
+/**
+ * Everything the printable results export needs (`docs_report/`), on top of the plain result: who
+ * sat it and under whom, which version and how many items, and the item-by-item appendix.
+ */
+export interface ReportView extends ResultView {
+  version: AssessmentVersion;
+  questionCount: number;
+  student: {
+    name: string;
+    gradeLevel: string | null;
+    strand: string | null;
+    username: string | null;
+  };
+  classRoom: { name: string; academicYear: string };
+  counselor: { name: string } | null;
+  items: ReportItem[];
 }
 
 /**
@@ -247,7 +279,9 @@ export class AssessmentAttemptService {
      * has since been retired must still be able to finish it. Archiving retires what is offered
      * next; it does not void work in flight (that is what closing an assignment does, §21).
      */
-    const { version, template } = await this.versionWithTemplate(assignment.assessmentVersionId);
+    const { version, template } = await this.versionWithTemplate(
+      assignment.assessmentVersionId,
+    );
 
     if (
       version.status !== 'PUBLISHED' ||
@@ -518,6 +552,146 @@ export class AssessmentAttemptService {
     return this.resultFor(attemptId);
   }
 
+  /**
+   * The printable report — the result plus the identity block and the item appendix.
+   *
+   * **SCORED attempts only.** The appendix pairs every item with the dimension it loads onto and
+   * the score its answer carried, which is exactly what `serializeQuestion` withholds from the
+   * player: shown mid-attempt it would turn an interest inventory into a form the student fills in
+   * for the Holland Code they want. Once the attempt is scored the answers are final and the same
+   * disclosure is a record, not a hint.
+   */
+  async viewReport(user: User, attemptId: string): Promise<ReportView> {
+    const attempt = await this.findAttempt(attemptId);
+    const attemptClass = await this.classForAttempt(attempt);
+
+    authorizeViewAttempt(user, attempt, attemptClass);
+
+    if (attemptClass === undefined) {
+      throw ApiError.notFound('Attempt not found.');
+    }
+
+    if (attempt.status !== 'SCORED') {
+      throw ApiError.validation(
+        { attempt: [`This attempt is ${attempt.status} and has no report yet.`] },
+        'A report is available once the assessment has been scored.',
+      );
+    }
+
+    const { version, template } = await this.versionWithTemplate(attempt.assessmentVersionId);
+    const result = await this.resultFor(attemptId, { attempt, template });
+
+    const [studentRow] = await this.db
+      .select({
+        name: users.name,
+        gradeLevel: studentProfiles.gradeLevel,
+        strand: studentProfiles.strand,
+      })
+      .from(users)
+      .leftJoin(studentProfiles, eq(studentProfiles.userId, users.id))
+      .where(eq(users.id, attempt.studentId))
+      .limit(1);
+
+    const [enrollment] = await this.db
+      .select({ username: classStudents.username })
+      .from(classStudents)
+      .where(
+        and(
+          eq(classStudents.classId, attemptClass.id),
+          eq(classStudents.studentId, attempt.studentId),
+        ),
+      )
+      .limit(1);
+
+    const [counselorRow] = await this.db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, attemptClass.counselorId))
+      .limit(1);
+
+    const questions = await this.db
+      .select()
+      .from(assessmentQuestions)
+      .where(eq(assessmentQuestions.assessmentVersionId, version.id))
+      .orderBy(asc(assessmentQuestions.orderNumber));
+
+    const questionIds = questions.map((question) => question.id);
+
+    const options =
+      questionIds.length === 0
+        ? []
+        : await this.db
+            .select()
+            .from(questionOptions)
+            .where(inArray(questionOptions.questionId, questionIds));
+
+    const mappings =
+      questionIds.length === 0
+        ? []
+        : await this.db
+            .select({
+              questionId: questionDimensions.questionId,
+              code: assessmentDimensions.code,
+              weight: questionDimensions.weight,
+            })
+            .from(questionDimensions)
+            .innerJoin(
+              assessmentDimensions,
+              eq(questionDimensions.dimensionId, assessmentDimensions.id),
+            )
+            .where(inArray(questionDimensions.questionId, questionIds))
+            .orderBy(asc(assessmentDimensions.orderNumber));
+
+    const scoredAnswers = await this.db
+      .select({
+        questionId: assessmentAnswers.questionId,
+        selectedOptionId: assessmentAnswers.selectedOptionId,
+        score: assessmentAnswers.score,
+      })
+      .from(assessmentAnswers)
+      .where(eq(assessmentAnswers.attemptId, attempt.id));
+
+    const answerByQuestion = new Map(
+      scoredAnswers.map((answer) => [answer.questionId, answer]),
+    );
+
+    const items: ReportItem[] = questions.map((question) => {
+      const answer = answerByQuestion.get(question.id);
+      const own = options.filter((option) => option.questionId === question.id);
+      const chosen =
+        answer?.selectedOptionId == null
+          ? undefined
+          : own.find((option) => option.id === answer.selectedOptionId);
+
+      return {
+        orderNumber: question.orderNumber,
+        questionText: question.questionText,
+        loadsOn: mappings
+          .filter((mapping) => mapping.questionId === question.id)
+          .map((mapping) => ({ code: mapping.code, weight: mapping.weight })),
+        // The same reading the engine makes: the max over the question's live options.
+        maxScore: own.reduce((max, option) => Math.max(max, option.score), 0),
+        answer:
+          answer === undefined ? null : { label: chosen?.label ?? null, score: answer.score },
+      };
+    });
+
+    return {
+      ...result,
+      version,
+      questionCount: questions.length,
+      student: {
+        name: studentRow?.name ?? '',
+        gradeLevel: studentRow?.gradeLevel ?? null,
+        strand: studentRow?.strand ?? null,
+        username: enrollment?.username ?? null,
+      },
+      classRoom: { name: attemptClass.name, academicYear: attemptClass.academicYear },
+      counselor: counselorRow === undefined ? null : { name: counselorRow.name },
+      items,
+    };
+  }
+
   // --- Counselor ------------------------------------------------------------------------------
 
   async listAssignmentsForClass(user: User, classId: string): Promise<AssignmentView[]> {
@@ -701,7 +875,11 @@ export class AssessmentAttemptService {
 
     if (template.status === 'ARCHIVED') {
       throw ApiError.validation(
-        { assessment_version_id: ['This assessment is archived. Restore it before assigning it.'] },
+        {
+          assessment_version_id: [
+            'This assessment is archived. Restore it before assigning it.',
+          ],
+        },
         'An archived assessment cannot be assigned.',
       );
     }

@@ -21,7 +21,7 @@ vi.mock('@/services/counselorManagementApi');
  *
  *   1. **It is confirmed, not immediate.** Resetting invalidates a password the counselor may be
  *      using perfectly well right now and signs them out of every session. On a dense list, an
- *      unconfirmed button one row away from "Remove" locks a working account out mid-lesson.
+ *      unconfirmed button one row away from "Suspend" locks a working account out mid-lesson.
  *   2. **The temporary password reaches the banner.** It is returned exactly once, is not stored,
  *      not logged and not retrievable — so a reset whose password never reaches the screen has
  *      destroyed the account it was pressed to recover. Nothing else in the system can recover it.
@@ -183,59 +183,38 @@ describe('CounselorManagementPage — reset password', () => {
 });
 
 /**
- * The F5 removal guard, from the screen's side (plan P3-6).
+ * **The screen offers no way to delete a counselor**, and that is a decision rather than an
+ * oversight — which is exactly why it is worth a test.
  *
- * The server now refuses `DELETE /admin/counselors/{id}` while the counselor still holds live
- * classes, because deleting them used to leave those classes pointing at an account that no longer
- * exists — permanently, since `counselor_id` was writable by nothing. A refusal is only half an
- * answer, though: what makes it a fix rather than an obstruction is that the admin is told *how
- * many* and pointed at the one screen that can move them.
+ * `DELETE /admin/counselors/{id}` still exists on the server, still refuses a counselor holding
+ * live classes (audit F5), and still has its own backend coverage. What changed is that no control
+ * on this page reaches it: Suspend covers every real case — it revokes every session and refuses
+ * every login — while keeping the account's audit history attached to a row that still resolves to
+ * a name. Deletion from a dense list is a single misplaced click away from orphaning that history,
+ * and it is not recoverable from this screen.
+ *
+ * Without this test the button comes back the next time somebody reads the list and notices there
+ * is no way to get rid of an account.
  */
-describe('CounselorManagementPage — the F5 removal guard', () => {
+describe('CounselorManagementPage — deletion is not offered', () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [] });
 
     vi.mocked(counselorManagementApi.list).mockReset().mockResolvedValue(page([MARIA, RUEL]));
-    vi.mocked(counselorManagementApi.remove).mockReset();
   });
 
-  it('shows the server’s reason and a link to reassign, rather than a bare failure', async () => {
-    vi.mocked(counselorManagementApi.remove).mockRejectedValue(
-      new ApiRequestError('This counselor still has classes.', 422, {
-        classes: ['This counselor still has 2 classes. Reassign them to another counselor first, or delete them.'],
-      }),
-    );
-
-    const user = renderPage();
+  it('renders no removal control on a counselor row', async () => {
+    renderPage();
 
     await screen.findByText('Maria Santos');
 
-    await user.click(within(row('Maria Santos')).getByRole('button', { name: /remove/i }));
-    await user.click(within(row('Maria Santos')).getByRole('button', { name: /confirm removal/i }));
+    const maria = within(row('Maria Santos'));
 
-    expect(await screen.findByText(/still has 2 classes/i)).toBeInTheDocument();
+    expect(maria.queryByRole('button', { name: /remove/i })).not.toBeInTheDocument();
+    expect(maria.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
 
-    // The remedy, and it goes to the counselor whose classes they are — a link to the wrong
-    // detail page would be worse than no link.
-    const link = screen.getByRole('link', { name: /reassign their classes/i });
-
-    expect(link).toHaveAttribute('href', `/admin/counselors/${MARIA.id}`);
-  });
-
-  /** Any other failure keeps the old message: only F5 has somewhere for the admin to go. */
-  it('falls back to the plain message for a failure that is not about classes', async () => {
-    vi.mocked(counselorManagementApi.remove).mockRejectedValue(
-      new ApiRequestError('Counselor not found.', 404),
-    );
-
-    const user = renderPage();
-
-    await screen.findByText('Maria Santos');
-
-    await user.click(within(row('Maria Santos')).getByRole('button', { name: /remove/i }));
-    await user.click(within(row('Maria Santos')).getByRole('button', { name: /confirm removal/i }));
-
-    expect(await screen.findByText('Counselor not found.')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /reassign their classes/i })).not.toBeInTheDocument();
+    // Suspend is the control that replaced it, so its absence would make this test pass for the
+    // wrong reason — a row that rendered no actions at all.
+    expect(maria.getByRole('button', { name: /suspend/i })).toBeInTheDocument();
   });
 });

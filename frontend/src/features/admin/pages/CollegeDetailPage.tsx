@@ -1,6 +1,6 @@
-import { ArrowLeft, ExternalLink, Loader2, MapPin, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ExternalLink, Loader2, MapPin, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Pagination } from '@/components/ui/pagination';
 import { AddressCascade, type AddressValue } from '@/features/admin/components/AddressCascade';
 import { CareerMapping } from '@/features/admin/components/CareerMapping';
 import { ProgramForm } from '@/features/admin/components/ProgramForm';
@@ -17,10 +18,14 @@ import {
   useDeleteProgram,
   useUpdateCollege,
 } from '@/features/admin/hooks/useCatalog';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import { isGoogleMapsUrl } from '@/lib/googleMaps';
 import { paths } from '@/routes/paths';
 import { ApiRequestError } from '@/types/api';
 import type { College, Program, ProgramStatus } from '@/types/catalog';
+
+/** Each program card carries its own career mapping, so a handful is already a long screen. */
+const PER_PAGE = 8;
 
 /**
  * One college, its programs, and where each program leads (FULLPLAN §57, Phase 2).
@@ -41,6 +46,14 @@ export function CollegeDetailPage() {
   const [isAddingProgram, setIsAddingProgram] = useState(false);
   const [editingProgramId, setEditingProgramId] = useState<string | null>(null);
 
+  // Above the `isPending` return below, because a hook cannot sit behind one — `college` is simply
+  // undefined until the fetch lands, and an empty list pages to a single empty page.
+  const {
+    pageItems: programPage,
+    pagination,
+    setPage,
+  } = useClientPagination(college?.programs ?? [], PER_PAGE);
+
   if (isPending) {
     return (
       <div className="flex justify-center py-12" role="status">
@@ -59,14 +72,8 @@ export function CollegeDetailPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Link
-        to={paths.adminColleges}
-        className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="size-4" aria-hidden="true" />
-        All colleges
-      </Link>
-
+      {/* "All colleges" used to sit here; the shell's back control (AppShell) now stands one step
+          above every page, and two of them on one screen is one too many. */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
@@ -158,7 +165,7 @@ export function CollegeDetailPage() {
       ) : null}
 
       <ul className="flex flex-col gap-4">
-        {programs.map((program) =>
+        {programPage.map((program) =>
           editingProgramId === program.id ? (
             <li key={program.id}>
               <ProgramForm
@@ -184,6 +191,8 @@ export function CollegeDetailPage() {
           ),
         )}
       </ul>
+
+      <Pagination pagination={pagination} onPageChange={setPage} noun="programs" />
     </div>
   );
 }

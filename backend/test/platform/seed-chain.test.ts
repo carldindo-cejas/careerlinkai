@@ -3,31 +3,66 @@ import { describe, expect, it } from 'vitest';
 import packageJson from '../../package.json';
 
 /**
- * **`db:seed` must never reach seed 0002** (plan P1-3, guarding P1-0).
+ * **The catalog is `colleges.md` and nothing else, and no runner may reintroduce another one.**
  *
- * Seeds 0002 and 0004 both contain "UP Diliman", "Software Engineer", "Teacher" and a dozen more
- * of the same names under *different ids*, and neither `colleges.name` nor `careers.title` carries
- * a unique index — so `INSERT OR IGNORE` has nothing to collide on and both rows survive. Phase 0
- * chained `0001 → 0002 → 0004 → 0003` and produced 25 colleges and 78 careers with 15 duplicates.
+ * This test used to guard a weaker property. Its original job (plan P1-3, guarding P1-0) was to
+ * keep the superseded catalog seeds *out of the `db:seed` chain* while deliberately keeping them
+ * on disk behind their own local-only runners — 0002, the ten-career Manila demo fixture, and
+ * 0004, the nationwide catalog of 20 institutions from Diliman to Iligan. The reasoning was that
+ * reproducing pre-audit behaviour locally is a real need and an unchained script is harmless.
  *
- * That is not a cosmetic problem. §27 ranks every active career, so two identically-coded
- * "Software Engineer" rows both land in the same student's top ten and the duplicate card is
- * **visible on the recommendations screen**.
+ * It is no longer harmless, because the catalog is now scoped to one province. Seeds 0002 and 0004
+ * between them seed Ateneo, La Salle, UST, UP Diliman, Silliman, USC, CIT-U and a dozen more, and
+ * neither `colleges.name` nor `careers.title` carries a unique index — so `INSERT OR IGNORE` has
+ * nothing to collide on and running either one *on top of* 0005 does not replace the Bohol catalog,
+ * it adds a national one to it. The student-visible result is a recommendations screen offering
+ * programmes in Manila.
+ *
+ * So both files were **deleted**, along with their `db:seed:catalog` and `db:seed:catalog:full`
+ * runners, and this test now asserts the stronger invariant: `seeds/` contains exactly one catalog,
+ * and every seed runner in `package.json` points at it. Git history holds the deleted seeds if a
+ * wider catalog is ever wanted again.
  *
  * The reason this is worth a test rather than a comment: the defect is a *shell string* in
- * `package.json`. No type-checks it, no linter reads it, and the only symptom is a duplicate card
- * on a screen nobody re-checks after seeding. `db:seed` is also the command a new machine, a fresh
- * CI runner and the production runbook all run, so a regression here reaches every environment at
- * once — and it is one `&&` away at all times.
+ * `package.json`. No type-checks it, no linter reads it, and the only symptom is a college card
+ * from the wrong island on a screen nobody re-checks after seeding. `db:seed` is also the command
+ * a new machine, a fresh CI runner and the production runbook all run, so a regression here reaches
+ * every environment at once — and it is one `&&` away at all times.
  *
- * The chain is **resolved transitively rather than string-matched.** Asserting
- * `!scripts['db:seed'].includes('0002')` would pass trivially (it names no seed file directly, only
- * other scripts) and a substring check for `db:seed:catalog` matches `db:seed:catalog:full` — the
- * one script that must be there. Following the `npm run` edges to the actual `--file=` targets is
- * the only check that asserts what is really run, and it keeps holding if the scripts are renamed.
+ * The chain is **resolved transitively rather than string-matched**, so it keeps holding if the
+ * scripts are renamed.
  */
 
 const scripts: Record<string, string> = packageJson.scripts;
+
+/**
+ * `import.meta.glob` is a Vite build-time transform, not a runtime API, so it has no type here:
+ * `tsconfig.json` lists only `@cloudflare/workers-types` and the pool's types, and adding
+ * `vite/client` to pick this up would put DOM globals in scope for `src/` too — where they do not
+ * exist. One narrow declaration is cheaper than that, and narrower: only the keys are ever used.
+ */
+declare global {
+  interface ImportMeta {
+    glob(pattern: string, options?: { query?: string }): Record<string, unknown>;
+  }
+}
+
+/**
+ * The contents of `seeds/` as filenames.
+ *
+ * `import.meta.glob` rather than `readdirSync`: this suite runs inside workerd, where `node:fs`
+ * exists as a stub whose `readdirSync` rejects a plain path ("File path must be a file: URL") and
+ * which could not see the developer's filesystem regardless. The glob is resolved by Vite at
+ * build time, on the real directory, and arrives in the worker as a plain object — which is
+ * exactly the compile-time-on-disk / run-time-in-worker split this assertion needs.
+ */
+const seedFilesOnDisk = (): string[] =>
+  Object.keys(import.meta.glob('../../seeds/*.sql', { query: '?raw' }))
+    .map((path) => path.slice(path.lastIndexOf('/') + 1))
+    .sort();
+
+/** The one catalog seed. Generated by `scripts/build-region7-seed.mjs` from `colleges.md`. */
+const CATALOG_SEED = '0005_region7_catalog_reset.sql';
 
 /** Every `seeds/*.sql` file reached by running `npm run <name>`, in execution order. */
 function resolveSeedFiles(name: string, seen: string[] = []): string[] {
@@ -67,34 +102,26 @@ function resolveSeedFiles(name: string, seen: string[] = []): string[] {
   return files;
 }
 
-describe('db:seed chain (P1-0 regression guard)', () => {
-  it('runs staff → 0004 → ai-policy, and never seed 0002', () => {
+/** Every `--file=./seeds/*.sql` target across every script, deduplicated. */
+function allSeedTargets(): string[] {
+  const targets = new Set<string>();
+
+  for (const command of Object.values(scripts)) {
+    for (const match of command.matchAll(/--file=\.\/seeds\/([\w.-]+\.sql)/g)) {
+      if (match[1] !== undefined) targets.add(match[1]);
+    }
+  }
+
+  return [...targets].sort();
+}
+
+describe('seed chain — one catalog, and it is Bohol', () => {
+  it('runs staff → catalog → ai-policy', () => {
     expect(resolveSeedFiles('db:seed')).toEqual([
       '0001_staff_accounts.sql',
-      '0004_academic_catalog_expansion.sql',
+      CATALOG_SEED,
       '0003_ai_policy.sql',
     ]);
-  });
-
-  it('keeps 0002 reachable on its own, so the pre-audit fixture is still reproducible', () => {
-    // The fix for P1-0 was to unchain 0002, not to delete it. If a future change removes the
-    // script entirely, the first assertion above would still pass while this documented
-    // capability quietly disappeared — so the guard states both halves.
-    expect(resolveSeedFiles('db:seed:catalog')).toEqual(['0002_academic_catalog.sql']);
-  });
-
-  it('exposes no runner that applies seed 0002 to a deployed database', () => {
-    // `--local` targets a Miniflare SQLite file you can delete; `--remote` targets staging or
-    // production, where P2-2 had to archive duplicate "Data Scientist" and "TEACHER"/"Teacher"
-    // rows by hand. Reproducing pre-audit behaviour is a local activity, so the remote runners
-    // must all point at 0004.
-    const remote0002 = Object.entries(scripts)
-      .filter(([name]) => name.startsWith('db:seed'))
-      .filter(([, command]) => command.includes('--remote'))
-      .filter(([, command]) => command.includes('0002_'))
-      .map(([name]) => name);
-
-    expect(remote0002).toEqual([]);
   });
 
   it('applies the staff seed before the catalog', () => {
@@ -102,5 +129,41 @@ describe('db:seed chain (P1-0 regression guard)', () => {
     const order = resolveSeedFiles('db:seed');
 
     expect(order.indexOf('0001_staff_accounts.sql')).toBe(0);
+  });
+
+  it('keeps exactly one catalog seed on disk', () => {
+    // The deleted files are the assertion. `0002_academic_catalog.sql` and
+    // `0004_academic_catalog_expansion.sql` seeded institutions outside Bohol; restoring either
+    // file — even without a runner — is the first half of putting them back in a database, and
+    // this is where that gets noticed.
+    expect(seedFilesOnDisk()).toEqual([
+      '0001_staff_accounts.sql',
+      '0003_ai_policy.sql',
+      CATALOG_SEED,
+    ]);
+  });
+
+  it('points every seed runner at a seed that exists', () => {
+    // A runner naming a deleted file fails at the shell with an unhelpful error, and only when
+    // somebody runs it — which for the `:production` runners is the worst possible moment.
+    const onDisk = new Set(seedFilesOnDisk());
+
+    expect(allSeedTargets().filter((target) => !onDisk.has(target))).toEqual([]);
+  });
+
+  it('exposes no runner that seeds a catalog other than the Bohol one', () => {
+    // Covers `--local` as well as `--remote`. The original version of this test only guarded
+    // deployed databases, on the reasoning that a local database is disposable — but a developer
+    // reading "25 colleges" locally and shipping against that assumption is how P1-0 happened.
+    const catalogRunners = Object.entries(scripts)
+      .filter(([name]) => name.startsWith('db:seed'))
+      .filter(([, command]) => /--file=\.\/seeds\/000[245]_/.test(command))
+      .map(([name, command]) => ({
+        name,
+        seed: /--file=\.\/seeds\/([\w.-]+\.sql)/.exec(command)?.[1],
+      }))
+      .filter(({ seed }) => seed !== CATALOG_SEED);
+
+    expect(catalogRunners).toEqual([]);
   });
 });

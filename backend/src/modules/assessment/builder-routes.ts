@@ -34,7 +34,7 @@ import {
   serializeTemplate,
   serializeVersionSummary,
 } from '@/modules/assessment/serializers';
-import { authorizeManageTemplate } from '@/policies/assessment';
+import { authorizeAssignTemplate, authorizeManageTemplate } from '@/policies/assessment';
 
 /**
  * The assessment builder's HTTP surface (Phase 5b — §20's template/version group, flattened
@@ -406,7 +406,17 @@ builderRoutes.post('/assessment-templates/:templateId/assignments', async (c) =>
   const user = requireUser(c);
   const template = await builder.findTemplate(c.req.param('templateId'));
 
-  authorizeManageTemplate(user, template);
+  /**
+   * **`authorizeAssignTemplate`, not `authorizeManageTemplate`** — the bug this replaces.
+   *
+   * Assigning is authorized against the *class* (§39), and `assignToClasses` already applies
+   * `canManageAssignment` to every candidate. Gating the route on template *ownership* as well
+   * meant a counselor pressing Assign on RIASEC — a GLOBAL, admin-owned instrument, which is the
+   * one thing every counselor is supposed to assign — got a flat "Assessment template not found."
+   * All this check now decides is visibility: the same admin-sees-all / counselor-sees-global-plus-
+   * their-own rule the list applies, so another counselor's private template is still a 404.
+   */
+  authorizeAssignTemplate(user, template);
 
   const version =
     input.assessment_version_id === undefined
@@ -522,6 +532,37 @@ builderRoutes.post('/assessment-templates/:templateId/versions', async (c) => {
   return c.json(successEnvelope(serializeVersionSummary(version), 'Version created.'), 201);
 });
 
+/**
+ * `POST /assessment-versions/{id}/duplicate` — **the edit path for a published instrument.**
+ *
+ * A published version is frozen (invariant 1) and stays frozen; this copies it whole into a new
+ * DRAFT — questions, options, mappings and the complete scoring config — which the author then
+ * edits through the ordinary workspace and publishes as the next version. It is what makes the
+ * curated RIASEC and SCCT instruments editable in practice rather than only in principle: without
+ * it, `POST /versions` hands back an empty draft and "edit RIASEC" means retyping sixty items.
+ *
+ * Authorized by `authorizeManageTemplate` like every other builder write — an admin may copy any
+ * template's version, a counselor only their own. **No category check**, deliberately: §5's
+ * permanent rule bars *AI* from generating or editing RIASEC/SCCT, and that rule lives in
+ * `authorizeGenerateWithAi`, which this route does not go anywhere near. A human editing curated
+ * content by hand is the thing §12 tells them to do.
+ */
+builderRoutes.post('/assessment-versions/:versionId/duplicate', async (c) => {
+  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const user = requireUser(c);
+  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'));
+
+  const draft = await builder.duplicateVersion(user, version.id);
+
+  return c.json(
+    successEnvelope(
+      serializeVersionSummary(draft),
+      `Version ${version.versionNumber} copied into draft v${draft.versionNumber}.`,
+    ),
+    201,
+  );
+});
+
 // --- Versions: the review payload, questions, the gate, publish -------------------------------
 
 /** The §31 review screen's payload — questions WITH scores and mappings (author's view). */
@@ -562,13 +603,13 @@ builderRoutes.post('/assessment-versions/:versionId/questions', async (c) => {
   const user = requireUser(c);
   const { version } = await authorizedVersion(builder, user, c.req.param('versionId'));
 
-  const existingCount = await builder.questionCount(version.id);
-
-  const questions: CreateQuestionInput[] = input.questions.map((question, index) => ({
+  // No `orderNumber` here: the Service appends from `MAX + 1` in array order. This route used to
+  // compute `COUNT + 1` itself, which is the same number only while the numbering is gapless and a
+  // collision the day it is not — see `CreateQuestionInput` (ASSESSMENT-FIX §4).
+  const questions: CreateQuestionInput[] = input.questions.map((question) => ({
     questionText: question.question_text,
     questionType: question.question_type,
     sectionLabel: question.section_label ?? null,
-    orderNumber: existingCount + index + 1,
     required: question.required ?? true,
     source: 'MANUAL',
     options: question.options.map((option, optionIndex) => ({
@@ -676,7 +717,7 @@ builderRoutes.delete('/assessment-questions/:questionId', async (c) => {
   const user = requireUser(c);
   const question = await authorizedQuestion(builder, user, c.req.param('questionId'));
 
-  await builder.deleteQuestion(question.id);
+  await builder.deleteQuestion(user, question.id);
 
   return c.json(successEnvelope({ id: question.id }, 'Question removed.'));
 });

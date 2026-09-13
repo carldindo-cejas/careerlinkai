@@ -1,7 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createQueryClient } from '@/app/queryClient';
@@ -185,6 +185,43 @@ describe('StudentAccessPage', () => {
     renderAccessPage();
 
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join your class');
+  });
+
+  /**
+   * The counselor's Share button sends `/join/{code}`. The student opening it should have exactly
+   * one thing left to type — and the code must reach the server as the link spelled it.
+   */
+  it('fills the class code in from a shared link, so the student types only their username', async () => {
+    vi.mocked(studentAccessApi.join).mockResolvedValue({
+      user: student,
+      class: classRoom,
+      username: 'juan.delacruz',
+      token: 'student-token',
+    });
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter initialEntries={['/join/HVJE-5977']}>
+          <Routes>
+            <Route path="/join/:classCode" element={<StudentAccessPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByLabelText(/class code/i)).toHaveValue('HVJE-5977');
+    expect(screen.getByLabelText(/username/i)).toHaveFocus();
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/username/i), 'juan.delacruz');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() =>
+      expect(studentAccessApi.join).toHaveBeenCalledWith({
+        class_code: 'HVJE-5977',
+        username: 'juan.delacruz',
+      }),
+    );
   });
 
   /**

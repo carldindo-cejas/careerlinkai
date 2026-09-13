@@ -17,6 +17,7 @@ import { describeBlockers } from '@/modules/assessment/assessment-builder-servic
 import type {
   AssignmentView,
   AttemptWithContent,
+  ReportView,
   ResultView,
 } from '@/modules/assessment/assessment-attempt-service';
 
@@ -45,7 +46,9 @@ import type {
  *
  * `AssessmentPlayerPage.test.tsx` asserts this from the other side of the wire.
  */
-export function serializeQuestion(question: AssessmentQuestion & { options: QuestionOption[] }) {
+export function serializeQuestion(
+  question: AssessmentQuestion & { options: QuestionOption[] },
+) {
   return {
     id: question.id,
     question_text: question.questionText,
@@ -180,6 +183,40 @@ export function serializeResult(view: ResultView, dimensions: AssessmentDimensio
   };
 }
 
+/**
+ * The printable export: the result, plus who sat it, which version, and every item with the
+ * score its answer carried. Only ever built for a SCORED attempt — see `viewReport`.
+ */
+export function serializeReport(view: ReportView, dimensions: AssessmentDimension[]) {
+  return {
+    ...serializeResult(view, dimensions),
+    instrument: {
+      version_number: view.version.versionNumber,
+      question_count: view.questionCount,
+      /** The version's own composite weights (§23) — null for a Holland-code instrument. */
+      composite_weights: view.version.scoringConfig.composite_weights ?? null,
+    },
+    student: {
+      name: view.student.name,
+      grade_level: view.student.gradeLevel,
+      strand: view.student.strand,
+      username: view.student.username,
+    },
+    class: {
+      name: view.classRoom.name,
+      academic_year: view.classRoom.academicYear,
+    },
+    counselor: view.counselor === null ? null : { name: view.counselor.name },
+    items: view.items.map((item) => ({
+      order_number: item.orderNumber,
+      question_text: item.questionText,
+      loads_on: item.loadsOn,
+      max_score: item.maxScore,
+      answer: item.answer,
+    })),
+  };
+}
+
 // --- The taxonomy (migration 0014) ------------------------------------------------------------
 
 /**
@@ -242,9 +279,7 @@ export function serializeAssessmentRow(row: AssessmentListRow) {
     is_published: row.publishedVersion !== undefined,
     is_archived: row.template.status === 'ARCHIVED',
     type:
-      row.type === null
-        ? null
-        : { id: row.type.id, code: row.type.code, name: row.type.name },
+      row.type === null ? null : { id: row.type.id, code: row.type.code, name: row.type.name },
     scorings: row.scorings.map((scoring) => ({
       id: scoring.id,
       code: scoring.code,
@@ -279,7 +314,9 @@ export function serializeAssessmentRow(row: AssessmentListRow) {
      */
     can_delete: row.deletability.canDelete,
     delete_blockers: row.deletability.blockers,
-    delete_blocked_reason: row.deletability.canDelete ? null : describeBlockers(row.deletability),
+    delete_blocked_reason: row.deletability.canDelete
+      ? null
+      : describeBlockers(row.deletability),
     /** Quoted back in the confirmation dialog — a refusal with no number is a dead end. */
     response_count: row.deletability.attemptCount,
     active_assignment_count: row.deletability.activeAssignmentCount,

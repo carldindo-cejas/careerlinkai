@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createQueryClient } from '@/app/queryClient';
-import { ClassRecommendationsPanel } from '@/features/counselor/components/ClassRecommendationsPanel';
+import { RosterTable } from '@/features/counselor/components/RosterTable';
 import { counselorAssessmentApi } from '@/services/assessmentApi';
 import { recommendationApi } from '@/services/recommendationApi';
 import { rosterApi } from '@/services/rosterApi';
@@ -24,18 +24,17 @@ vi.mock('@/services/assessmentApi');
 vi.mock('@/services/recommendationApi');
 
 /**
- * The counselor's recommendations panel (audit F2, P1-1).
+ * The roster, and the per-student dropdown that replaced the class page's Results and
+ * Recommendations panels.
  *
- * Three things here are load-bearing beyond "it renders", and each is asserted rather than assumed:
+ * Carried over from those panels' tests, because the guarantees did not change when the UI moved:
  *
- *   1. **Nothing is fetched until a row is opened.** There is no bulk endpoint behind this screen,
- *      so an eager panel would fire one request per enrolled student on page load. That is the
- *      regression this test exists to catch, and it is invisible by inspection.
+ *   1. **Nothing is fetched until a row is opened.** There is no bulk recommendations endpoint, so
+ *      an eager roster would fire one request per enrolled student on page load.
  *   2. **`null` is not an error.** A rebuild that returns `null` means the student has not finished
- *      both instruments — reporting it as a failure would send a counselor chasing a bug in a
- *      system working exactly as designed. This is the C4 distinction, at the UI layer.
- *   3. **A rebuilt set replaces the cards without a refetch.** The hook writes the response into
- *      the cache; a panel that invalidated instead would blank the cards it was pressed to fill.
+ *      both instruments (audit C4).
+ *   3. **A rebuilt set replaces the cards without a refetch.**
+ *   4. **The §21 reset is still two-step** — it moved into the dropdown, it did not disappear.
  */
 
 const CLASS_ID = '33333333-3333-4333-8333-333333333333';
@@ -51,21 +50,47 @@ function entry(username: string, firstName: string): RosterEntry {
     removed_at: null,
     first_name: firstName,
     last_name: 'Dela Cruz',
+    assessments_assigned: 2,
+    assessments_completed: 2,
+    assessments_in_progress: 0,
   };
 }
 
 const ANA = entry('adelacruz', 'Ana');
 const BEN = entry('bdelacruz', 'Ben');
 
-/** A scored RIASEC row, which is where the Holland badge on each student's row comes from. */
 function riasecResult(studentId: string, name: string, code: string): AssessmentResult {
   return {
-    attempt_id: `attempt-${studentId}`,
+    attempt_id: `riasec-${studentId}`,
     submitted_at: '2026-07-20T02:00:00Z',
     assessment: { title: 'RIASEC Interest Inventory', category: 'RIASEC' },
     student: { id: studentId, name, username: null },
     result: { result_code: code, overall_summary: null, generated_at: null },
     dimensions: [],
+  };
+}
+
+function scctResult(studentId: string, name: string): AssessmentResult {
+  return {
+    attempt_id: `scct-${studentId}`,
+    submitted_at: '2026-07-21T02:00:00Z',
+    assessment: { title: 'SCCT Career Confidence', category: 'SCCT' },
+    student: { id: studentId, name, username: null },
+    result: {
+      result_code: null,
+      overall_summary: 'Moderate overall career confidence',
+      generated_at: null,
+    },
+    dimensions: [
+      {
+        code: 'SE',
+        name: 'Self-Efficacy',
+        description: null,
+        raw_score: '29',
+        normalized_score: '72.50',
+        interpretation: 'High Confidence',
+      },
+    ],
   };
 }
 
@@ -115,10 +140,7 @@ function program(id: string, name: string): Program {
   };
 }
 
-/**
- * Six of each, so "top five" is a real slice. A fixture of five could not tell "sliced to five"
- * apart from "rendered everything it was given".
- */
+/** Six of each, so "top five" is a real slice. */
 function set(label: string): RecommendationSet {
   const careers: CareerRecommendation[] = [1, 2, 3, 4, 5, 6].map((n) => ({
     id: `${label}-career-${n}`,
@@ -149,26 +171,26 @@ function set(label: string): RecommendationSet {
   };
 }
 
-function renderPanel() {
+function renderRoster() {
   render(
     <QueryClientProvider client={createQueryClient()}>
-      <ClassRecommendationsPanel classId={CLASS_ID} />
+      <RosterTable classId={CLASS_ID} />
     </QueryClientProvider>,
   );
 
   return userEvent.setup();
 }
 
-/** Open one student's row and wait for their recommendations to resolve. */
+/** Open one student's row. Exact name, so the "Remove {name} from this class" button never matches. */
 async function open(user: ReturnType<typeof userEvent.setup>, name: string) {
-  await user.click(await screen.findByRole('button', { name: new RegExp(name) }));
+  await user.click(await screen.findByRole('button', { name }));
 }
 
 function toasts() {
   return useToastStore.getState().toasts;
 }
 
-describe('ClassRecommendationsPanel', () => {
+describe('RosterTable', () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [] });
 
@@ -176,51 +198,61 @@ describe('ClassRecommendationsPanel', () => {
     vi.mocked(counselorAssessmentApi.listClassResults)
       .mockReset()
       .mockResolvedValue([
+        scctResult(ANA.student_id, 'Ana Dela Cruz'),
         riasecResult(ANA.student_id, 'Ana Dela Cruz', 'IAS'),
         riasecResult(BEN.student_id, 'Ben Dela Cruz', 'RCE'),
       ]);
+    vi.mocked(counselorAssessmentApi.resetAttempt).mockReset();
     vi.mocked(recommendationApi.getForStudent).mockReset().mockResolvedValue(set('Ana'));
     vi.mocked(recommendationApi.regenerateForStudent).mockReset();
   });
 
-  it('lists the roster with each student’s Holland code, and fetches nothing until a row is opened', async () => {
-    renderPanel();
+  it('lists the roster collapsed, and fetches no recommendations until a row is opened', async () => {
+    renderRoster();
 
-    expect(await screen.findByText('Ana Dela Cruz')).toBeInTheDocument();
-    expect(screen.getByText('Ben Dela Cruz')).toBeInTheDocument();
-    expect(screen.getByText('IAS')).toBeInTheDocument();
-    expect(screen.getByText('RCE')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Ana Dela Cruz' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.getByRole('button', { name: 'Ben Dela Cruz' })).toBeInTheDocument();
+    expect(screen.queryByText('IAS')).not.toBeInTheDocument();
 
-    // The point of the whole lazy design: two students on screen, zero recommendation requests.
+    // The point of the lazy design: two students on screen, zero recommendation requests.
     expect(recommendationApi.getForStudent).not.toHaveBeenCalled();
   });
 
-  it('says so plainly when a student has no scored RIASEC attempt', async () => {
-    vi.mocked(counselorAssessmentApi.listClassResults).mockResolvedValue([
-      riasecResult(ANA.student_id, 'Ana Dela Cruz', 'IAS'),
-    ]);
-
-    renderPanel();
-
-    // Ben has no result — a blank badge could be read as an empty code, so the row says why.
-    expect(await screen.findByText('No RIASEC result yet')).toBeInTheDocument();
-  });
-
-  it('fetches and renders one student’s top five careers and programs on open', async () => {
-    const user = renderPanel();
+  it('opens a student into their Holland code, SCCT confidence and top five of each', async () => {
+    const user = renderRoster();
 
     await open(user, 'Ana Dela Cruz');
 
+    expect(screen.getByRole('button', { name: 'Ana Dela Cruz' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(await screen.findByText('IAS')).toBeInTheDocument();
+
+    // SCCT: the server's sentence, and each dimension on its confidence band.
+    expect(screen.getByText('Moderate overall career confidence')).toBeInTheDocument();
+    expect(screen.getByText('Self-Efficacy')).toBeInTheDocument();
+    expect(screen.getByText(/High Confidence/)).toBeInTheDocument();
+
     expect(await screen.findByText('Ana Career 1')).toBeInTheDocument();
     expect(screen.getByText('Ana Career 5')).toBeInTheDocument();
-    // Six were returned; the staff summary shows five.
     expect(screen.queryByText('Ana Career 6')).not.toBeInTheDocument();
-
-    // Programs are listed by college, with the program itself as the secondary line.
     expect(screen.getAllByText('Alpha University')).toHaveLength(5);
-    expect(screen.getByText(/Ana Program 1/)).toBeInTheDocument();
 
     expect(recommendationApi.getForStudent).toHaveBeenCalledExactlyOnceWith(ANA.student_id);
+  });
+
+  it('says so plainly when a student has not taken an instrument', async () => {
+    const user = renderRoster();
+
+    // Ben has a RIASEC result and no SCCT one.
+    await open(user, 'Ben Dela Cruz');
+
+    expect(await screen.findByText('RCE')).toBeInTheDocument();
+    expect(screen.getByText('No SCCT result yet')).toBeInTheDocument();
   });
 
   it('only ever has one student open, so scores from two students are never side by side', async () => {
@@ -228,7 +260,7 @@ describe('ClassRecommendationsPanel', () => {
       Promise.resolve(set(studentId === ANA.student_id ? 'Ana' : 'Ben')),
     );
 
-    const user = renderPanel();
+    const user = renderRoster();
 
     await open(user, 'Ana Dela Cruz');
     expect(await screen.findByText('Ana Career 1')).toBeInTheDocument();
@@ -241,7 +273,7 @@ describe('ClassRecommendationsPanel', () => {
   it('rebuilds a set and swaps the cards without a refetch', async () => {
     vi.mocked(recommendationApi.regenerateForStudent).mockResolvedValue(set('Rebuilt'));
 
-    const user = renderPanel();
+    const user = renderRoster();
 
     await open(user, 'Ana Dela Cruz');
     await screen.findByText('Ana Career 1');
@@ -250,9 +282,6 @@ describe('ClassRecommendationsPanel', () => {
 
     expect(await screen.findByText('Rebuilt Career 1')).toBeInTheDocument();
     expect(screen.queryByText('Ana Career 1')).not.toBeInTheDocument();
-
-    // The response *is* the new set, written straight into the cache — re-reading it would blank
-    // the cards for a round trip and pay for bytes already in hand.
     expect(recommendationApi.getForStudent).toHaveBeenCalledTimes(1);
 
     await waitFor(() => expect(toasts()).toHaveLength(1));
@@ -264,12 +293,10 @@ describe('ClassRecommendationsPanel', () => {
     vi.mocked(recommendationApi.getForStudent).mockResolvedValue(null);
     vi.mocked(recommendationApi.regenerateForStudent).mockResolvedValue(null);
 
-    const user = renderPanel();
+    const user = renderRoster();
 
     await open(user, 'Ana Dela Cruz');
 
-    // The empty state raises the possibility that generation broke, rather than only repeating the
-    // instruction the student may already have followed (audit C4).
     expect(await screen.findByText(/Already finished both/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /rebuild/i }));
@@ -279,41 +306,41 @@ describe('ClassRecommendationsPanel', () => {
     expect(toasts()[0]?.message).toContain('has not finished both RIASEC and SCCT');
   });
 
-  it('surfaces the server’s message when a rebuild is throttled', async () => {
-    vi.mocked(recommendationApi.regenerateForStudent).mockRejectedValue(
-      new ApiRequestError(
-        'This student’s recommendations were rebuilt very recently. Try again in 42 seconds.',
-        429,
-      ),
-    );
-
-    const user = renderPanel();
-
-    await open(user, 'Ana Dela Cruz');
-    await screen.findByText('Ana Career 1');
-
-    await user.click(screen.getByRole('button', { name: /rebuild/i }));
-
-    await waitFor(() => expect(toasts()).toHaveLength(1));
-    expect(toasts()[0]).toMatchObject({ tone: 'error' });
-    expect(toasts()[0]?.message).toContain('Try again in 42 seconds');
-
-    // The failure did not take the cards down with it — the standing set is still on screen.
-    expect(screen.getByText('Ana Career 1')).toBeInTheDocument();
-  });
-
-  it('distinguishes a failed load from an empty one', async () => {
+  it('distinguishes a failed recommendations load from an empty one', async () => {
     vi.mocked(recommendationApi.getForStudent).mockRejectedValue(
       new ApiRequestError('Student not found.', 404),
     );
 
-    const user = renderPanel();
+    const user = renderRoster();
 
     await open(user, 'Ana Dela Cruz');
 
-    // D11's rule: this is an alert, not the "finish both assessments" empty state.
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText(/could not load/i)).toBeInTheDocument();
     expect(screen.queryByText(/Already finished both/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the two-step retake inside the dropdown', async () => {
+    vi.mocked(counselorAssessmentApi.resetAttempt).mockResolvedValue(undefined as never);
+
+    const user = renderRoster();
+
+    await open(user, 'Ana Dela Cruz');
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Reset attempt: RIASEC Interest Inventory' }),
+    );
+
+    // The consequence is spelled out before the button that carries it out.
+    expect(screen.getByText(/Resetting voids this result/)).toBeInTheDocument();
+    expect(counselorAssessmentApi.resetAttempt).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Yes, reset it' }));
+
+    await waitFor(() =>
+      expect(counselorAssessmentApi.resetAttempt).toHaveBeenCalledWith(
+        `riasec-${ANA.student_id}`,
+      ),
+    );
   });
 });

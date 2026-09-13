@@ -34,19 +34,63 @@ const LIKERT = [
   { label: 'Strongly Agree', value: '5', score: 5, orderNumber: 5 },
 ];
 
-/** §22's three-tier banding, verbatim. */
-const INTEREST_BANDS = [
-  { min: 0, max: 33.99, label: 'Low Interest' },
-  { min: 34, max: 66.99, label: 'Moderate Interest' },
-  { min: 67, max: 100, label: 'High Interest' },
-];
+/**
+ * The five-tier scale both instruments band on (migration 0035), anchored on the 1–5 item mean:
+ *
+ * | Item mean   | Score        | Label     |
+ * |-------------|--------------|-----------|
+ * | 1.00 – 1.79 | 20.0 – 35.9  | Very Low  |
+ * | 1.80 – 2.59 | 36.0 – 51.9  | Low       |
+ * | 2.60 – 3.39 | 52.0 – 67.9  | Moderate  |
+ * | 3.40 – 4.19 | 68.0 – 83.9  | High      |
+ * | 4.20 – 5.00 | 84.0 – 100.0 | Very High |
+ *
+ * score = mean × 20, because a 5-point item floors at 1 — so equal fifths of the *reachable* range,
+ * not of 0–100. Very Low starts at 0 rather than 20 so a score under the floor (an optional-only
+ * CUSTOM edge, never RIASEC/SCCT) still has a label.
+ *
+ * **Listed highest first, with shared edges, on purpose.** `interpret()` takes the first band that
+ * contains the score, so 84 lands in Very High and 36 in Low, exactly as the table says — and there
+ * is no 35.99…36 gap for a continuous composite index to fall through unlabelled.
+ */
+function likertBands(noun: string) {
+  const suffix = noun === '' ? '' : ` ${noun}`;
 
-const CONFIDENCE_BANDS = [
-  { min: 0, max: 33.99, label: 'Low' },
-  { min: 34, max: 66.99, label: 'Moderate' },
-  { min: 67, max: 79.99, label: 'Moderately High' },
-  { min: 80, max: 100, label: 'High' },
-];
+  return [
+    { min: 84, max: 100, label: `Very High${suffix}` },
+    { min: 68, max: 84, label: `High${suffix}` },
+    { min: 52, max: 68, label: `Moderate${suffix}` },
+    { min: 36, max: 52, label: `Low${suffix}` },
+    { min: 0, max: 36, label: `Very Low${suffix}` },
+  ];
+}
+
+const INTEREST_BANDS = likertBands('Interest');
+
+/** Bare, because the composite's label is always read inside "… Career Confidence." */
+const CONFIDENCE_BANDS = likertBands('');
+
+/**
+ * The same five bands, worded for a **single SCCT dimension** rather than the composite.
+ *
+ * SCCT's three dimensions were seeded with `INTEREST_BANDS`, so a student who finished the
+ * confidence scale was told *"Self-Efficacy 78 · High Interest"* — on a screen headed "Your career
+ * confidence", under a summary that had just said "Moderately High Career Confidence." Interest is
+ * what the *other* instrument measures (§22); self-efficacy is a belief about your own ability, and
+ * a student cannot have a high or low interest in one. §55 makes Dimension terminology enforced
+ * rather than advisory for exactly this reason: the two instruments answer different questions and
+ * their results must not borrow each other's words.
+ *
+ * The cut points are `CONFIDENCE_BANDS`' own, not a third scale invented for the dimensions. A
+ * student reading "Moderately High Career Confidence" above and "High Confidence" beside a
+ * dimension is reading one instrument on one scale; two sets of thresholds would make the summary
+ * and the breakdown disagree about the same 78.
+ *
+ * The labels carry the noun ("High Confidence") where the composite's do not ("High" + " Career
+ * Confidence."), because the composite's label is always read inside that sentence and a
+ * dimension's is rendered bare, after the score: `78 · High` names no quantity at all.
+ */
+const CONFIDENCE_DIMENSION_BANDS = likertBands('Confidence');
 
 /** 10 items per dimension × 6 = 60 (§22). */
 const RIASEC_ITEMS: Record<string, string[]> = {
@@ -190,7 +234,9 @@ export async function seedAssessmentInstruments(
   const existing = await db
     .select()
     .from(assessmentTemplates)
-    .where(and(eq(assessmentTemplates.category, 'RIASEC'), isNull(assessmentTemplates.deletedAt)))
+    .where(
+      and(eq(assessmentTemplates.category, 'RIASEC'), isNull(assessmentTemplates.deletedAt)),
+    )
     .limit(1);
 
   if (existing.length > 0) {
@@ -198,11 +244,15 @@ export async function seedAssessmentInstruments(
     const [scct] = await db
       .select()
       .from(assessmentTemplates)
-      .where(and(eq(assessmentTemplates.category, 'SCCT'), isNull(assessmentTemplates.deletedAt)))
+      .where(
+        and(eq(assessmentTemplates.category, 'SCCT'), isNull(assessmentTemplates.deletedAt)),
+      )
       .limit(1);
 
-    const riasecVersion = riasec === undefined ? undefined : await builder.assignableVersion(riasec.id);
-    const scctVersion = scct === undefined ? undefined : await builder.assignableVersion(scct.id);
+    const riasecVersion =
+      riasec === undefined ? undefined : await builder.assignableVersion(riasec.id);
+    const scctVersion =
+      scct === undefined ? undefined : await builder.assignableVersion(scct.id);
 
     return {
       riasecVersionId: riasecVersion?.id ?? null,
@@ -268,8 +318,8 @@ async function seedRiasec(
     scoringConfig: { algorithm: 'HOLLAND_CODE_TOP3' },
   });
 
-  let orderNumber = 1;
-
+  // The items land in array order — R's ten, then I's, and so on — because `addQuestions` appends
+  // in the order it is given. The counter this used to keep said the same thing twice.
   await builder.addQuestions(
     admin,
     version.id,
@@ -280,7 +330,6 @@ async function seedRiasec(
         // The section label groups sixty items into legible chunks. It is a deliberate, limited
         // disclosure — it never reveals what any *single* item scores (§37).
         sectionLabel: RIASEC_DIMENSION_NAMES[code as keyof typeof RIASEC_DIMENSION_NAMES],
-        orderNumber: orderNumber++,
         required: true,
         options: LIKERT,
         dimensions: [{ code, weight: 1 }],
@@ -315,21 +364,21 @@ async function seedScct(
       code: 'SE',
       name: 'Self-Efficacy',
       description: 'Belief in your ability to succeed in a domain.',
-      interpretationRanges: INTEREST_BANDS,
+      interpretationRanges: CONFIDENCE_DIMENSION_BANDS,
       orderNumber: 1,
     },
     {
       code: 'OE',
       name: 'Outcome Expectations',
       description: 'Belief that effort in a domain leads to good outcomes.',
-      interpretationRanges: INTEREST_BANDS,
+      interpretationRanges: CONFIDENCE_DIMENSION_BANDS,
       orderNumber: 2,
     },
     {
       code: 'GO',
       name: 'Goal Orientation',
       description: 'Your intent to pursue a domain.',
-      interpretationRanges: INTEREST_BANDS,
+      interpretationRanges: CONFIDENCE_DIMENSION_BANDS,
       orderNumber: 3,
     },
   ]);
@@ -347,8 +396,6 @@ async function seedScct(
     },
   });
 
-  let orderNumber = 1;
-
   const sectionNames: Record<string, string> = {
     SE: 'Self-Efficacy',
     OE: 'Outcome Expectations',
@@ -363,7 +410,6 @@ async function seedScct(
         questionText,
         questionType: 'LIKERT' as const,
         sectionLabel: sectionNames[code] ?? code,
-        orderNumber: orderNumber++,
         required: true,
         options: LIKERT,
         dimensions: [{ code, weight: 1 }],

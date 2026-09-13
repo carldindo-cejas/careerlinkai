@@ -9,7 +9,7 @@ import type { CareerRecommendation, ProgramRecommendation } from '@/types/recomm
  * each numbered, each carrying the §27 match score.
  *
  * Shared deliberately. It was written for the admin's `CounselorDetailPage`, and the counselor's
- * `ClassRecommendationsPanel` (audit F2) needs the *same* presentation — not a similar one. Two
+ * roster dropdown (`RosterStudentDetails`, audit F2) needs the *same* presentation — not a similar one. Two
  * copies would drift the first time either was adjusted, and an admin and the counselor who
  * actually advises the student would end up reading the same numbers in two different layouts and
  * wondering which screen was right.

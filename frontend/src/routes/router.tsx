@@ -1,6 +1,7 @@
 import { Suspense } from 'react';
 import { Route, Routes } from 'react-router-dom';
 
+import { GuestRoute } from '@/routes/GuestRoute';
 import { paths } from '@/routes/paths';
 import { ProtectedRoute } from '@/routes/ProtectedRoute';
 import { RoleHome } from '@/routes/RoleHome';
@@ -32,7 +33,11 @@ const access = routeGroup(() => import('@/routes/groups/access'));
 const admin = routeGroup(() => import('@/routes/groups/admin'));
 const counselor = routeGroup(() => import('@/routes/groups/counselor'));
 const builder = routeGroup(() => import('@/routes/groups/builder'));
+// Like `builder`: routed by both staff shells, so it belongs to neither (migration 0031).
+const knowledge = routeGroup(() => import('@/routes/groups/knowledge'));
 const student = routeGroup(() => import('@/routes/groups/student'));
+// The print sheet and "Download PDF": a student's rarest screen, kept off every other one.
+const reports = routeGroup(() => import('@/routes/groups/reports'));
 
 const PublicLayout = publicSite('PublicLayout');
 const HomePage = publicSite('HomePage');
@@ -41,6 +46,7 @@ const CareersPage = publicSite('CareersPage');
 
 const StaffAuthLayout = auth('StaffAuthLayout');
 const LoginPage = auth('LoginPage');
+const CounselorSignupPage = auth('CounselorSignupPage');
 const AdminLoginPage = auth('AdminLoginPage');
 const ForgotPasswordPage = auth('ForgotPasswordPage');
 const ResetPasswordPage = auth('ResetPasswordPage');
@@ -56,11 +62,11 @@ const CollegeListPage = admin('CollegeListPage');
 const CollegeDetailPage = admin('CollegeDetailPage');
 const CareerListPage = admin('CareerListPage');
 const CanonicalProgramPage = admin('CanonicalProgramPage');
-const KnowledgeListPage = admin('KnowledgeListPage');
 const AiPolicyPage = admin('AiPolicyPage');
 const CounselorManagementPage = admin('CounselorManagementPage');
 const CounselorDetailPage = admin('CounselorDetailPage');
 const AuditLogPage = admin('AuditLogPage');
+const PlatformUsagePage = admin('PlatformUsagePage');
 
 const CounselorLayout = counselor('CounselorLayout');
 const CounselorDashboardPage = counselor('CounselorDashboardPage');
@@ -70,6 +76,9 @@ const ClassDetailPage = counselor('ClassDetailPage');
 const AssessmentManagementPage = builder('AssessmentManagementPage');
 const TemplateBuilderPage = builder('TemplateBuilderPage');
 
+const KnowledgeListPage = knowledge('KnowledgeListPage');
+const AiInsightsPage = knowledge('AiInsightsPage');
+
 const StudentLayout = student('StudentLayout');
 const StudentDashboardPage = student('StudentDashboardPage');
 const StudentProfilePage = student('StudentProfilePage');
@@ -77,6 +86,7 @@ const AssessmentListPage = student('AssessmentListPage');
 const AssessmentPlayerPage = student('AssessmentPlayerPage');
 const ResultListPage = student('ResultListPage');
 const ResultPage = student('ResultPage');
+const ResultReportPage = reports('ResultReportPage');
 const RecommendationPage = student('RecommendationPage');
 
 export function AppRoutes() {
@@ -106,9 +116,18 @@ export function AppRoutes() {
         </Route>
 
         <Route element={<StaffAuthLayout />}>
-          <Route path={paths.login} element={<LoginPage />} />
-          {/* Unlinked on purpose: administrators reach this by typing the URL. */}
-          <Route path={paths.adminLogin} element={<AdminLoginPage />} />
+          {/* Someone already signed in — in this tab or another — goes to their dashboard instead. */}
+          <Route element={<GuestRoute />}>
+            <Route path={paths.login} element={<LoginPage />} />
+            {/*
+              Counselor self-registration (migration 0034). Public and always routed — the page
+              itself renders the closure when an administrator has registration off, which is the
+              honest answer to a bookmark or a link somebody was sent an hour ago.
+            */}
+            <Route path={paths.counselorSignup} element={<CounselorSignupPage />} />
+            {/* Unlinked on purpose: administrators reach this by typing the URL. */}
+            <Route path={paths.adminLogin} element={<AdminLoginPage />} />
+          </Route>
           {/* Phase 6 (D7): the reset flow, in its honest no-email shape. */}
           <Route path={paths.forgotPassword} element={<ForgotPasswordPage />} />
           <Route path={paths.resetPassword} element={<ResetPasswordPage />} />
@@ -116,7 +135,11 @@ export function AppRoutes() {
 
         {/* Passwordless class access — public, and the only way a student signs in. */}
         <Route element={<StudentAccessLayout />}>
-          <Route path={paths.studentAccess} element={<StudentAccessPage />} />
+          <Route element={<GuestRoute />}>
+            <Route path={paths.studentAccess} element={<StudentAccessPage />} />
+            {/* The counselor's shared class link — the same screen, with the code pre-filled. */}
+            <Route path={paths.studentAccessWithCode} element={<StudentAccessPage />} />
+          </Route>
         </Route>
 
         {/* Any authenticated user. Also where a temporary password is forced (§38). */}
@@ -144,12 +167,14 @@ export function AppRoutes() {
             <Route path={paths.adminCanonicalPrograms} element={<CanonicalProgramPage />} />
             {/* Phase 5a: what the AI may know, and what it may say (§33, §13.7). */}
             <Route path={paths.adminKnowledge} element={<KnowledgeListPage />} />
+            <Route path={paths.adminAiInsights} element={<AiInsightsPage />} />
             <Route path={paths.adminAiPolicy} element={<AiPolicyPage />} />
             {/* Phase 5b + v1.5: the assessment table, then the builder + AI generator (§31).
                 Same pages as the counselor shell — scope is enforced server-side, not by routing. */}
             <Route path={paths.adminAssessmentTemplates} element={<AssessmentManagementPage />} />
             <Route path={paths.adminAssessmentTemplate} element={<TemplateBuilderPage />} />
             {/* Phase 6 (§20, §37): counselor accounts and the audit trail. */}
+            <Route path={paths.adminPlatformUsage} element={<PlatformUsagePage />} />
             <Route path={paths.adminCounselors} element={<CounselorManagementPage />} />
             {/* Prompt-driven: one counselor's students, Holland codes, and top recommendations. */}
             <Route path={paths.adminCounselorDetail} element={<CounselorDetailPage />} />
@@ -173,6 +198,14 @@ export function AppRoutes() {
               element={<AssessmentManagementPage />}
             />
             <Route path={paths.counselorAssessmentTemplate} element={<TemplateBuilderPage />} />
+            {/*
+              Migration 0031: the same two AI screens the admin shell serves. A counselor
+              contributes to the one shared corpus and sees back their own entries and their own
+              students' questions — all of which the server decides, so these are the identical
+              components on a different path rather than a scoped-down copy.
+            */}
+            <Route path={paths.counselorKnowledge} element={<KnowledgeListPage />} />
+            <Route path={paths.counselorAiInsights} element={<AiInsightsPage />} />
           </Route>
         </Route>
 
@@ -190,6 +223,13 @@ export function AppRoutes() {
             <Route path={paths.studentResult} element={<ResultPage />} />
             <Route path={paths.studentRecommendations} element={<RecommendationPage />} />
           </Route>
+          {/*
+            The printable export sits outside the shell on purpose: the page *is* the document, and a
+            sidebar, top bar and profiling banner have no place on a sheet a counselor signs.
+          */}
+          <Route path={paths.studentResultReport} element={<ResultReportPage />} />
+          {/* The same sheet holding several reports — "Print both" and the export dialog. */}
+          <Route path={paths.studentReports} element={<ResultReportPage />} />
         </Route>
       </Routes>
     </Suspense>

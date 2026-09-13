@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { authApi, type ChangePasswordPayload, type LoginPayload } from '@/services/authApi';
+import {
+  authApi,
+  type ChangePasswordPayload,
+  type CounselorSignupPayload,
+  type LoginPayload,
+} from '@/services/authApi';
 import { useAuthStore } from '@/stores/authStore';
 import { ApiRequestError } from '@/types/api';
 import type { User, UserRole } from '@/types/user';
@@ -100,5 +105,53 @@ export function useChangePassword() {
       clear();
       queryClient.clear();
     },
+  });
+}
+
+// --- Counselor self-signup (migration 0034) -------------------------------------------
+
+export const SIGNUP_STATUS_QUERY_KEY = ['auth', 'signup-status'] as const;
+
+/**
+ * Whether counselor registration is currently open.
+ *
+ * Unauthenticated, so it sits outside every other key in this file's namespace-by-session
+ * assumption — and it is **not** cached for long: an administrator closing registration is
+ * something a sign-in screen left open in a browser tab should notice, and the query is one cheap
+ * D1 read. `enabled` exists because the administrator door renders this form too and must never
+ * ask the question, let alone offer the answer.
+ */
+export function useSignupStatus({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: SIGNUP_STATUS_QUERY_KEY,
+    queryFn: () => authApi.signupStatus(),
+    enabled,
+    staleTime: 30 * 1000,
+    // A failed status check renders no link and no error. The server refuses a closed submission
+    // regardless of what this returns, so the worst case of being wrong here is a missing link.
+    retry: false,
+  });
+}
+
+export function useCounselorSignup() {
+  return useMutation({
+    mutationFn: (payload: CounselorSignupPayload) => authApi.counselorSignup(payload),
+  });
+}
+
+export function useResendSignupCode() {
+  return useMutation({
+    mutationFn: (email: string) => authApi.resendSignupCode(email),
+  });
+}
+
+/**
+ * Verify the emailed code. No session results — the counselor signs in through the ordinary login
+ * screen afterwards, which keeps token issuance on exactly one path.
+ */
+export function useVerifySignupCode() {
+  return useMutation({
+    mutationFn: ({ email, code }: { email: string; code: string }) =>
+      authApi.verifySignupCode(email, code),
   });
 }

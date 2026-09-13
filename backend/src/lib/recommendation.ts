@@ -418,6 +418,57 @@ export function rankTop<T>(
     .slice(0, limit);
 }
 
+/**
+ * `rankTop`, but at most one match per `key` — the top *things*, not the top rows.
+ *
+ * A `programs` row is one college's offering, so "BS Nursing" is not one candidate but one per
+ * college that offers it. Every one of those rows scores **identically**: §27 scores a program on
+ * its name-independent inputs — the RIASEC average of its linked careers, its recommended strand,
+ * the student's own academic average — none of which vary by institution. So a plain top-10 of
+ * rows returned ten copies of the same degree and buried BS Computer Science and BS Civil
+ * Engineering below the cut, telling a student whose top careers were nurse, web developer and
+ * civil engineer that every program for them was nursing.
+ *
+ * The key is the canonical program where the offering has been matched to one, and its name where
+ * it has not — an unmapped row is still the same degree as its unmapped twin, and keying those by
+ * `id` would let the duplicates straight back in.
+ *
+ * Which offering survives is decided by the same sort as the ranking, so it is the highest-scoring
+ * one and, on the ties that are the norm here, the alphabetically first — reproducible, per §26,
+ * rather than whatever the catalog query returned that day. The others are not lost: the card's
+ * "colleges offering this program" disclosure is the answer to *where*, and this list is the
+ * answer to *what*.
+ */
+export function rankTopDistinct<T>(
+  matches: T[],
+  score: (match: T) => number,
+  label: (match: T) => string,
+  key: (match: T) => string,
+  limit: number = TOP_N,
+): T[] {
+  const seen = new Set<string>();
+  const kept: T[] = [];
+
+  for (const match of [...matches].sort(
+    (a, b) => score(b) - score(a) || label(a).localeCompare(label(b)),
+  )) {
+    const identity = key(match);
+
+    if (seen.has(identity)) {
+      continue;
+    }
+
+    seen.add(identity);
+    kept.push(match);
+
+    if (kept.length === limit) {
+      break;
+    }
+  }
+
+  return kept;
+}
+
 // --- The deterministic reason string (§27) --------------------------------------------------
 
 /**

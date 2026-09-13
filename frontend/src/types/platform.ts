@@ -220,3 +220,35 @@ export interface CounselorStudents {
   };
   students: CounselorStudentRow[];
 }
+
+/**
+ * One Cloudflare limit this deployment can actually count itself against.
+ *
+ * `limit_source` is not decoration: a `platform` ceiling is Cloudflare's and can only be raised by
+ * changing plan, while a `self-imposed` one is a constant in this codebase. An admin looking at a
+ * bar near the top needs to know which lever, if any, exists.
+ */
+export interface UsageResource {
+  key: string;
+  label: string;
+  unit: string;
+  used: number;
+  limit: number;
+  limit_source: 'platform' | 'self-imposed';
+  /** Fraction at which the platform starts degrading on purpose, when it does. */
+  degrade_at: number | null;
+  detail: string;
+}
+
+/** A real limit that no binding reports at runtime — named so its absence is visible. */
+export interface UnmeteredLimit {
+  label: string;
+  limit: string;
+  why: string;
+}
+
+export interface PlatformUsage {
+  captured_at: string;
+  resources: UsageResource[];
+  unmetered: UnmeteredLimit[];
+}

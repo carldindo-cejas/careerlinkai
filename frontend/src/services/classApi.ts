@@ -27,8 +27,11 @@ export const classApi = {
     return unwrap(httpClient.get<ApiSuccess<ClassOptions>>('/counselor/class-options'));
   },
 
-  list(): Promise<Paginated<ClassRoom>> {
-    return unwrap(httpClient.get<ApiSuccess<Paginated<ClassRoom>>>('/counselor/classes'));
+  /** One page of the caller's classes. The page is the caller's to choose — see `listAll` for the lot. */
+  list(page = 1): Promise<Paginated<ClassRoom>> {
+    return unwrap(
+      httpClient.get<ApiSuccess<Paginated<ClassRoom>>>('/counselor/classes', { params: { page } }),
+    );
   },
 
   /**

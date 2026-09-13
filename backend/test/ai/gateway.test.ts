@@ -1,13 +1,16 @@
 /* eslint-disable @typescript-eslint/require-await -- async-interface stubs have nothing to await */
 import { eq } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { aiRequests } from '@/db/schema';
 import {
   AiGatewayService,
+  BGE_QUERY_PREFIX,
   EMBEDDING_BATCH_LIMIT,
+  EMBEDDING_MAX_INPUT_TOKENS,
   type WorkersAiClient,
 } from '@/modules/ai/ai-gateway-service';
+import { CHARS_PER_TOKEN } from '@/lib/chunker';
 import { db } from '../helpers';
 
 /**
@@ -169,5 +172,94 @@ describe('embed — the §33 batching contract (Phase 4.5 Step 3)', () => {
     await expect(
       gateway({ run: async () => ({ data: [[0.1]] }) }).embed(['a', 'b']),
     ).rejects.toThrow(/returned 1 vectors for 2 texts/);
+  });
+
+  /**
+   * AiNormalisation D1's tripwire. The embedder truncates past 512 tokens and reports nothing —
+   * a well-formed vector comes back either way — so the whole corpus embedded at two thirds of
+   * its length for as long as the ceiling was wrong, with no error and no log line. This is the
+   * line that makes that class of defect *observable*; it does not throw, because a degraded
+   * vector is still better than a failed ingestion.
+   */
+  it('logs when a text exceeds the embedding model input limit, and still embeds it', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const oversized = 'x'.repeat((EMBEDDING_MAX_INPUT_TOKENS + 50) * CHARS_PER_TOKEN);
+      const vectors = await gateway({
+        run: async (_model, inputs) => ({ data: (inputs.text as string[]).map(() => [0.1]) }),
+      }).embed([oversized, 'short text']);
+
+      expect(vectors).toHaveLength(2);
+
+      const logged = error.mock.calls
+        .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+        .find((line) => line.stage === 'embedding_input_truncated');
+
+      expect(logged).toMatchObject({ oversized_texts: 1, total_texts: 2 });
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('embeds a query with the BGE instruction prefix; passages stay bare (D3)', async () => {
+    const seen: string[] = [];
+    const client: WorkersAiClient = {
+      run: async (_model, inputs) => {
+        seen.push(...(inputs.text as string[]));
+
+        return { data: (inputs.text as string[]).map(() => [0.1]) };
+      },
+    };
+    const service = gateway(client);
+
+    await service.embedQuery('what strand should I take');
+    await service.embed(['A passage from the handbook.']);
+
+    expect(seen).toEqual([
+      `${BGE_QUERY_PREFIX}what strand should I take`,
+      'A passage from the handbook.',
+    ]);
+  });
+});
+
+describe('rerank — the cross-encoder that makes a low similarity floor safe', () => {
+  const MODELS_WITH_RERANK = { ...MODELS, rerank: '@cf/test/reranker' };
+
+  it('returns scored indexes, and soft-fails to undefined rather than taking retrieval down', async () => {
+    const ok = new AiGatewayService(
+      db(),
+      { run: async () => ({ response: [{ id: 1, score: 0.9 }, { id: 0, score: 0.2 }] }) },
+      MODELS_WITH_RERANK,
+    );
+
+    expect(await ok.rerank('q', ['a', 'b'])).toEqual([
+      { index: 1, score: 0.9 },
+      { index: 0, score: 0.2 },
+    ]);
+
+    const broken = new AiGatewayService(
+      db(),
+      {
+        run: async () => {
+          throw new Error('reranker down');
+        },
+      },
+      MODELS_WITH_RERANK,
+    );
+
+    expect(await broken.rerank('q', ['a', 'b'])).toBeUndefined();
+    // No rerank model configured is the same non-event, not a crash.
+    expect(await gateway({ run: async () => ({}) }).rerank('q', ['a'])).toBeUndefined();
+  });
+
+  it('drops entries pointing outside the supplied passages', async () => {
+    const service = new AiGatewayService(
+      db(),
+      { run: async () => ({ response: [{ id: 5, score: 0.9 }, { id: 0, score: 0.5 }] }) },
+      MODELS_WITH_RERANK,
+    );
+
+    expect(await service.rerank('q', ['only one'])).toEqual([{ index: 0, score: 0.5 }]);
   });
 });

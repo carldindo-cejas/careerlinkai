@@ -1,5 +1,5 @@
 import { useForm } from 'react-hook-form';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -37,6 +37,12 @@ import { ApiRequestError } from '@/types/api';
  * The caps are the only rules that are not "is it empty", and they exist to bound what gets put
  * on the wire, not to help the user — a real class code is 9 characters and a real username is
  * far under 50, so nobody reaching them has typed something that could have succeeded.
+ *
+ * **Reached from a shared link** (`/join/ABCD-2345`, the counselor's Share button), the code
+ * arrives already filled in and focus starts on the username — the one thing the student still
+ * has to type. The field stays editable: a link pasted with a stray character should be
+ * correctable, not a dead end. The code goes to the server exactly as the URL spelled it; the
+ * server normalizes it the same way it normalizes a typed one.
  */
 
 const RULES = {
@@ -56,12 +62,16 @@ export function StudentAccessPage() {
   const user = useAuthStore((state) => state.user);
   const join = useJoinClass();
 
+  const { classCode = '' } = useParams<{ classCode: string }>();
+  const sharedCode = classCode.trim();
+  const hasSharedCode = sharedCode.length > 0;
+
   const {
     register,
     handleSubmit,
     formState: { errors },
   } = useForm<AccessFormValues>({
-    defaultValues: { class_code: '', username: '' },
+    defaultValues: { class_code: sharedCode, username: '' },
   });
 
   if (user) {
@@ -87,7 +97,9 @@ export function StudentAccessPage() {
         {/* The page's `h1` — see the note in CredentialsLoginForm. */}
         <CardTitle as="h1">Join your class</CardTitle>
         <CardDescription>
-          Use the class code from your counselor and the username they gave you.
+          {hasSharedCode
+            ? 'Your class code is already filled in. Enter the username your counselor gave you.'
+            : 'Use the class code from your counselor and the username they gave you.'}
         </CardDescription>
       </CardHeader>
 
@@ -99,7 +111,7 @@ export function StudentAccessPage() {
             <Label htmlFor="class_code">Class code</Label>
             <Input
               id="class_code"
-              autoFocus
+              autoFocus={!hasSharedCode}
               autoComplete="off"
               spellCheck={false}
               placeholder="ABCD-2345"
@@ -123,6 +135,7 @@ export function StudentAccessPage() {
             <Label htmlFor="username">Username</Label>
             <Input
               id="username"
+              autoFocus={hasSharedCode}
               autoComplete="off"
               spellCheck={false}
               placeholder="juan.delacruz"

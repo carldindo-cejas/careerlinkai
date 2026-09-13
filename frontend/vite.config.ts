@@ -10,6 +10,15 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // jsPDF's optional dependencies, which the report PDF never calls — see the stub.
+      ...Object.fromEntries(
+        ['html2canvas', 'dompurify', 'canvg'].map((name) => [
+          name,
+          fileURLToPath(
+            new URL('./src/features/student/reports/pdf/optionalDependencyStub.ts', import.meta.url),
+          ),
+        ]),
+      ),
     },
   },
   build: {
@@ -89,7 +98,7 @@ export default defineConfig({
           environment: 'jsdom',
           setupFiles: ['./src/setupTests.ts'],
           css: true,
-          exclude: ['**/node_modules/**', '**/extractText.test.ts'],
+          exclude: ['**/node_modules/**', '**/extractText.test.ts', '**/*.browser.test.ts'],
           /**
            * 15 s, not Vitest's 5 s (P3-3).
            *
@@ -117,7 +126,11 @@ export default defineConfig({
         test: {
           name: 'browser',
           globals: true,
-          include: ['src/features/admin/utils/extractText.test.ts'],
+          /**
+           * `*.browser.test.ts` joined it for the same reason: the report-PDF test reads its own
+           * output back through pdf.js, which needs the real `Worker`.
+           */
+          include: ['src/features/admin/utils/extractText.test.ts', 'src/**/*.browser.test.ts'],
           /**
            * No `setupFiles`. That file exists to patch jsdom into looking like a browser, and this
            * project has one — importing it here would re-install polyfills over the real APIs and

@@ -22,6 +22,7 @@ import {
 import {
   serializeAssignment,
   serializeAttempt,
+  serializeReport,
   serializeResult,
   serializeStudentProfile,
   serializeTemplate,
@@ -215,6 +216,20 @@ studentRoutes.get('/results/:attemptId', async (c) => {
   return c.json(successEnvelope(serializeResult(view, dimensions), 'Result retrieved.'));
 });
 
+/** The printable export (`docs_report/`): result + identity block + item appendix. SCORED only. */
+studentRoutes.get('/results/:attemptId/report', async (c) => {
+  const db = createDatabase(c.env.DB);
+  const service = new AssessmentAttemptService(db, c.env);
+  const view = await service.viewReport(requireUser(c), c.req.param('attemptId'));
+
+  const dimensions = await db
+    .select()
+    .from(assessmentDimensions)
+    .where(eq(assessmentDimensions.assessmentTemplateId, view.template.id));
+
+  return c.json(successEnvelope(serializeReport(view, dimensions), 'Report retrieved.'));
+});
+
 // --- /counselor (role: counselor, admin) -----------------------------------------------------
 
 /**
@@ -268,7 +283,9 @@ counselorAssessmentRoutes.get('/assessment-templates', async (c) => {
       version,
       questionCount,
       dimensions,
-      template.assessmentTypeId === null ? null : (typeById.get(template.assessmentTypeId) ?? null),
+      template.assessmentTypeId === null
+        ? null
+        : (typeById.get(template.assessmentTypeId) ?? null),
       scoringsByTemplate.get(template.id) ?? [],
     );
   });

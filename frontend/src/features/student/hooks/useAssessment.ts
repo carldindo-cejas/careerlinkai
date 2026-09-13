@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { studentAssessmentApi } from '@/services/assessmentApi';
 import type { UpdateProfilePayload } from '@/types/assessment';
@@ -14,6 +14,7 @@ export const assessmentKeys = {
   attempt: (id: string) => ['student', 'attempts', id] as const,
   results: ['student', 'results'] as const,
   result: (id: string) => ['student', 'results', id] as const,
+  report: (id: string) => ['student', 'results', id, 'report'] as const,
 };
 
 export function useProfile() {
@@ -117,5 +118,15 @@ export function useResult(attemptId: string) {
   return useQuery({
     queryKey: assessmentKeys.result(attemptId),
     queryFn: () => studentAssessmentApi.getResult(attemptId),
+  });
+}
+
+/** One query per attempt, in the order given — the print sheet and the results screen's two cards. */
+export function useReports(attemptIds: string[]) {
+  return useQueries({
+    queries: attemptIds.map((attemptId) => ({
+      queryKey: assessmentKeys.report(attemptId),
+      queryFn: () => studentAssessmentApi.getReport(attemptId),
+    })),
   });
 }

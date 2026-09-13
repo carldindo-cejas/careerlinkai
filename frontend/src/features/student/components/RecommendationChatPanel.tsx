@@ -1,5 +1,13 @@
 import { Bot, Loader2, MessageSquare, Send, Trash2, User, X } from 'lucide-react';
-import { type FormEvent, useEffect, useRef, useState } from 'react';
+import {
+  type CSSProperties,
+  type FormEvent,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -8,7 +16,10 @@ import {
   useAskChat,
   useChatTranscript,
   useClearChat,
+  useFlagAnswer,
+  useRequestKnowledge,
 } from '@/features/student/hooks/useRecommendations';
+import { useStudentBrief } from '@/features/student/hooks/useStudentBrief';
 import { toast } from '@/stores/toastStore';
 import type { ChatMessage } from '@/types/recommendation';
 
@@ -22,10 +33,16 @@ import type { ChatMessage } from '@/types/recommendation';
  * does not get to contradict it. So the framing here is deliberate and repeated in the copy: the
  * assistant *explains* results it did not produce.
  *
- * A message with no `ai_request_id` is the deterministic fallback — the server built it from the
- * student's own computed results because the model was unavailable, out of quota, or said something
- * that failed the §34 guardrails. It is labelled, because presenting computed text as a generation
- * (or a generation as computed) is exactly the confusion §29 exists to prevent.
+ * ## What is under each answer
+ *
+ * Nothing, unless the student can do something about it. The panel used to print a provenance
+ * notice under every turn — *"not written by the AI"*, *"Based on: …"* — which was true and, four
+ * exchanges into a conversation about somebody's future, was most of the screen. Provenance is
+ * still recorded on every message and is what the admin review screens read; it is simply not
+ * furniture in a student's conversation any more. `MessageBubble` is where that decision lives.
+ *
+ * The two controls that remain are both actions: **This answer looks wrong** on a generated
+ * answer, and **Request to add to knowledge** on a refusal for want of coverage.
  *
  * ## Layout
  *
@@ -36,14 +53,24 @@ import type { ChatMessage } from '@/types/recommendation';
  */
 export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendations: boolean }) {
   const [open, setOpen] = useState(false);
+  const asideRef = useRef<HTMLElement>(null);
+  const height = useViewportFill(asideRef);
 
   return (
     <>
       {/* Desktop: a sticky column. `xl` rather than `lg` because the page is already two columns
           of cards, and a third at 1024px leaves all three too narrow to read. */}
-      <aside className="hidden xl:block xl:w-[380px] xl:shrink-0">
-        <div className="sticky top-6">
-          <ChatSurface hasRecommendations={hasRecommendations} className="h-[calc(100vh-6rem)]" />
+      {/* `self-stretch` is load-bearing: the row is `items-start`, which sizes this column to its
+          own content and leaves the sticky child no range to travel in — the panel would scroll
+          away with the cards. Stretching the column to the full row height gives it that range.
+          `top-[4.5rem]` clears the shell's own sticky top bar. */}
+      <aside ref={asideRef} className="hidden xl:block xl:w-[380px] xl:shrink-0 xl:self-stretch">
+        <div className="sticky top-[4.5rem]">
+          <ChatSurface
+            hasRecommendations={hasRecommendations}
+            className={height === null ? 'h-[calc(100vh-10rem)]' : undefined}
+            style={height === null ? undefined : { height }}
+          />
         </div>
       </aside>
 
@@ -91,13 +118,119 @@ export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendat
   );
 }
 
+/**
+ * The assistant on every other student page (AI-COVERAGE-PLAN.md Phase 4).
+ *
+ * 38 of the first 58 production questions came from students who had not finished both
+ * assessments — and the only place the assistant existed was the recommendations page. This is the
+ * same conversation, opened from a button on the dashboard, assessments and results pages. The
+ * recommendations page keeps its column and does not render this.
+ *
+ * A bottom sheet on a phone, a right-hand drawer from `sm` up.
+ */
+export function StudentChatLauncher() {
+  const [open, setOpen] = useState(false);
+  const brief = useStudentBrief();
+  const hasRecommendations = brief.data?.has_recommendations ?? false;
+
+  return (
+    <>
+      <Button
+        className="fixed bottom-5 right-5 z-40 shadow-lg"
+        onClick={() => setOpen(true)}
+        aria-expanded={open}
+      >
+        <MessageSquare className="size-4" aria-hidden="true" />
+        Ask CareerLinkAI
+      </Button>
+
+      {open ? (
+        <div
+          className="fixed inset-0 z-50 flex flex-col bg-black/50 sm:flex-row"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Ask CareerLinkAI"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setOpen(false);
+          }}
+        >
+          <button
+            type="button"
+            className="flex-1"
+            aria-label="Close the assistant"
+            onClick={() => setOpen(false)}
+          />
+          <div className="h-[85vh] bg-card sm:h-full sm:w-105">
+            <ChatSurface
+              hasRecommendations={hasRecommendations}
+              className="h-full"
+              onClose={() => setOpen(false)}
+            />
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** The main column's bottom padding (`sm:p-6`) — the chat ends there, not at the window's edge. */
+const PAGE_BOTTOM_GAP = 24;
+/** Below this the transcript is too short to read; a short window scrolls instead. */
+const MIN_HEIGHT = 384;
+
+/**
+ * The chat's height: from where its column starts to the bottom of the window.
+ *
+ * It was a fixed `100vh - 6rem`, which ignored everything above the column — the back link, the
+ * page padding, the profiling banner — so the column ran past the window and dragged the page into
+ * a scroll of blank space under a short list. Measured instead, the page is exactly as tall as its
+ * content. Re-measured on resize and whenever the page above it changes height (the banner
+ * arriving once the profile loads).
+ */
+function useViewportFill(ref: RefObject<HTMLElement | null>): number | null {
+  const [height, setHeight] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const node = ref.current;
+
+    if (node === null) return;
+
+    const measure = () => {
+      // Hidden below xl — nothing to size, and a zero-height box would measure as the top.
+      if (node.offsetParent === null) return;
+
+      const top = node.getBoundingClientRect().top + window.scrollY;
+
+      setHeight(Math.max(MIN_HEIGHT, Math.floor(window.innerHeight - top - PAGE_BOTTOM_GAP)));
+    };
+
+    measure();
+    window.addEventListener('resize', measure);
+
+    const observer =
+      typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    const main = node.closest('main');
+
+    if (observer && main?.parentElement) observer.observe(main.parentElement);
+
+    return () => {
+      window.removeEventListener('resize', measure);
+      observer?.disconnect();
+    };
+  }, [ref]);
+
+  return height;
+}
+
 function ChatSurface({
   hasRecommendations,
   className,
+  style,
   onClose,
 }: {
   hasRecommendations: boolean;
-  className?: string;
+  className?: string | undefined;
+  style?: CSSProperties | undefined;
   onClose?: () => void;
 }) {
   const { data: transcript, isLoading } = useChatTranscript();
@@ -141,7 +274,7 @@ function ChatSurface({
   }
 
   return (
-    <div className={cn('flex flex-col border border-border bg-card', className)}>
+    <div className={cn('flex flex-col border border-border bg-card', className)} style={style}>
       <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3">
         <div>
           <h2 className="text-sm font-semibold text-foreground">Ask about my results</h2>
@@ -259,28 +392,22 @@ function EmptyState({
   hasRecommendations: boolean;
   onPick: (message: string) => void;
 }) {
-  if (!hasRecommendations) {
-    return (
-      <div className="flex flex-col gap-2 text-sm text-muted-foreground">
-        <p>
-          Once you have finished both assessments your recommendations appear here, and I can talk
-          you through them.
-        </p>
-      </div>
-    );
-  }
-
-  const suggestions = [
-    'Why is this my top career match?',
-    'What is the difference between my top two programs?',
-    'What subjects should I focus on for these?',
-  ];
+  // Starter questions come from the Student Brief (AI-COVERAGE-PLAN.md Phase 4): each one is
+  // answered from the catalog or the student's own results, with no model call. A student with no
+  // recommendations still gets questions — catalog questions do not depend on their results.
+  const brief = useStudentBrief();
+  const suggestions =
+    brief.data?.suggestions ??
+    (hasRecommendations
+      ? ['What are my top 5 careers?', 'Which of my top careers pays the best?', 'What can you do?']
+      : ['What can you do?', 'What colleges are in Bohol?']);
 
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
-        Ask me anything about your recommendations. I can explain how a score was reached, compare
-        two options, or tell you what a program involves.
+        {hasRecommendations
+          ? 'Ask me anything about your recommendations. I can explain how a score was reached, compare two options, or tell you what a program involves.'
+          : 'Ask me about colleges, programs and careers in Bohol. Once you finish both assessments, I can explain your recommendations too.'}
       </p>
       <ul className="flex flex-col gap-2">
         {suggestions.map((suggestion) => (
@@ -300,14 +427,37 @@ function EmptyState({
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
+  const flag = useFlagAnswer();
+  const requestKnowledge = useRequestKnowledge();
   const isStudent = message.role === 'user';
+
   /**
-   * The fallback tell. An assistant message with no `ai_request_id` was **not** generated — the
-   * server built it from the student's own §27 results because the model could not answer. Saying
-   * so is not a disclaimer for its own sake: the whole trust model of this product rests on a
-   * student being able to tell a computed fact from a generated sentence.
+   * ## What sits under an answer, and what no longer does
+   *
+   * Two notices used to: *"A standard reply from CareerLinkAI — not written by the AI"* on any
+   * un-generated reply, and *"Based on: …"* naming the entries a sourced answer cited. Both were
+   * true, and both were provenance metadata printed under every single turn of a conversation a
+   * student is having about their own future. Four exchanges in, the panel was more footnote than
+   * answer. The provenance has not gone anywhere — `ai_request_id`, `sources` and the chunk trail
+   * are all still on the row, and the admin screens that act on them read the row, not this panel.
+   *
+   * What is left is the one line a student can *act* on, which is the only thing that earned a
+   * permanent place under an answer:
+   *
+   *   - a generated answer gets **This answer looks wrong** — a report that leads an admin
+   *     straight to the passage that produced it;
+   *   - a no-coverage refusal gets **Request to add to knowledge**, which is new (migration 0030)
+   *     and is the missing half of that refusal. The assistant already says "ask your counselor,
+   *     and they can add it here for next time"; this is the student saying yes without having to
+   *     go and find one.
+   *
+   * Nothing else — a Gate 1 answer in an admin's own words, an off-domain redirect, the
+   * deterministic fallback — carries a control, because there is nothing for the student to do
+   * about any of them.
    */
-  const isFallback = !isStudent && message.ai_request_id === null;
+  const isGenerated = !isStudent && message.ai_request_id !== null;
+  const canRequestKnowledge = !isStudent && message.knowledge_request === 'OFFERED';
+  const hasRequestedKnowledge = !isStudent && message.knowledge_request === 'REQUESTED';
 
   return (
     <li className={cn('flex gap-2.5', isStudent && 'flex-row-reverse')}>
@@ -334,10 +484,70 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           {message.content}
         </div>
 
-        {isFallback ? (
-          <p className="text-xs text-muted-foreground">
-            From your computed results — the assistant was unavailable.
+        {/*
+          Where a looked-up or grounded answer came from (AI-COVERAGE-PLAN.md Phase 4) — one short
+          line, only when a source is named and the answer kind was recorded, so a refusal and every
+          message written before answer kinds existed stay as they were.
+        */}
+        {!isStudent && message.sources.length > 0 && message.answer_kind ? (
+          <p className="text-xs text-muted-foreground">From: {message.sources.join(' · ')}</p>
+        ) : null}
+
+        {/*
+          Reporting a wrong answer (Phase 4). Offered only on generated answers: the flag's value is
+          the chunk trail on the answer's `ai_requests` row — an admin follows it to the passage
+          that produced it — and a reply with no such row would file a review item into a queue
+          built around a join that cannot find it.
+
+          One direction only, and it does not undo. An item that can vanish before anyone looks at
+          it is worse than a stale one.
+        */}
+        {isGenerated ? (
+          message.feedback === 'DOWN' ? (
+            <p className="text-xs text-muted-foreground">
+              Reported — a counselor will look at this.
+            </p>
+          ) : (
+            <button
+              type="button"
+              className="self-start text-xs text-muted-foreground underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
+              disabled={flag.isPending}
+              onClick={() => flag.mutate(message.id)}
+            >
+              This answer looks wrong
+            </button>
+          )
+        ) : null}
+
+        {/*
+          The refusal's second half (migration 0030). The question is already in the admin's
+          backlog — every one of these refusals logged it — so this is not what records it. It is
+          the student saying the gap matters to them, which is what lifts it above the questions
+          the retrieval merely missed.
+        */}
+        {/*
+          Migration 0033: the other end of that request. Before it, "Requested" was the last thing a
+          student ever heard — the answer could be written the same afternoon and nothing here would
+          change. Now the line says so (and the bell carries a notification), because a request that
+          is acted on silently looks, from this side, exactly like one that was ignored.
+        */}
+        {hasRequestedKnowledge && message.knowledge_answered_at ? (
+          <p className="text-xs font-medium text-foreground">
+            Answered — ask your question again to see it.
           </p>
+        ) : hasRequestedKnowledge ? (
+          <p className="text-xs text-muted-foreground">
+            Requested — your school has been asked to answer this.
+          </p>
+        ) : canRequestKnowledge ? (
+          <button
+            type="button"
+            className="self-start text-xs text-muted-foreground underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
+            disabled={requestKnowledge.isPending}
+            onClick={() => requestKnowledge.mutate(message.id)}
+          >
+            Request to add to knowledge
+          </button>
         ) : null}
       </div>
     </li>

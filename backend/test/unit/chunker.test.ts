@@ -8,11 +8,13 @@ import {
   MAX_CHUNK_TOKENS,
   OVERLAP_TOKENS,
 } from '@/lib/chunker';
+import { EMBEDDING_MAX_INPUT_TOKENS } from '@/modules/ai/ai-gateway-service';
 
 /**
  * The §33 chunker — pure, deterministic, and tested standalone like the other engines. The
- * ceiling matters twice over: an oversized chunk embeds badly, and downstream every chunk
- * row must fit D1's bound-parameter budget alongside its siblings.
+ * ceiling matters three times over: past the embedder's 512-token input limit a chunk is
+ * truncated silently before embedding, an oversized chunk embeds badly either way, and
+ * downstream every chunk row must fit D1's bound-parameter budget alongside its siblings.
  */
 
 describe('cleanText', () => {
@@ -45,7 +47,7 @@ describe('chunkText', () => {
     expect(chunks[0]!.chunkNumber).toBe(1);
   });
 
-  it('never exceeds the §33 ceiling of 800 tokens per chunk', () => {
+  it('never exceeds the ceiling of 420 tokens per chunk', () => {
     const text = Array.from(
       { length: 200 },
       (_, i) => `Sentence number ${i} talks about interests, careers and study habits at length.`,
@@ -55,6 +57,16 @@ describe('chunkText', () => {
       expect(chunk.tokenCount).toBeLessThanOrEqual(MAX_CHUNK_TOKENS);
       expect(chunk.tokenCount).toBe(estimateTokens(chunk.content));
     }
+  });
+
+  /**
+   * The ceiling is not a style choice: `@cf/baai/bge-base-en-v1.5` truncates input past 512
+   * tokens **silently**, so a chunk over the limit is stored whole and embedded in part — its
+   * tail unreachable by search, with no error anywhere (AiNormalisation D1). This asserts the
+   * invariant at the only place it can be asserted cheaply.
+   */
+  it('stays under the embedding model’s 512-token input limit', () => {
+    expect(MAX_CHUNK_TOKENS).toBeLessThan(EMBEDDING_MAX_INPUT_TOKENS);
   });
 
   it('numbers chunks sequentially from 1 — the unique index depends on it', () => {

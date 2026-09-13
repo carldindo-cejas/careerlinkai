@@ -1,4 +1,4 @@
-import { GraduationCap, Loader2, Plus } from 'lucide-react';
+import { GraduationCap, Loader2, Plus, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -11,10 +11,11 @@ import { Pagination } from '@/components/ui/pagination';
 import { SearchInput } from '@/components/ui/search-input';
 import { Select } from '@/components/ui/select';
 import { CollegeForm } from '@/features/admin/components/CollegeForm';
-import { useColleges } from '@/features/admin/hooks/useCatalog';
+import { useColleges, useDeleteCollege } from '@/features/admin/hooks/useCatalog';
 import { useListFilters } from '@/hooks/useListFilters';
 import { collegeDetailPath } from '@/routes/paths';
 import type { CatalogListQuery } from '@/services/catalogApi';
+import { toast } from '@/stores/toastStore';
 import type { College } from '@/types/catalog';
 
 /** One screen of colleges. */
@@ -159,36 +160,106 @@ export function CollegeListPage() {
   );
 }
 
+/**
+ * One college in the grid.
+ *
+ * ## The whole box opens it, not just the name
+ *
+ * There used to be two links on this card — the title and the program count — and a card-sized
+ * area between them that looked exactly as clickable and did nothing. An admin working through a
+ * list of twenty campuses hits that dead zone constantly, and "it only works if you hit the words"
+ * is not a thing anyone should have to learn about a list of boxes.
+ *
+ * It is done with one **stretched link** rather than an `onClick` on the card, and that is the
+ * whole reason this is worth a comment: the anchor is still a real anchor, so it keeps its href,
+ * its middle-click, its right-click "open in new tab", its focus ring and its place in the tab
+ * order. A div with a click handler has none of those and has to fake every one of them badly.
+ * The overlay is `absolute inset-0`, and the card is already `relative`.
+ *
+ * Everything that must stay clickable on top of it — the delete button — needs a stacking context
+ * of its own (`relative z-10`), because the overlay covers the card edge to edge.
+ */
 function CollegeCard({ college }: { college: College }) {
   const programCount = college.programs_count ?? 0;
+  const deleteCollege = useDeleteCollege();
 
   return (
-    <Card className="h-full transition-colors hover:border-primary">
+    <Card className="group h-full transition-colors hover:border-primary focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1">
+      {/*
+        The stretched link. `aria-label` rather than the visible name because the name is already
+        on the card as a heading — without it a screen reader announces the whole card's text as
+        the link, and with plain "college.name" it would announce the name twice in a row.
+
+        Its own outline is suppressed because a ring drawn on a full-bleed overlay traces the card
+        twice over; the *card* takes the focus ring instead (`focus-within` above), which is the
+        shape a keyboard user is actually about to activate.
+      */}
+      <Link
+        to={collegeDetailPath(college.id)}
+        aria-label={`Open ${college.name}`}
+        className="absolute inset-0 z-0 rounded-none focus-visible:outline-none"
+      />
+
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
-          <CardTitle>
-            <Link
-              to={collegeDetailPath(college.id)}
-              className="hover:underline focus-visible:underline focus-visible:outline-none"
+          <CardTitle className="group-hover:underline">{college.name}</CardTitle>
+
+          <div className="flex items-center gap-1">
+            <Badge tone={college.status === 'active' ? 'success' : 'neutral'}>
+              {college.status}
+            </Badge>
+
+            {/*
+              Deleting from the list, not only from inside the college (§8).
+
+              The wording is the detail page's, word for word, and deliberately so: archiving is
+              the intended way to retire a college — the row and everything pointing at it
+              survives, so a recommendation a student has already seen never dangles — and this is
+              the harsher, rarer act. An admin who reaches for it from a grid, where there is no
+              Archive button beside it, is the one most likely not to know that, so the confirm is
+              where the choice gets offered.
+            */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="relative z-10"
+              loading={deleteCollege.isPending}
+              aria-label={`Delete ${college.name}`}
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    `Remove ${college.name} from the catalog? Its programs go with it. If you only want to stop recommending it, open it and archive it instead.`,
+                  )
+                ) {
+                  return;
+                }
+
+                deleteCollege.mutate(college.id, {
+                  onSuccess: () => toast.success(`${college.name} was removed from the catalog.`),
+                  onError: (error) =>
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : `${college.name} could not be removed.`,
+                    ),
+                });
+              }}
             >
-              {college.name}
-            </Link>
-          </CardTitle>
-          <Badge tone={college.status === 'active' ? 'success' : 'neutral'}>{college.status}</Badge>
+              <Trash2 className="size-4" aria-hidden="true" />
+            </Button>
+          </div>
         </div>
         {college.description ? <CardDescription>{college.description}</CardDescription> : null}
       </CardHeader>
 
       <CardContent>
-        <Link
-          to={collegeDetailPath(college.id)}
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-        >
+        {/* Plain text now: the card itself is the link, and a link inside a link is not a thing. */}
+        <p className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
           <GraduationCap className="size-4" aria-hidden="true" />
           {programCount === 0
             ? 'No programs yet'
             : `${programCount} ${programCount === 1 ? 'program' : 'programs'}`}
-        </Link>
+        </p>
       </CardContent>
     </Card>
   );

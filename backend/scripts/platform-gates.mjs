@@ -220,6 +220,32 @@ for (const name of REQUIRED_NUMERIC_VARS) {
   );
 }
 
+/**
+ * **The retrieval tuning vars, in every scope** (AiNormalisation Phase 0).
+ *
+ * Neither of these throws when absent — `retrievalSimilarityThreshold` falls back to the measured
+ * default and an unset rerank model degrades to plain similarity order. That is exactly why they
+ * are gated here: a scope that quietly omits them retrieves *worse* with no error anywhere, which
+ * is the same silent-failure shape D1 and D2 were.
+ */
+const REQUIRED_RETRIEVAL_VARS = ['WORKERS_AI_RERANK_MODEL', 'RETRIEVAL_SIMILARITY_THRESHOLD'];
+
+for (const name of REQUIRED_RETRIEVAL_VARS) {
+  const declared = (wranglerToml.match(new RegExp(`^${name} = "`, 'gm')) ?? []).length;
+
+  gate(
+    `wrangler.toml: ${name} declared in all three scopes`,
+    declared >= 3,
+    `Found ${declared} declaration(s); expected 3. A scope missing this retrieves worse, silently.`,
+  );
+
+  gate(
+    `wrangler.test.toml: ${name} declared (the suite boots the same config code)`,
+    new RegExp(`^${name} = "`, 'm').test(wranglerTestToml),
+    `Add ${name} to wrangler.test.toml's [vars].`,
+  );
+}
+
 // The Phase H operational surfaces (audit H1 / M11 / observability). Each is a config-only
 // capability a deploy ships fine without — so a missing one is exactly the silent kind of gap
 // these gates exist to catch: a dropped dead-lettered job, unpersisted logs, no housekeeping.
@@ -697,7 +723,17 @@ function weighRoutes(distDir, kib) {
    */
   const ENTRY_BUDGET = 430 * 1024;
   const ROUTE_COLD_BUDGET = 700 * 1024;
-  const STUDENT_SCREEN_BUDGET = 530 * 1024;
+  /**
+   * Raised 530 → 560 KiB on 2026-09-13, deliberately. The `normalizeai` branch took the student
+   * screen to 551 KiB with three features students asked for: the redesigned app shell (nav drawer,
+   * collapsible groups, back button — `AppShell.tsx`, shared by every role), the results export
+   * dialog, and the assistant on the recommendations page. Loading the chat panel lazily took it
+   * back to 542 KiB; the rest is the shell, and the export dialog shares its Radix dialog code with
+   * the shell's mobile drawer, so splitting it saves ~3 KiB. The next real cut is moving
+   * `AssessmentPlayerPage` into a route group of its own. Do not raise this again without a row
+   * like this one saying what was bought.
+   */
+  const STUDENT_SCREEN_BUDGET = 560 * 1024;
 
   /**
    * **`/join` is the only screen with a budget of its own, because it is the only screen a

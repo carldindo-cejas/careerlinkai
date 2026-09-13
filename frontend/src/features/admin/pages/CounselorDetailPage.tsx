@@ -1,17 +1,17 @@
-import { ArrowLeft, ChevronDown, Loader2 } from 'lucide-react';
+import { ChevronDown, Loader2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 
 import { StudentRecommendationLists } from '@/components/recommendations/StudentRecommendationLists';
 import { CounselorClassesPanel } from '@/features/admin/components/CounselorClassesPanel';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/components/ui/cn';
 import { Input } from '@/components/ui/input';
+import { Pagination } from '@/components/ui/pagination';
 import { useCounselorStudents } from '@/features/admin/hooks/usePlatformAdmin';
-import { paths } from '@/routes/paths';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import type { CounselorStudentRow } from '@/types/platform';
 
 /**
@@ -36,7 +36,6 @@ export function CounselorDetailPage() {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortField>('name');
   const [direction, setDirection] = useState<SortDirection>('asc');
-  const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const students = data?.students ?? [];
@@ -57,9 +56,7 @@ export function CounselorDetailPage() {
     return direction === 'asc' ? sorted : sorted.reverse();
   }, [students, search, sort, direction]);
 
-  const lastPage = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
-  const currentPage = Math.min(page, lastPage);
-  const pageItems = filtered.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE);
+  const { pageItems, pagination, setPage } = useClientPagination(filtered, PER_PAGE);
 
   function onSort(field: SortField) {
     if (field === sort) {
@@ -93,18 +90,13 @@ export function CounselorDetailPage() {
   }
 
   if (isError) {
-    return (
-      <div className="flex flex-col gap-4">
-        <BackLink />
-        <Alert>We could not load this counselor’s students. {error.message}</Alert>
-      </div>
-    );
+    return <Alert>We could not load this counselor’s students. {error.message}</Alert>;
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <BackLink />
-
+      {/* "All counselors" used to sit here and in the error branch above; the shell's back control
+          (AppShell) now stands one step above every page, error state included. */}
       <div>
         <h1 className="text-xl font-semibold text-foreground">{data.counselor.name}</h1>
         <p className="text-sm text-muted-foreground">
@@ -190,46 +182,10 @@ export function CounselorDetailPage() {
             </div>
           </Card>
 
-          {lastPage > 1 ? (
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
-                Page {currentPage} of {lastPage}
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={currentPage <= 1}
-                  onClick={() => setPage(currentPage - 1)}
-                >
-                  Previous
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={currentPage >= lastPage}
-                  onClick={() => setPage(currentPage + 1)}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-          ) : null}
+          <Pagination pagination={pagination} onPageChange={setPage} noun="students" />
         </>
       )}
     </div>
-  );
-}
-
-function BackLink() {
-  return (
-    <Link
-      to={paths.adminCounselors}
-      className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-    >
-      <ArrowLeft className="size-4" aria-hidden="true" />
-      All counselors
-    </Link>
   );
 }
 
@@ -332,7 +288,7 @@ function StudentRows({
             )}
           >
             <div className="overflow-hidden">
-              {/* The same lists the counselor's own `ClassRecommendationsPanel` renders — one
+              {/* The same lists the counselor's own `RosterStudentDetails` renders — one
                   component, so the two staff views of a student cannot drift apart. */}
               <StudentRecommendationLists
                 careers={student.top_careers}

@@ -120,6 +120,40 @@ export interface AssessmentResult {
   dimensions: DimensionScore[];
 }
 
+/** One administered item as the printable report's appendix lists it. Only ever sent for a SCORED attempt. */
+export interface ReportItem {
+  order_number: number;
+  question_text: string;
+  /** Every dimension the item loads onto, with its weight — RIASEC items load onto exactly one. */
+  loads_on: { code: string; weight: number }[];
+  /** The highest score any of the question's options carries — the engine's `maxOptionScore`. */
+  max_score: number;
+  /** Null for an optional item the student skipped: no response, no score, prorated out. */
+  answer: { label: string | null; score: number } | null;
+}
+
+/**
+ * The printable results export (`docs_report/`): the plain result plus who sat it, under whom,
+ * which version, and the item-by-item appendix.
+ */
+export interface AssessmentReport extends Omit<AssessmentResult, 'student'> {
+  instrument: {
+    version_number: number;
+    question_count: number;
+    /** The version's §23 composite weights, keyed by dimension code — null for a Holland-code instrument. */
+    composite_weights: Record<string, number> | null;
+  };
+  student: {
+    name: string;
+    grade_level: string | null;
+    strand: Strand | null;
+    username: string | null;
+  };
+  class: { name: string; academic_year: string };
+  counselor: { name: string } | null;
+  items: ReportItem[];
+}
+
 export interface AssessmentTemplate {
   id: string;
   category: AssessmentCategory;

@@ -491,8 +491,9 @@ describe('the remaining §44 listeners', () => {
     await database.insert(knowledgeDocuments).values({
       id: documentId,
       uploadedBy: admin.id,
+      title: 'career-guide.pdf',
       fileName: 'career-guide.pdf',
-      fileType: 'pdf',
+      sourceType: 'pdf',
       storagePath: `knowledge/${documentId}/career-guide.pdf`,
       processingStatus: 'UPLOADED',
       visibility: 'GLOBAL',

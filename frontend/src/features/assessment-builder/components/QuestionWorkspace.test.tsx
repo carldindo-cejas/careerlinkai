@@ -8,6 +8,11 @@ import { QuestionWorkspace } from '@/features/assessment-builder/components/Ques
 import { builderApi } from '@/services/builderApi';
 import type { AuthorQuestion, BuilderDimension, VersionReview } from '@/types/builder';
 
+/* The shared add-question contract, out at the repository root: `backend/test/assessment/
+   builder.test.ts` POSTs this same object through the real API. Relative rather than aliased
+   because the two packages resolve `@` to different trees. */
+import { ADD_QUESTION_REQUEST } from '../../../../../contracts/assessment-builder';
+
 vi.mock('@/services/builderApi');
 
 /**
@@ -256,6 +261,82 @@ describe('editing the question', () => {
     );
   });
 
+  /**
+   * `value` is the stored answer key, and two options sharing one is silent ambiguity rather than a
+   * visible fault — scoring reads `selected_option_id`, so nothing breaks; the export just has two
+   * rows meaning the same thing (ASSESSMENT-FIX §6). Deriving the new key from the array length is
+   * what produced them: remove the middle of three and add one, and the newcomer is "3" alongside
+   * the option that already is.
+   */
+  it('gives a new option a key nothing else is using', async () => {
+    const user = userEvent.setup();
+
+    renderWorkspace({
+      review: review({
+        questions: [
+          question({
+            options: [
+              { id: 'op1', label: 'One', value: '1', score: 1, order_number: 1 },
+              { id: 'op2', label: 'Two', value: '2', score: 2, order_number: 2 },
+              { id: 'op3', label: 'Three', value: '3', score: 3, order_number: 3 },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    await user.click(screen.getByRole('button', { name: /remove option 2/i }));
+    await user.click(screen.getByRole('button', { name: /add option/i }));
+
+    await waitFor(() =>
+      expect(builderApi.updateQuestion).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          options: [
+            { label: 'One', value: '1', score: 1 },
+            { label: 'Three', value: '3', score: 3 },
+            { label: 'Option 4', value: '4', score: 0 },
+          ],
+        }),
+      ),
+    );
+  });
+
+  /** The key follows the label — but not off a cliff. A collision leaves the old key in place. */
+  it('keeps an option’s key when the label would duplicate another’s', async () => {
+    const user = userEvent.setup();
+
+    renderWorkspace({
+      review: review({
+        questions: [
+          question({
+            options: [
+              { id: 'op1', label: 'Agree', value: 'Agree', score: 2, order_number: 1 },
+              { id: 'op2', label: 'Disagree', value: '2', score: 1, order_number: 2 },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const second = screen.getByLabelText(/option 2 label/i);
+
+    await user.clear(second);
+    await user.paste('Agree');
+
+    await waitFor(() =>
+      expect(builderApi.updateQuestion).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          options: [
+            { label: 'Agree', value: 'Agree', score: 2 },
+            { label: 'Agree', value: '2', score: 1 },
+          ],
+        }),
+      ),
+    );
+  });
+
   it('saves a changed dimension mapping', async () => {
     const user = userEvent.setup();
 
@@ -273,14 +354,53 @@ describe('editing the question', () => {
 });
 
 describe('add, duplicate and delete', () => {
-  it('adds a question', async () => {
+  /**
+   * **The payload is asserted against the shared contract, not against itself.**
+   *
+   * This test used to assert `toHaveBeenCalled()` — which passed happily for months while every
+   * real click returned a 422, because the mock accepted a body the server refused. `question_text`
+   * was `''` and the server's write schema required at least one character (ASSESSMENT-FIX §1).
+   * Pinning the payload to `contracts/assessment-builder.ts`, which the backend suite POSTs through
+   * the real API, is what makes that class of disagreement fail CI rather than reach an author.
+   */
+  it('sends the agreed add-question payload', async () => {
     const user = userEvent.setup();
 
     renderWorkspace();
 
     await user.click(screen.getByRole('button', { name: /^add$/i }));
 
-    await waitFor(() => expect(builderApi.addQuestions).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(builderApi.addQuestions).toHaveBeenCalledWith(
+        'vv000000-0000-4000-8000-000000000001',
+        ADD_QUESTION_REQUEST.questions,
+      ),
+    );
+  });
+
+  /**
+   * §5: an add the editor does not move to is indistinguishable from nothing happening. The new
+   * item lands at the bottom of the navigator, possibly below the fold, and the author is left
+   * looking at the question they were already editing.
+   */
+  it('moves the editor to the question it just created', async () => {
+    const user = userEvent.setup();
+
+    renderWorkspace({
+      review: review({
+        questions: [
+          question(),
+          question({ id: 'qq2', order_number: 2, question_text: 'The one just added.' }),
+        ],
+      }),
+    });
+
+    // The editor opens on question 1; the server answers the add with the id of question 2.
+    expect(screen.getByLabelText(/^question$/i)).toHaveValue(question().question_text);
+
+    await user.click(screen.getByRole('button', { name: /^add$/i }));
+
+    expect(await screen.findByDisplayValue('The one just added.')).toBeInTheDocument();
   });
 
   it('duplicates a question', async () => {

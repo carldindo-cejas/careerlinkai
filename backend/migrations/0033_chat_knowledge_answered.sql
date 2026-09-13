@@ -1,0 +1,33 @@
+-- Migration 0033 — telling the student who asked
+--
+-- Prompt-driven (2026-09-11), the last gap found testing migration 0031 against production.
+--
+-- Migration 0030 gave a refused student a button — *"Request to add to knowledge"* — and 0031 made
+-- answering that request take the question off the staff backlog. Neither ever told the student.
+-- They pressed the button, saw *"Requested — your school has been asked to answer this"*, and
+-- from then on the only way to find out was to ask again on the off chance. A request that is
+-- acted on silently is, from the side of the person who made it, indistinguishable from one that
+-- was ignored.
+--
+-- When a question is resolved as ANSWERED, `KnowledgeQuestionResolutionService` now finds the
+-- students who REQUESTED it, sends each one in-app notification, and stamps their message here.
+--
+-- ## Why a timestamp on the message rather than a third `knowledge_request` value
+--
+-- The obvious shape is `knowledge_request = 'ANSWERED'`, and it cannot be had cheaply: 0030 put a
+-- CHECK constraint on that column, and SQLite cannot alter a CHECK without rebuilding the table —
+-- a full copy of `chat_messages` inside a D1 migration, for a vocabulary word.
+--
+-- The timestamp is also the better fact. It is the **idempotency key** for the notification:
+-- only rows where it is NULL are notified, and the same statement that notifies them sets it, so
+-- two people answering one question, an edit re-saving an answer, or the backfill running again
+-- can never tell a student twice. And it keeps REQUESTED meaning what it always meant — the
+-- student asked — which the admin backlog still counts.
+--
+-- It is not cleared if the answer is later archived. The student *was* answered; if the question
+-- lapses back onto the backlog and is answered again, they are not re-notified, which is the quiet
+-- side to err on for a message about a question they asked weeks ago.
+--
+-- NULL on every row written before this migration, which is correct: nobody was told.
+
+ALTER TABLE chat_messages ADD COLUMN knowledge_answered_at TEXT;

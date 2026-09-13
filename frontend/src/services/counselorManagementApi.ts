@@ -34,9 +34,14 @@ export const counselorManagementApi = {
     );
   },
 
-  async remove(id: string): Promise<void> {
-    await httpClient.delete(`/admin/counselors/${id}`);
-  },
+  /*
+   * There is deliberately no `remove` here. `DELETE /admin/counselors/{id}` still exists on the
+   * server — it is a correct endpoint with a correct refusal (audit F5: a counselor holding
+   * classes cannot be deleted) — but the UI no longer offers it. Suspend covers every real case
+   * and leaves the account's audit history attached to a row that still resolves; deletion from a
+   * dense list is a one-click way to lose that. Do not add this back without deciding what happens
+   * to the audit trail first.
+   */
 
   /**
    * Issue a counselor a fresh temporary password (audit C2) — **the staff account recovery path.**

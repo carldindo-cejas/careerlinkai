@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { rosterKeys } from '@/features/counselor/hooks/useRoster';
 import { counselorAssessmentApi } from '@/services/assessmentApi';
 
 /**
@@ -30,6 +31,11 @@ export function useClassAssignments(classId: string) {
   });
 }
 
+/**
+ * Assigning changes the roster too: every student's progress is counted out of the class's
+ * assignments, so a new one turns every "4/4 done" into "4/5 pending" on the spot. The roster
+ * cache is invalidated here rather than left to go stale until the next visit.
+ */
 export function useAssignAssessment(classId: string) {
   const queryClient = useQueryClient();
 
@@ -38,6 +44,7 @@ export function useAssignAssessment(classId: string) {
       counselorAssessmentApi.assign(classId, versionId, deadline),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: assignmentKeys.forClass(classId) });
+      void queryClient.invalidateQueries({ queryKey: rosterKeys.forClass(classId) });
     },
   });
 }
@@ -54,6 +61,8 @@ export function useCloseAssignment(classId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: assignmentKeys.forClass(classId) });
       void queryClient.invalidateQueries({ queryKey: assignmentKeys.resultsForClass(classId) });
+      // Closing expires the attempts still in progress, so the roster's per-student standing moves.
+      void queryClient.invalidateQueries({ queryKey: rosterKeys.forClass(classId) });
     },
   });
 }
@@ -77,6 +86,8 @@ export function useResetAttempt(classId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: assignmentKeys.resultsForClass(classId) });
       void queryClient.invalidateQueries({ queryKey: assignmentKeys.forClass(classId) });
+      // A voided attempt stops counting as completed — that student drops back a step.
+      void queryClient.invalidateQueries({ queryKey: rosterKeys.forClass(classId) });
     },
   });
 }

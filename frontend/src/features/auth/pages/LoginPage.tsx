@@ -15,6 +15,10 @@ export function LoginPage() {
       description="For counselors."
       allow={['counselor']}
       refusalMessage="This login is for counselors only."
+      // Migration 0034: the only door that offers self-registration, and only while an
+      // administrator has it open. /admin-login deliberately does not — an admin account is not
+      // something anybody signs themselves up for.
+      showSignupLink
     />
   );
 }

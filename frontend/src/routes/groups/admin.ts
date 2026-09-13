@@ -14,8 +14,10 @@ export { CollegeListPage } from '@/features/admin/pages/CollegeListPage';
 export { CollegeDetailPage } from '@/features/admin/pages/CollegeDetailPage';
 export { CareerListPage } from '@/features/admin/pages/CareerListPage';
 export { CanonicalProgramPage } from '@/features/admin/pages/CanonicalProgramPage';
-export { KnowledgeListPage } from '@/features/admin/pages/KnowledgeListPage';
+// The knowledge base and the AI-gaps report moved to `groups/knowledge.ts` (migration 0031):
+// both staff shells route to them now, so they belong to neither.
 export { AiPolicyPage } from '@/features/admin/pages/AiPolicyPage';
 export { CounselorManagementPage } from '@/features/admin/pages/CounselorManagementPage';
 export { CounselorDetailPage } from '@/features/admin/pages/CounselorDetailPage';
+export { PlatformUsagePage } from '@/features/admin/pages/PlatformUsagePage';
 export { AuditLogPage } from '@/features/admin/pages/AuditLogPage';

@@ -3,7 +3,6 @@ import { useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -86,96 +85,93 @@ export function RosterBuilder({ classId, onConfirmed }: RosterBuilderProps) {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Add students</CardTitle>
-        <CardDescription>
-          {step === 'paste'
-            ? 'Paste one name per line. Usernames are generated for you to review before any account is created.'
-            : 'Check the usernames. Students type these to sign in, so edit anything that looks wrong.'}
-        </CardDescription>
-      </CardHeader>
+    // No card of its own: this is the body of the "Add students" modal, and the modal supplies
+    // the heading. The step line stays here because only this component knows which step it is on.
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        {step === 'paste'
+          ? 'Paste one name per line. Usernames are generated for you to review before any account is created.'
+          : 'Check the usernames. Students type these to sign in, so edit anything that looks wrong.'}
+      </p>
 
-      <CardContent className="flex flex-col gap-4">
-        {step === 'paste' ? (
-          <>
-            {previewError ? <Alert>{previewError.message}</Alert> : null}
+      {step === 'paste' ? (
+        <>
+          {previewError ? <Alert>{previewError.message}</Alert> : null}
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="names">Student names</Label>
-              <Textarea
-                id="names"
-                rows={8}
-                value={pasted}
-                onChange={(event) => setPasted(event.target.value)}
-                placeholder={'Juan Dela Cruz\nMaria Santos\nJosé Peña'}
-                aria-invalid={tooMany}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="names">Student names</Label>
+            <Textarea
+              id="names"
+              rows={8}
+              value={pasted}
+              onChange={(event) => setPasted(event.target.value)}
+              placeholder={'Juan Dela Cruz\nMaria Santos\nJosé Peña'}
+              aria-invalid={tooMany}
+            />
+            <p className="text-sm text-muted-foreground">
+              {names.length} {names.length === 1 ? 'name' : 'names'}
+              {tooMany ? (
+                <span className="text-destructive">
+                  {' '}
+                  — that is over the limit of {MAX_NAMES} per batch. Split it up.
+                </span>
+              ) : null}
+            </p>
+          </div>
+
+          <div>
+            <Button
+              onClick={onPreview}
+              loading={preview.isPending}
+              disabled={names.length === 0 || tooMany}
+            >
+              <UserPlus className="size-4" aria-hidden="true" />
+              Generate usernames
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          {/*
+            A 422 here means the whole batch was refused. The message alone is useless to
+            a counselor staring at 40 rows, so the per-row errors below say which ones.
+          */}
+          {confirmError ? (
+            <Alert>
+              {Object.keys(confirmError.errors).length > 0
+                ? 'No accounts were created. Fix the highlighted rows and confirm again.'
+                : confirmError.message}
+            </Alert>
+          ) : null}
+
+          <ul className="flex flex-col gap-3">
+            {rows.map((row, index) => (
+              <RosterRow
+                key={index}
+                index={index}
+                row={row}
+                error={confirmError}
+                onChange={(patch) => updateRow(index, patch)}
+                onRemove={() => removeRow(index)}
               />
-              <p className="text-sm text-muted-foreground">
-                {names.length} {names.length === 1 ? 'name' : 'names'}
-                {tooMany ? (
-                  <span className="text-destructive">
-                    {' '}
-                    — that is over the limit of {MAX_NAMES} per batch. Split it up.
-                  </span>
-                ) : null}
-              </p>
-            </div>
+            ))}
+          </ul>
 
-            <div>
-              <Button
-                onClick={onPreview}
-                loading={preview.isPending}
-                disabled={names.length === 0 || tooMany}
-              >
-                <UserPlus className="size-4" aria-hidden="true" />
-                Generate usernames
-              </Button>
-            </div>
-          </>
-        ) : (
-          <>
-            {/*
-              A 422 here means the whole batch was refused. The message alone is useless to
-              a counselor staring at 40 rows, so the per-row errors below say which ones.
-            */}
-            {confirmError ? (
-              <Alert>
-                {Object.keys(confirmError.errors).length > 0
-                  ? 'No accounts were created. Fix the highlighted rows and confirm again.'
-                  : confirmError.message}
-              </Alert>
-            ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={onConfirm} loading={confirm.isPending} disabled={rows.length === 0}>
+              {confirm.isPending
+                ? 'Creating accounts…'
+                : `Confirm ${rows.length} ${rows.length === 1 ? 'student' : 'students'}`}
+            </Button>
 
-            <ul className="flex flex-col gap-3">
-              {rows.map((row, index) => (
-                <RosterRow
-                  key={index}
-                  index={index}
-                  row={row}
-                  error={confirmError}
-                  onChange={(patch) => updateRow(index, patch)}
-                  onRemove={() => removeRow(index)}
-                />
-              ))}
-            </ul>
-
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={onConfirm} loading={confirm.isPending} disabled={rows.length === 0}>
-                {confirm.isPending
-                  ? 'Creating accounts…'
-                  : `Confirm ${rows.length} ${rows.length === 1 ? 'student' : 'students'}`}
-              </Button>
-
-              <Button variant="secondary" onClick={startOver}>
-                <ArrowLeft className="size-4" aria-hidden="true" />
-                Back to the name list
-              </Button>
-            </div>
-          </>
-        )}
-      </CardContent>
-    </Card>
+            <Button variant="secondary" onClick={startOver}>
+              <ArrowLeft className="size-4" aria-hidden="true" />
+              Back to the name list
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
