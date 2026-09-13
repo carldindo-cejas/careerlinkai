@@ -723,7 +723,17 @@ function weighRoutes(distDir, kib) {
    */
   const ENTRY_BUDGET = 430 * 1024;
   const ROUTE_COLD_BUDGET = 700 * 1024;
-  const STUDENT_SCREEN_BUDGET = 530 * 1024;
+  /**
+   * Raised 530 → 560 KiB on 2026-09-13, deliberately. The `normalizeai` branch took the student
+   * screen to 551 KiB with three features students asked for: the redesigned app shell (nav drawer,
+   * collapsible groups, back button — `AppShell.tsx`, shared by every role), the results export
+   * dialog, and the assistant on the recommendations page. Loading the chat panel lazily took it
+   * back to 542 KiB; the rest is the shell, and the export dialog shares its Radix dialog code with
+   * the shell's mobile drawer, so splitting it saves ~3 KiB. The next real cut is moving
+   * `AssessmentPlayerPage` into a route group of its own. Do not raise this again without a row
+   * like this one saying what was bought.
+   */
+  const STUDENT_SCREEN_BUDGET = 560 * 1024;
 
   /**
    * **`/join` is the only screen with a budget of its own, because it is the only screen a

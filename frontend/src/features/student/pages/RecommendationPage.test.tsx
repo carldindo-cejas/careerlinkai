@@ -392,7 +392,7 @@ describe('RecommendationPage', () => {
 
     await screen.findByText('Career 1');
 
-    await user.type(screen.getByLabelText(/your question/i), 'Why is Career 1 my top match?');
+    await user.type((await screen.findByLabelText(/your question/i)), 'Why is Career 1 my top match?');
     await user.click(screen.getByRole('button', { name: /^send$/i }));
 
     expect(
@@ -445,7 +445,7 @@ describe('RecommendationPage', () => {
 
     await screen.findByText('Career 1');
 
-    await user.type(screen.getByLabelText(/your question/i), 'Anything?');
+    await user.type((await screen.findByLabelText(/your question/i)), 'Anything?');
     await user.click(screen.getByRole('button', { name: /^send$/i }));
 
     expect(
@@ -504,7 +504,7 @@ describe('RecommendationPage', () => {
 
     await screen.findByText('Career 1');
 
-    await user.type(screen.getByLabelText(/your question/i), 'When do applications close?');
+    await user.type((await screen.findByLabelText(/your question/i)), 'When do applications close?');
     await user.click(screen.getByRole('button', { name: /^send$/i }));
 
     await user.click(await screen.findByRole('button', { name: /request to add to knowledge/i }));
@@ -559,7 +559,7 @@ describe('RecommendationPage', () => {
 
     await screen.findByText('Career 1');
 
-    await user.type(screen.getByLabelText(/your question/i), 'When do applications close?');
+    await user.type((await screen.findByLabelText(/your question/i)), 'When do applications close?');
     await user.click(screen.getByRole('button', { name: /^send$/i }));
 
     expect(await screen.findByText('Applications close on 30 April.')).toBeInTheDocument();

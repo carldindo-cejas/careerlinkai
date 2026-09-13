@@ -8,7 +8,7 @@ import {
   RefreshCw,
   School,
 } from 'lucide-react';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
@@ -17,7 +17,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/components/ui/cn';
 import { Select } from '@/components/ui/select';
-import { RecommendationChatPanel } from '@/features/student/components/RecommendationChatPanel';
 import {
   useCareerPrograms,
   useExplainRecommendation,
@@ -220,10 +219,22 @@ export function RecommendationPage() {
         )}
       </div>
 
-      <RecommendationChatPanel hasRecommendations={Boolean(set)} />
+      <Suspense fallback={null}>
+        <RecommendationChatPanel hasRecommendations={Boolean(set)} />
+      </Suspense>
     </div>
   );
 }
+
+/**
+ * The assistant column arrives after the page (2026-09-13). This page is in the student route
+ * group's chunk, so a static import put the whole chat panel on every student screen's cold load —
+ * the same reason `StudentLayout` loads its launcher lazily.
+ */
+const RecommendationChatPanel = lazy(async () => ({
+  default: (await import('@/features/student/components/RecommendationChatPanel'))
+    .RecommendationChatPanel,
+}));
 
 /** Three shown, five available. See the page doc for why the ceiling is five and not ten. */
 const DEFAULT_VISIBLE = 3;

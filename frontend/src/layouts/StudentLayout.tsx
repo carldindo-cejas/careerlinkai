@@ -1,12 +1,21 @@
 import { BookOpenCheck, ChartColumn, Compass, LayoutDashboard } from 'lucide-react';
+import { lazy, Suspense } from 'react';
+import { useLocation } from 'react-router-dom';
 
 import { ProfilingBanner } from '@/features/student/components/ProfilingBanner';
 import { AppShell, type AppNavItem } from '@/layouts/AppShell';
 import { paths } from '@/routes/paths';
-import { useLocation } from 'react-router-dom';
-
-import { StudentChatLauncher } from '@/features/student/components/RecommendationChatPanel';
 import { useStudentClassStore } from '@/stores/studentClassStore';
+
+/**
+ * The chat launcher arrives after the shell (2026-09-13). Imported statically, the whole assistant
+ * panel was part of every student screen's cold load and pushed the student route past its 530 KiB
+ * budget (`platform-gates.mjs`, audit P2).
+ */
+const StudentChatLauncher = lazy(async () => ({
+  default: (await import('@/features/student/components/RecommendationChatPanel'))
+    .StudentChatLauncher,
+}));
 
 /**
  * The student's destinations (§37) — the same shell as staff now, so the three roles
@@ -45,7 +54,11 @@ export function StudentLayout() {
 
   return (
     <>
-    {onRecommendations ? null : <StudentChatLauncher />}
+    {onRecommendations ? null : (
+      <Suspense fallback={null}>
+        <StudentChatLauncher />
+      </Suspense>
+    )}
     <AppShell
       title="Student"
       nav={nav}
