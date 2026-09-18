@@ -21,6 +21,7 @@ import {
   assignAssessmentSchema,
   createTemplateSchema,
   createVersionSchema,
+  setPresentationModeSchema,
   listAssessmentsQuerySchema,
   reorderQuestionsSchema,
   updateQuestionSchema,
@@ -34,7 +35,14 @@ import {
   serializeTemplate,
   serializeVersionSummary,
 } from '@/modules/assessment/serializers';
-import { authorizeAssignTemplate, authorizeManageTemplate } from '@/policies/assessment';
+import {
+  authorizeAssignTemplate,
+  authorizeCopyTemplate,
+  authorizeManageTemplate,
+  authorizeViewTemplate,
+  canCopyTemplate,
+  canManageTemplate,
+} from '@/policies/assessment';
 
 /**
  * The assessment builder's HTTP surface (Phase 5b — §20's template/version group, flattened
@@ -148,11 +156,24 @@ builderRoutes.get('/assessments', async (c) => {
   );
 });
 
-/** Load a version and its template, authorizing the caller against the template. 404 first. */
+/**
+ * Load a version and its template, authorizing the caller against the template. 404 first.
+ *
+ * **`access` splits reading from writing**, which the builder needed once a counselor was allowed to
+ * open a curated instrument (prompt §5). Every write below stays on `'manage'` — admin: any
+ * template, counselor: their own. The three read endpoints take `'view'`, which additionally admits
+ * a counselor to the GLOBAL instruments they can already see in their list, assign to their classes
+ * and now copy. Another counselor's private template is a 404 under both.
+ *
+ * The parameter is required rather than defaulted, deliberately: a new route added later has to
+ * state which of the two it is, instead of silently inheriting whichever default happened to be
+ * safer to type.
+ */
 async function authorizedVersion(
   builder: AssessmentBuilderService,
   user: ReturnType<typeof requireUser>,
   versionId: string,
+  access: 'view' | 'manage',
 ) {
   const version = await builder.findVersion(versionId);
 
@@ -161,7 +182,12 @@ async function authorizedVersion(
   }
 
   const template = await builder.findTemplate(version.assessmentTemplateId);
-  authorizeManageTemplate(user, template);
+
+  if (access === 'view') {
+    authorizeViewTemplate(user, template);
+  } else {
+    authorizeManageTemplate(user, template);
+  }
 
   return { version, template };
 }
@@ -184,7 +210,8 @@ async function authorizedQuestion(
     throw ApiError.notFound('Question not found.');
   }
 
-  await authorizedVersion(builder, user, question.assessmentVersionId);
+  // Always 'manage': every caller of this helper is a write to the question.
+  await authorizedVersion(builder, user, question.assessmentVersionId, 'manage');
 
   return question;
 }
@@ -233,9 +260,18 @@ builderRoutes.post('/assessment-templates', async (c) => {
 builderRoutes.get('/assessment-templates/:templateId', async (c) => {
   const db = createDatabase(c.env.DB);
   const builder = new AssessmentBuilderService(db);
+  const user = requireUser(c);
   const template = await builder.findTemplate(c.req.param('templateId'));
 
-  authorizeManageTemplate(requireUser(c), template);
+  /**
+   * **View, not manage** (prompt §5). Clicking any row in the assessment table opens this page, and
+   * a counselor's table legitimately contains the curated global instruments — so gating the read on
+   * ownership meant a counselor clicking RIASEC got "Assessment template not found." for a row they
+   * were looking at. What a counselor may not do to a global instrument is *write* to it, and every
+   * write endpoint below still says `authorizeManageTemplate`. The payload carries `can_manage` so
+   * the page renders read-only rather than offering controls the server will refuse.
+   */
+  authorizeViewTemplate(user, template);
 
   const dimensions = await builder.dimensionsFor(template.id);
   const versions = await builder.versionsFor(template.id);
@@ -253,6 +289,9 @@ builderRoutes.get('/assessment-templates/:templateId', async (c) => {
             ? null
             : await taxonomy.findType(template.assessmentTypeId),
           (await taxonomy.scoringsForTemplates([template.id])).get(template.id) ?? [],
+          // The builder renders read-only for a counselor looking at a global instrument, and
+          // offers Copy instead. Server-decided, from the same policies the write routes call.
+          { canManage: canManageTemplate(user, template), canCopy: canCopyTemplate(user, template) },
         ),
         versions: versions.map(serializeVersionSummary),
       },
@@ -288,7 +327,7 @@ builderRoutes.patch('/assessment-templates/:templateId', async (c) => {
   const admin = new AssessmentAdminService(db);
 
   return c.json(
-    successEnvelope(serializeAssessmentRow(await admin.row(updated)), 'Assessment updated.'),
+    successEnvelope(serializeAssessmentRow(await admin.row(user, updated)), 'Assessment updated.'),
   );
 });
 
@@ -308,7 +347,7 @@ builderRoutes.post('/assessment-templates/:templateId/archive', async (c) => {
   const admin = new AssessmentAdminService(db);
 
   return c.json(
-    successEnvelope(serializeAssessmentRow(await admin.row(archived)), 'Assessment archived.'),
+    successEnvelope(serializeAssessmentRow(await admin.row(user, archived)), 'Assessment archived.'),
   );
 });
 
@@ -324,7 +363,7 @@ builderRoutes.post('/assessment-templates/:templateId/restore', async (c) => {
   const admin = new AssessmentAdminService(db);
 
   return c.json(
-    successEnvelope(serializeAssessmentRow(await admin.row(restored)), 'Assessment restored.'),
+    successEnvelope(serializeAssessmentRow(await admin.row(user, restored)), 'Assessment restored.'),
   );
 });
 
@@ -391,6 +430,99 @@ builderRoutes.get('/assessment-templates/:templateId/deletability', async (c) =>
 });
 
 /**
+ * `POST /assessment-templates/{id}/copy` — **take your own copy of an instrument** (prompt §1).
+ *
+ * The act a counselor performs on RIASEC or SCCT. It produces a **new template they own**, private
+ * to them, holding the source's category, dimensions, taxonomy and the whole of its newest published
+ * version — as a DRAFT v1 they then edit and publish themselves. See
+ * `AssessmentBuilderService.copyTemplateFor` for why the unit copied is the template rather than the
+ * version.
+ *
+ * Authorized by `authorizeCopyTemplate`, which is the **view** rule: copying reads the source and
+ * writes something new, so what it needs is permission to read. `authorizeManageTemplate` here
+ * would refuse a counselor the copy of RIASEC that the whole feature exists for. Another
+ * counselor's private instrument is a 404, so the endpoint cannot be used to probe ids either.
+ *
+ * **No category check**, and that is the same line `duplicate` draws: §5's permanent rule is about
+ * *AI* generating or editing RIASEC/SCCT and lives in `authorizeGenerateWithAi`. The copy keeps
+ * `category = 'RIASEC'`, so that rule follows it and the copy is no more AI-editable than the
+ * original.
+ *
+ * A source with no versions at all is a **422**, not a 403 — the caller is permitted to copy; there
+ * is simply nothing here to copy yet.
+ */
+builderRoutes.post('/assessment-templates/:templateId/copy', async (c) => {
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
+  const user = requireUser(c);
+  const template = await builder.findTemplate(c.req.param('templateId'));
+
+  authorizeCopyTemplate(user, template);
+
+  const sourceVersion = await builder.copyableVersion(template.id);
+
+  if (sourceVersion === undefined) {
+    throw ApiError.validation(
+      { assessment_version_id: ['This assessment has no versions yet, so there is nothing to copy.'] },
+      'Nothing to copy.',
+    );
+  }
+
+  const copied = await builder.copyTemplateFor(user, template, sourceVersion);
+  const admin = new AssessmentAdminService(db);
+
+  return c.json(
+    successEnvelope(
+      {
+        assessment: serializeAssessmentRow(await admin.row(user, copied.template)),
+        version: serializeVersionSummary(copied.version),
+        question_count: copied.questionCount,
+      },
+      `Copied “${template.title}” into “${copied.template.title}” as a draft you own.`,
+    ),
+    201,
+  );
+});
+
+/**
+ * `PATCH /assessment-templates/{id}/presentation-mode` — sequential or random, in one request
+ * (prompt §6).
+ *
+ * Its own endpoint rather than a field on `PATCH /assessment-templates/{id}`, for two reasons that
+ * both come from where it is used. That endpoint's schema is `.strict()` and requires `title`,
+ * `assessment_type_id` and `scoring_ids` on every call — it is the edit *form*'s contract — so a
+ * one-click toggle in a table row would have to send the whole form back and could silently
+ * overwrite a field somebody else had just changed. And this one is permitted on a **published**
+ * instrument, which is a different rule from the one that endpoint enforces; keeping them separate
+ * is what stops "you can edit the delivery mode after publish" from being read as "you can edit
+ * published content".
+ *
+ * `authorizeManageTemplate`: this is a write to the instrument. A counselor can flip their own
+ * copies; only an admin can flip the global ones.
+ */
+builderRoutes.patch('/assessment-templates/:templateId/presentation-mode', async (c) => {
+  const input = await parseBody(c, setPresentationModeSchema);
+  const db = createDatabase(c.env.DB);
+  const builder = new AssessmentBuilderService(db);
+  const user = requireUser(c);
+  const template = await builder.findTemplate(c.req.param('templateId'));
+
+  authorizeManageTemplate(user, template);
+
+  const updated = await builder.setPresentationMode(user, template, input.presentation_mode);
+  const admin = new AssessmentAdminService(db);
+
+  return c.json(
+    successEnvelope(
+      serializeAssessmentRow(await admin.row(user, updated)),
+      input.presentation_mode === 'RANDOM'
+        ? 'Questions will now be shuffled for each student.'
+        : 'Questions will now be shown in their authored order.',
+    ),
+  );
+});
+
+/**
  * `POST /assessment-templates/{id}/assignments` — assign globally, or to chosen classes.
  *
  * The version is optional and defaults to the newest published one: the list offers one Assign
@@ -451,7 +583,7 @@ builderRoutes.post('/assessment-templates/:templateId/assignments', async (c) =>
   return c.json(
     successEnvelope(
       {
-        assessment: serializeAssessmentRow(await admin.row(template)),
+        assessment: serializeAssessmentRow(await admin.row(user, template)),
         assigned_classes: result.assigned,
         skipped_classes: result.skipped,
         version_number: result.version.versionNumber,
@@ -550,7 +682,7 @@ builderRoutes.post('/assessment-templates/:templateId/versions', async (c) => {
 builderRoutes.post('/assessment-versions/:versionId/duplicate', async (c) => {
   const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
   const user = requireUser(c);
-  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'));
+  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'), 'manage');
 
   const draft = await builder.duplicateVersion(user, version.id);
 
@@ -568,7 +700,12 @@ builderRoutes.post('/assessment-versions/:versionId/duplicate', async (c) => {
 /** The §31 review screen's payload — questions WITH scores and mappings (author's view). */
 builderRoutes.get('/assessment-versions/:versionId', async (c) => {
   const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
-  const { version, template } = await authorizedVersion(builder, requireUser(c), c.req.param('versionId'));
+  const { version, template } = await authorizedVersion(
+    builder,
+    requireUser(c),
+    c.req.param('versionId'),
+    'view',
+  );
 
   const content = await builder.versionContent(version.id);
   const readiness = await builder.publishReadiness(version.id);
@@ -601,7 +738,7 @@ builderRoutes.post('/assessment-versions/:versionId/questions', async (c) => {
   const input = await parseBody(c, addQuestionsSchema);
   const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
   const user = requireUser(c);
-  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'));
+  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'), 'manage');
 
   // No `orderNumber` here: the Service appends from `MAX + 1` in array order. This route used to
   // compute `COUNT + 1` itself, which is the same number only while the numbering is gapless and a
@@ -628,16 +765,60 @@ builderRoutes.post('/assessment-versions/:versionId/questions', async (c) => {
 
 builderRoutes.get('/assessment-versions/:versionId/publish-readiness', async (c) => {
   const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
-  const { version } = await authorizedVersion(builder, requireUser(c), c.req.param('versionId'));
+  const { version } = await authorizedVersion(builder, requireUser(c), c.req.param('versionId'), 'view');
 
   return c.json(successEnvelope(await builder.publishReadiness(version.id), 'Publish readiness retrieved.'));
+});
+
+/**
+ * `POST /assessment-versions/{id}/archive` — retire one edition (prompt §4).
+ *
+ * Admin and counselor alike, against their own instruments: `authorizedVersion(…, 'manage')` is the
+ * same ownership rule every other write here uses, so a counselor archives their own copies and an
+ * administrator archives the curated ones.
+ *
+ * **Permitted on a PUBLISHED version**, which is the only reason this endpoint is interesting. It
+ * is not an exception to invariant 1: the freeze is about a published version's *content*, and this
+ * writes a status. The questions, options, mappings and scoring config are untouched, the row is
+ * never deleted, and every historical attempt goes on resolving to exactly what it was sat against
+ * — see `AssessmentBuilderService.archiveVersion`.
+ */
+builderRoutes.post('/assessment-versions/:versionId/archive', async (c) => {
+  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const user = requireUser(c);
+  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'), 'manage');
+
+  const archived = await builder.archiveVersion(user, version);
+
+  return c.json(
+    successEnvelope(
+      serializeVersionSummary(archived),
+      `Version ${version.versionNumber} archived. Students can no longer start it; results already recorded against it are unchanged.`,
+    ),
+  );
+});
+
+/** The other way — back to PUBLISHED or DRAFT, whichever it was. Idempotent. */
+builderRoutes.post('/assessment-versions/:versionId/restore', async (c) => {
+  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const user = requireUser(c);
+  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'), 'manage');
+
+  const restored = await builder.restoreVersion(user, version);
+
+  return c.json(
+    successEnvelope(
+      serializeVersionSummary(restored),
+      `Version ${version.versionNumber} restored to ${restored.status.toLowerCase()}.`,
+    ),
+  );
 });
 
 /** §25's gate lives in the service; a 422 here carries the outstanding-mapping count. */
 builderRoutes.post('/assessment-versions/:versionId/publish', async (c) => {
   const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
   const user = requireUser(c);
-  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'));
+  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'), 'manage');
 
   const published = await builder.publish(user, version.id);
 
@@ -731,7 +912,12 @@ builderRoutes.delete('/assessment-questions/:questionId', async (c) => {
 builderRoutes.put('/assessment-versions/:versionId/question-order', async (c) => {
   const input = await parseBody(c, reorderQuestionsSchema);
   const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
-  const { version } = await authorizedVersion(builder, requireUser(c), c.req.param('versionId'));
+  const { version } = await authorizedVersion(
+    builder,
+    requireUser(c),
+    c.req.param('versionId'),
+    'manage',
+  );
 
   await builder.reorderQuestions(version.id, input.question_ids);
 

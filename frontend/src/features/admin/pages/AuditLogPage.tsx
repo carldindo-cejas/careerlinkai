@@ -444,7 +444,7 @@ function AuditRow({ entry }: { entry: AuditLogEntry }) {
           {hasDetails ? (
             <button
               type="button"
-              className="text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              className="inline-flex min-h-11 items-center text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:min-h-0"
               onClick={() => setExpanded((value) => !value)}
             >
               {expanded ? 'Hide' : 'Show'}
@@ -517,7 +517,10 @@ function SortableHeader({
         type="button"
         onClick={() => onSort(column)}
         className={cn(
-          'inline-flex items-center gap-1.5 uppercase tracking-wide transition-colors hover:text-foreground',
+          // `-my-3 py-3` makes the button fill its header cell rather than sitting as a 16px strip
+          // inside it: the tap target becomes the whole header, which is what someone aiming at a
+          // column heading is aiming at anyway, and the row height does not change.
+          'inline-flex -my-3 items-center gap-1.5 py-3 uppercase tracking-wide transition-colors hover:text-foreground',
           active && 'text-foreground',
         )}
         aria-label={`Sort by ${label}`}

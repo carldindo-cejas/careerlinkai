@@ -210,7 +210,7 @@ export function AppShell({ title, nav, headerBadge, banner, profile, onSignedOut
               <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
                 <SheetTrigger
                   aria-label="Open menu"
-                  className="rounded-none p-2 text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
+                  className="flex size-11 items-center justify-center rounded-none text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:size-9 lg:hidden"
                 >
                   <Menu className="size-5" aria-hidden="true" />
                 </SheetTrigger>

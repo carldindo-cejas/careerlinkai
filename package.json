@@ -8,6 +8,8 @@
     "deploy:production": "npm --prefix backend run deploy:production",
     "db:migrate:staging": "npm --prefix backend run db:migrate:staging",
     "db:migrate:production": "npm --prefix backend run db:migrate:production",
-    "preview": "npm --prefix backend run preview"
+    "preview": "npm --prefix backend run preview",
+    "_comment:audit:responsive": "Prompt §10. Drives system Chrome through the admin, counselor and student interfaces at 320/360/375/390/414/430/768/1024/1280 and reports horizontal page scroll, sub-44px touch targets and controls covered by fixed overlays. Needs `npm run preview` on :8787 and a bootstrapped local database (see the script header). It WRITES rows and refuses production. `--shots <dir>` also saves a PNG per page per width, which is the only way to judge the things it deliberately does not score.",
+    "audit:responsive": "node scripts/responsive-audit.mjs"
   }
 }

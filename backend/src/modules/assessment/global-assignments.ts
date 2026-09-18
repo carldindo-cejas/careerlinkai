@@ -103,6 +103,21 @@ export async function applyGlobalAssignmentsToClass(
         // filter above does not cover it — `deleteTemplate` archives as well, but a row deleted by
         // any other route would still read as ACTIVE.
         isNull(assessmentTemplates.deletedAt),
+        /**
+         * **Only globally-owned instruments are replayed onto new classes** (prompt §2/§3).
+         *
+         * The second lock on the same door. `assignToClasses` now refuses `scope = 'GLOBAL'` to
+         * anyone but an administrator, so in principle no counselor-owned row can reach this query
+         * — but this function is the thing that makes a GLOBAL row *dangerous*: it replays the
+         * standing instruction onto classes that did not exist when it was written, which are
+         * exactly the classes no per-act filter can reach. A `COUNSELOR_PRIVATE` template arriving
+         * here (through a row written before this migration, or through some future path that
+         * forgets the rule) would be handed to another counselor's brand-new class permanently.
+         *
+         * So it is filtered at the point of consequence as well as at the point of the act. The
+         * two checks are not redundant; they guard different moments.
+         */
+        eq(assessmentTemplates.ownership, 'GLOBAL'),
       ),
     )
     .orderBy(desc(assessmentAssignments.createdAt));

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { QUESTION_TYPES, SCORING_ALGORITHMS } from '@/db/enums';
+import { PRESENTATION_MODES, QUESTION_TYPES, SCORING_ALGORITHMS } from '@/db/enums';
 
 /**
  * The assessment module's write contracts (FULLPLAN §37, `docs/api/phase-3-assessment-engine.md`).
@@ -266,6 +266,22 @@ export const assignAssessmentSchema = z
   ]);
 
 export type AssignAssessmentInput = z.infer<typeof assignAssessmentSchema>;
+
+/**
+ * Switching an instrument between sequential and random delivery (migration 0037, prompt §6).
+ *
+ * One field, `.strict()`, and deliberately **not** folded into `updateTemplateSchema`: that schema
+ * is the edit form's contract and requires title, type and scoring on every call, so a one-click
+ * toggle in a table row would have to send the whole form back — and could clobber a field someone
+ * else had just changed. This request says one thing.
+ */
+export const setPresentationModeSchema = z
+  .object({
+    presentation_mode: z.enum(PRESENTATION_MODES),
+  })
+  .strict();
+
+export type SetPresentationModeInput = z.infer<typeof setPresentationModeSchema>;
 
 /** Dimension codes are short author-facing handles ("TM", "FOCUS") — the §31 Mode B vocabulary. */
 export const addDimensionsSchema = z

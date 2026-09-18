@@ -121,6 +121,24 @@ export type AuditAction =
   // refused outright once a student has answered it, which makes the rows that *do* exist here the
   // record of an assessment that was removed before anybody sat it.
   | 'ASSESSMENT_TEMPLATE_DELETED'
+  // Migration 0037. A counselor taking their own copy of a curated instrument — the act that
+  // creates a *second owner* for content that until then had one. The row names both ends
+  // (source template and version, new template and its ownership), because the question this
+  // log will be asked is "where did this counselor's RIASEC come from, and is it still the one
+  // the administrator published?"
+  | 'ASSESSMENT_TEMPLATE_COPIED'
+  // Retiring one *edition* of an instrument (prompt §4). Distinct from archiving the
+  // template, which retires all of them: this is what an author does to v1 after publishing
+  // v2. Recorded because it changes what students are offered while changing nothing about
+  // the results already produced against that version — and "why did this stop appearing"
+  // should have an answer with a name and a date.
+  | 'ASSESSMENT_VERSION_ARCHIVED'
+  | 'ASSESSMENT_VERSION_RESTORED'
+  // Migration 0037. Switching an instrument between SEQUENTIAL and RANDOM delivery. Recorded
+  // even though it changes no result, because it changes what every student sees from that
+  // moment on and is reachable in one click from a table row — the two properties that make an
+  // act worth being able to attribute afterwards.
+  | 'ASSESSMENT_PRESENTATION_MODE_CHANGED'
   // The §25 act itself (Phase 5b): a human confirming what a question measures. Recorded
   // per mapping because the gate's promise is that *someone looked at each one* — this row
   // is who, and when.
@@ -299,6 +317,11 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   ASSESSMENT_TEMPLATE_ARCHIVED: 'ARCHIVE',
   ASSESSMENT_TEMPLATE_RESTORED: 'RESTORE',
   ASSESSMENT_TEMPLATE_DELETED: 'DELETE',
+  /** A copy is a new instrument, not an edit of the one it came from. */
+  ASSESSMENT_TEMPLATE_COPIED: 'CREATE',
+  ASSESSMENT_VERSION_ARCHIVED: 'ARCHIVE',
+  ASSESSMENT_VERSION_RESTORED: 'RESTORE',
+  ASSESSMENT_PRESENTATION_MODE_CHANGED: 'UPDATE',
   QUESTION_DIMENSION_CONFIRMED: 'UPDATE',
   ASSESSMENT_QUESTION_DELETED: 'DELETE',
   ASSESSMENT_VERSION_DUPLICATED: 'CREATE',

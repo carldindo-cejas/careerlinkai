@@ -56,12 +56,46 @@ export interface AssignmentSummary {
   class_count: number;
 }
 
+/**
+ * How an instrument's items are dealt to a student (backend migration 0037).
+ *
+ * The **items** only — answer choices are never shuffled. A Likert scale whose anchors moved
+ * between questions would stop being a scale.
+ */
+export type PresentationMode = 'SEQUENTIAL' | 'RANDOM';
+
+/** The named creator behind `ownership` + `creator_id` — the author relationship, resolved. */
+export interface AssessmentAuthor {
+  id: string;
+  name: string;
+  role: string;
+}
+
 export interface AssessmentRow {
   id: string;
   title: string;
   description: string | null;
   category: AssessmentCategory;
+  /**
+   * The **author type**: `GLOBAL` is curated administrator content, `COUNSELOR_PRIVATE` belongs to
+   * the counselor in `author` and is visible only to them and their own classes' students.
+   */
   ownership: 'GLOBAL' | 'COUNSELOR_PRIVATE';
+  /** Who created it. Null only if that account has since been removed. */
+  author: AssessmentAuthor | null;
+  /** The instrument this was copied from, or null when it was authored from scratch. */
+  source_template_id: string | null;
+  /** `SEQUENTIAL` | `RANDOM`, switchable from the table even after publication. */
+  presentation_mode: PresentationMode;
+  /**
+   * **What this caller may do, as the server decided it.**
+   *
+   * These replace the client-side `ownership !== 'GLOBAL'` guess the table used to make. That guess
+   * agreed with the server only by coincidence of what a counselor's list happens to contain, and a
+   * rule written twice is a rule that eventually disagrees with itself.
+   */
+  can_manage: boolean;
+  can_copy: boolean;
   /** The stored template status, which drives Archive vs Restore. */
   status: 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
   /** The **derived** status the Status column shows: is any version publishable. */
@@ -170,6 +204,18 @@ export interface AssignResult {
   assigned_classes: number;
   skipped_classes: number;
   version_number: number;
+}
+
+/** What `POST /assessment-templates/{id}/copy` hands back — the new instrument and its draft v1. */
+export interface CopyResult {
+  assessment: AssessmentRow;
+  version: {
+    id: string;
+    version_number: number;
+    status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+    source_version_id: string | null;
+  };
+  question_count: number;
 }
 
 /**

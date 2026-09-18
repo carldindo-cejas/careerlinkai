@@ -5,6 +5,7 @@ import type { Database } from '@/db/client';
 import type {
   AssessmentCategory,
   AssessmentOwnership,
+  PresentationMode,
   QuestionSource,
   QuestionType,
 } from '@/db/enums';
@@ -71,6 +72,10 @@ export interface CreateTemplateInput {
   assessmentTypeId: string;
   /** Validated against the type before anything is written. At least one. */
   scoringIds: string[];
+  /** Migration 0037 — the instrument this was copied from. Only `copyTemplateFor` sets it. */
+  sourceTemplateId?: string | null;
+  /** Migration 0037 — how items are dealt. Defaults to the authored order. */
+  presentationMode?: PresentationMode;
 }
 
 /** Every field of an assessment's *description of itself* is editable; its content is not. */
@@ -93,6 +98,8 @@ export interface CreateVersionInput {
   instructions?: string | null;
   durationMinutes?: number | null;
   scoringConfig: ScoringConfig;
+  /** Migration 0037 — the version these questions were copied from, when they were. */
+  sourceVersionId?: string | null;
 }
 
 /**
@@ -203,6 +210,8 @@ export class AssessmentBuilderService {
       description: input.description ?? null,
       assessmentTypeId: input.assessmentTypeId,
       ownership: input.ownership ?? 'GLOBAL',
+      sourceTemplateId: input.sourceTemplateId ?? null,
+      presentationMode: input.presentationMode ?? 'SEQUENTIAL',
       status: 'DRAFT',
       createdAt: now(),
       updatedAt: now(),
@@ -366,6 +375,268 @@ export class AssessmentBuilderService {
     });
 
     return { ...template, status, updatedAt: timestamp };
+  }
+
+  // --- Copying an instrument, and how it is delivered (prompt-driven, 0037) -----------------
+
+  /**
+   * **A counselor takes their own copy of a curated instrument** (prompt §1).
+   *
+   * The unit copied is the **template**, not the version, and that is the whole reason this method
+   * exists beside `duplicateVersion` rather than inside it. `duplicateVersion` branches a version
+   * within the template it belongs to, so a counselor using it on RIASEC would be writing a draft
+   * under the *administrator's* instrument — visible to every other counselor the moment it
+   * published, owned by nobody in particular, and impossible to archive without touching content
+   * other classes are sitting. Ownership, visibility, assignment and the archive act are all scoped
+   * on the template in this schema; a copy that is not a new template is not an owned copy.
+   *
+   * What travels, and why each piece has to:
+   *
+   *   * **The category** — a copy of RIASEC is still RIASEC. That is not cosmetic: it is what keeps
+   *     §5's permanent rule attached to the copy, so `authorizeGenerateWithAi` still refuses to let
+   *     AI near it. A copy that became CUSTOM would be a laundering route for exactly the thing the
+   *     rule forbids.
+   *   * **The dimensions**, with their `interpretation_ranges` and `order_number`. `order_number` is
+   *     scoring data (the Holland-code tie-break, §22); the ranges are the bands a score is read
+   *     through. Questions map onto dimensions by *code*, so without these the copy would publish as
+   *     an ungraded survey that looks identical in the builder.
+   *   * **The type and scoring methods** — revalidated on the way in, so a copy cannot become the one
+   *     row in the system holding an illegal (type, scoring) pair.
+   *   * **The source version whole** — instructions, duration, the complete `scoringConfig` (SCCT's
+   *     §23 weights live there), and every question with its options and confirmed mappings.
+   *
+   * The copy lands as a **DRAFT v1 that the counselor then edits and publishes themselves**. It is
+   * deliberately not published on their behalf: publishing has the §25 gate behind it, and doing it
+   * as a side effect of pressing Copy would put an instrument in front of students that nobody chose
+   * to release.
+   */
+  async copyTemplateFor(
+    user: User,
+    source: AssessmentTemplate,
+    sourceVersion: AssessmentVersion,
+  ): Promise<{ template: AssessmentTemplate; version: AssessmentVersion; questionCount: number }> {
+    if (source.assessmentTypeId === null) {
+      // Pre-taxonomy instruments (migration 0014 left the column nullable for history). A copy has
+      // to choose a type, and guessing one on somebody's behalf is worse than saying so.
+      throw ApiError.validation(
+        {
+          assessment_type_id: [
+            'This assessment has no type set, so it cannot be copied. Set one on the original first.',
+          ],
+        },
+        'This assessment cannot be copied yet.',
+      );
+    }
+
+    const scorings = await this.taxonomy.scoringsForTemplates([source.id]);
+    const scoringIds = (scorings.get(source.id) ?? []).map((scoring) => scoring.id);
+
+    if (scoringIds.length === 0) {
+      throw ApiError.validation(
+        { scoring_ids: ['This assessment has no scoring method set, so it cannot be copied.'] },
+        'This assessment cannot be copied yet.',
+      );
+    }
+
+    /**
+     * Ownership follows the **copier's role**, never the source's: an admin copying anything
+     * produces global content, a counselor copying anything produces their own private instrument.
+     * Every visibility rule in the module reads this column, so it is set from the one fact that
+     * cannot be spoofed — the authenticated user's role.
+     */
+    const ownership: AssessmentOwnership = user.role === 'admin' ? 'GLOBAL' : 'COUNSELOR_PRIVATE';
+
+    const template = await this.createTemplate(user, {
+      category: source.category,
+      title: await this.availableCopyTitle(source.title, user),
+      description: source.description,
+      ownership,
+      assessmentTypeId: source.assessmentTypeId,
+      scoringIds,
+      sourceTemplateId: source.id,
+      presentationMode: source.presentationMode,
+    });
+
+    const dimensions = await this.dimensionsFor(source.id);
+
+    if (dimensions.length > 0) {
+      await this.addDimensions(
+        template.id,
+        dimensions.map((dimension) => ({
+          code: dimension.code,
+          name: dimension.name,
+          description: dimension.description,
+          interpretationRanges: dimension.interpretationRanges,
+          orderNumber: dimension.orderNumber,
+        })),
+      );
+    }
+
+    const version = await this.createVersion(user, template.id, {
+      instructions: sourceVersion.instructions,
+      durationMinutes: sourceVersion.durationMinutes,
+      scoringConfig: sourceVersion.scoringConfig,
+      sourceVersionId: sourceVersion.id,
+    });
+
+    const content = await this.versionContent(sourceVersion.id);
+
+    // One bulk call, in `order_number` order (which `versionContent` reads in), so the copy keeps
+    // RIASEC's R > I > A > S > E > C item sequence. `addQuestions` appends from `MAX + 1`.
+    await this.addQuestions(
+      user,
+      version.id,
+      content.questions.map((question) => ({
+        questionText: question.questionText,
+        questionType: question.questionType,
+        sectionLabel: question.sectionLabel,
+        required: question.required,
+        /**
+         * MANUAL, and therefore confirmed at insert — the same rule `duplicateQuestion` and
+         * `duplicateVersion` follow. Copying is an authoring act by the person doing it, and
+         * inheriting `AI_GENERATED` would attribute their instrument to a model. Nothing is
+         * laundered: a published source could never have held an unconfirmed mapping (§25), and a
+         * draft source is copied by someone looking at those mappings on screen.
+         */
+        source: 'MANUAL' as const,
+        options: (content.optionsByQuestion.get(question.id) ?? []).map((option, index) => ({
+          label: option.label,
+          value: option.value,
+          score: option.score,
+          orderNumber: index + 1,
+        })),
+        dimensions: (content.mappingsByQuestion.get(question.id) ?? []).map((mapping) => ({
+          code: mapping.dimensionCode,
+          weight: mapping.weight,
+        })),
+      })),
+    );
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_TEMPLATE_COPIED',
+      module: MODULE,
+      targetType: 'assessment_template',
+      targetId: template.id,
+      oldValues: {
+        source_template_id: source.id,
+        source_template_title: source.title,
+        source_version_id: sourceVersion.id,
+        source_version_number: sourceVersion.versionNumber,
+      },
+      newValues: {
+        title: template.title,
+        ownership: template.ownership,
+        category: template.category,
+        question_count: content.questions.length,
+        dimension_count: dimensions.length,
+      },
+    });
+
+    return { template, version, questionCount: content.questions.length };
+  }
+
+  /**
+   * A title for the copy that is free, and says whose it is.
+   *
+   * Titles are unique across live templates (`assertTitleAvailable`), so a copy cannot reuse the
+   * source's. Naming it after the copier beats `"(Copy)"` in the one place it matters — an
+   * administrator's list showing five counselors' copies of the same instrument, which under
+   * "(Copy)", "(Copy) 2", "(Copy) 3" is a list of strangers.
+   *
+   * The numeric suffix is the fallback for a second copy by the same person, and the loop is
+   * bounded: a hundred copies of one instrument by one counselor is not a workflow to support
+   * silently, so it refuses with a message rather than spinning.
+   */
+  private async availableCopyTitle(sourceTitle: string, user: User): Promise<string> {
+    const owner = user.name.trim();
+    const base = owner.length > 0 ? sourceTitle + ' (' + owner + ')' : sourceTitle + ' (Copy)';
+    // `title` is capped at 200 by the schema; the suffix has to fit inside that, not beside it.
+    const trimmed = base.length > 190 ? base.slice(0, 190).trimEnd() : base;
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const candidate = attempt === 0 ? trimmed : trimmed + ' ' + String(attempt + 1);
+      const [clash] = await this.db
+        .select({ id: assessmentTemplates.id })
+        .from(assessmentTemplates)
+        .where(
+          and(
+            isNull(assessmentTemplates.deletedAt),
+            sql`LOWER(${assessmentTemplates.title}) = LOWER(${candidate})`,
+          ),
+        )
+        .limit(1);
+
+      if (clash === undefined) {
+        return candidate;
+      }
+    }
+
+    throw ApiError.validation(
+      { title: ['You already have too many copies of this assessment. Rename one first.'] },
+      'Could not name the copy.',
+    );
+  }
+
+  /**
+   * The version a copy is taken *from*: the newest PUBLISHED one, else the newest of any status.
+   *
+   * The fallback is what makes "copy my own draft" work, and it is deliberately not an error — a
+   * counselor who has drafted half an instrument and wants a variant of it is doing something
+   * reasonable. A template with no versions at all has nothing to copy, and the caller says so.
+   */
+  async copyableVersion(templateId: string): Promise<AssessmentVersion | undefined> {
+    const published = await this.assignableVersion(templateId);
+
+    if (published !== undefined) {
+      return published;
+    }
+
+    const [newest] = await this.versionsFor(templateId);
+
+    return newest;
+  }
+
+  /**
+   * Switch how an instrument's items are dealt (prompt §6) — from the assessment table, in one act.
+   *
+   * **Permitted on a published instrument**, unlike every content write in this file, and the
+   * reasoning is the one that put the column on the template rather than the version: order is not a
+   * scoring input. `ScoringService` reads `assessment_answers.score` joined through
+   * `question_dimensions`; neither knows, or could know, the sequence an item was shown in. So
+   * flipping RIASEC to RANDOM changes what the next student sees and changes nothing about what any
+   * previous student's result means — and an attempt already in flight keeps the order it was dealt,
+   * because that order is stored on the attempt rather than recomputed from here.
+   *
+   * Idempotent: setting the mode it already has writes nothing and logs nothing.
+   */
+  async setPresentationMode(
+    user: User,
+    template: AssessmentTemplate,
+    mode: PresentationMode,
+  ): Promise<AssessmentTemplate> {
+    if (template.presentationMode === mode) {
+      return template;
+    }
+
+    const timestamp = now();
+
+    await this.db
+      .update(assessmentTemplates)
+      .set({ presentationMode: mode, updatedAt: timestamp })
+      .where(eq(assessmentTemplates.id, template.id));
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_PRESENTATION_MODE_CHANGED',
+      module: MODULE,
+      targetType: 'assessment_template',
+      targetId: template.id,
+      oldValues: { presentation_mode: template.presentationMode },
+      newValues: { presentation_mode: mode },
+    });
+
+    return { ...template, presentationMode: mode, updatedAt: timestamp };
   }
 
   // --- Delete (prompt-driven, v1.6) ---------------------------------------------------------
@@ -815,6 +1086,7 @@ export class AssessmentBuilderService {
       createdAt: now(),
       /** Never at creation — a draft has not published, and 0016's NULL says exactly that. */
       publishedAt: null,
+      sourceVersionId: input.sourceVersionId ?? null,
     };
 
     await this.db.insert(assessmentVersions).values(version);
@@ -866,6 +1138,9 @@ export class AssessmentBuilderService {
       durationMinutes: source.durationMinutes,
       // The whole config object, not a rebuilt `{ algorithm }` — see the note above.
       scoringConfig: source.scoringConfig,
+      // Migration 0037. The draft used to be untraceable: "v4 was copied from v3" existed only in
+      // the audit log, which nothing in the product reads back.
+      sourceVersionId: source.id,
     });
 
     const content = await this.versionContent(source.id);
@@ -913,6 +1188,95 @@ export class AssessmentBuilderService {
     });
 
     return draft;
+  }
+
+  /**
+   * **Retire one version** (prompt §4) — including a published one.
+   *
+   * Archiving a *template* retires the whole instrument. This retires one edition of it, which is
+   * the act §4 actually asks for and the one the schema has always had a state for
+   * (`VERSION_STATUSES` includes `ARCHIVED`) with nothing to reach it. It is what an author needs
+   * after publishing v2: v1 should stop being offered without the instrument going with it.
+   *
+   * ## What it does not do, and why that is the whole point
+   *
+   * **The row is never deleted, and neither is anything under it.** §12 puts the attempt → answer →
+   * result chain outside soft deletes entirely, and every attempt carries
+   * `assessment_version_id` — so a student's result from 2025 resolves to the exact questions,
+   * options and scoring config it was produced against, whatever happened to the version
+   * afterwards. A hard delete here would cascade through `assessment_questions` and leave every one
+   * of those results pointing at nothing. Archiving is a status, and the status is all it is.
+   *
+   * **Attempts in flight are untouched.** `start()` refuses a *new* attempt on a non-PUBLISHED
+   * version, and `listAssignmentsForStudent` stops offering it — but a student part-way through
+   * reaches it via the attempt, which does not re-check. That asymmetry is deliberate and matches
+   * `archiveTemplate`: archiving retires what is offered next, it does not void work already under
+   * way. Ending that work is closing the *assignment*, which is a different, explicit act that
+   * expires the attempts beneath it (§21).
+   *
+   * **The assignment rows survive.** They still name this version, so the history of who was asked
+   * to sit what stays intact; they simply stop resolving to anything a student can start.
+   *
+   * Idempotent, like every other archive in this file.
+   */
+  async archiveVersion(user: User, version: AssessmentVersion): Promise<AssessmentVersion> {
+    if (version.status === 'ARCHIVED') {
+      return version;
+    }
+
+    await this.db
+      .update(assessmentVersions)
+      .set({ status: 'ARCHIVED' })
+      .where(eq(assessmentVersions.id, version.id));
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_VERSION_ARCHIVED',
+      module: MODULE,
+      targetType: 'assessment_version',
+      targetId: version.id,
+      oldValues: { status: version.status },
+      newValues: {
+        status: 'ARCHIVED',
+        assessment_template_id: version.assessmentTemplateId,
+        version_number: version.versionNumber,
+      },
+    });
+
+    return { ...version, status: 'ARCHIVED' };
+  }
+
+  /**
+   * Bring an archived version back to the state it was in before.
+   *
+   * **`published_at` is what decides**, not a guess: a version that carries a publication stamp was
+   * published and returns to `PUBLISHED`; one that never did returns to `DRAFT`. The column is the
+   * record of the act (migration 0016), and reading it here is what stops a restore from silently
+   * promoting a draft that was archived before anyone released it.
+   */
+  async restoreVersion(user: User, version: AssessmentVersion): Promise<AssessmentVersion> {
+    if (version.status !== 'ARCHIVED') {
+      return version;
+    }
+
+    const status = version.publishedAt === null ? 'DRAFT' : 'PUBLISHED';
+
+    await this.db
+      .update(assessmentVersions)
+      .set({ status })
+      .where(eq(assessmentVersions.id, version.id));
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'ASSESSMENT_VERSION_RESTORED',
+      module: MODULE,
+      targetType: 'assessment_version',
+      targetId: version.id,
+      oldValues: { status: version.status },
+      newValues: { status, version_number: version.versionNumber },
+    });
+
+    return { ...version, status };
   }
 
   async findVersion(versionId: string): Promise<AssessmentVersion | undefined> {

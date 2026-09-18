@@ -1,4 +1,4 @@
-import { Bot, Loader2, MessageSquare, Send, Trash2, User, X } from 'lucide-react';
+import { Bot, Loader2, Send, Trash2, User, X } from 'lucide-react';
 import {
   type CSSProperties,
   type FormEvent,
@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 
+import chatLogoUrl from '@/assets/careerlinkai_logo-256.png';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/components/ui/cn';
@@ -46,10 +47,13 @@ import type { ChatMessage } from '@/types/recommendation';
  *
  * ## Layout
  *
- * On `xl` and up it is a sticky right-hand column. Below that it collapses to a floating button
- * that opens a full-height drawer — a 380px chat column beside a card list does not fit a phone,
- * and squeezing it in would cost the recommendations the width they need. The mount is shared, so
- * the transcript does not reset when the viewport crosses the breakpoint.
+ * On `xl` and up it is a sticky right-hand column. Below that it collapses to a floating logo
+ * button that opens a full-height drawer — a 380px chat column beside a card list does not fit a
+ * phone, and squeezing it in would cost the recommendations the width they need. The mount is
+ * shared, so the transcript does not reset when the viewport crosses the breakpoint.
+ *
+ * The floating trigger is `ChatLauncherButton`, the same 48px mark the rest of the student shell
+ * uses (prompt §9).
  */
 export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendations: boolean }) {
   const [open, setOpen] = useState(false);
@@ -76,14 +80,7 @@ export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendat
 
       {/* Below xl: a launcher and a drawer. */}
       <div className="xl:hidden">
-        <Button
-          className="fixed bottom-5 right-5 z-40 shadow-lg"
-          onClick={() => setOpen(true)}
-          aria-expanded={open}
-        >
-          <MessageSquare className="size-4" aria-hidden="true" />
-          Ask about my results
-        </Button>
+        <ChatLauncherButton open={open} onOpen={() => setOpen(true)} />
 
         {open ? (
           <div
@@ -135,14 +132,7 @@ export function StudentChatLauncher() {
 
   return (
     <>
-      <Button
-        className="fixed bottom-5 right-5 z-40 shadow-lg"
-        onClick={() => setOpen(true)}
-        aria-expanded={open}
-      >
-        <MessageSquare className="size-4" aria-hidden="true" />
-        Ask CareerLinkAI
-      </Button>
+      <ChatLauncherButton open={open} onOpen={() => setOpen(true)} />
 
       {open ? (
         <div
@@ -170,6 +160,69 @@ export function StudentChatLauncher() {
         </div>
       ) : null}
     </>
+  );
+}
+
+/**
+ * **The trigger: the CareerLinkAI mark, and almost nothing else** (prompt §9).
+ *
+ * It was a full-width primary button reading "Ask CareerLinkAI", pinned bottom-right — about 190×40
+ * of filled steel sitting permanently over the dashboard. On a 360 px phone that is a slab across
+ * the bottom of every student screen, and it covered the last card in whatever list was underneath.
+ *
+ * Now it is a 48 px circle carrying the logo. The reasoning behind each decision:
+ *
+ *   * **The mark, not a generic speech bubble.** The product's own identity is what says *which*
+ *     assistant this is, and it is already the mark on the sign-in page, the shell and the landing
+ *     page. A `MessageSquare` icon would have said "a chat" and named nobody.
+ *   * **48 px, which is above the 44 px touch minimum** — smaller would have traded one usability
+ *     problem for another.
+ *   * **The name is not gone, it moved.** `aria-label` and `title` both carry "Ask CareerLinkAI",
+ *     so a screen reader announces the same sentence the button used to print, a hover says it, and
+ *     an `sm`-and-up tooltip renders it beside the mark. An icon-only control with no accessible
+ *     name is unusable, which is the failure mode this change has to avoid.
+ *   * **Bottom-right, above the safe-area inset**, clear of the iOS home indicator — and small
+ *     enough that what it now overlaps is page padding rather than content.
+ *
+ * Shared by both launchers, so the trigger cannot drift between the recommendations page and the
+ * rest of the student shell.
+ */
+function ChatLauncherButton({ open, onOpen }: { open: boolean; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-expanded={open}
+      aria-haspopup="dialog"
+      aria-label="Ask CareerLinkAI"
+      title="Ask CareerLinkAI"
+      className={cn(
+        'group fixed z-40 flex size-12 items-center justify-center rounded-full',
+        'border border-border bg-card shadow-lg transition',
+        'hover:border-primary hover:shadow-xl',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        // `max(1.25rem, …)` so it clears the home indicator on a phone and sits at a normal inset
+        // everywhere else.
+        'bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5',
+      )}
+    >
+      <img src={chatLogoUrl} alt="" aria-hidden="true" className="size-8 object-contain" />
+      {/*
+        The label, on hover and focus, from `sm` up. `pointer-events-none` so it can never sit
+        between a pointer and the button it describes; hidden below `sm` because a tooltip anchored
+        to the right edge of a 320 px screen has nowhere to go.
+      */}
+      <span
+        className={cn(
+          'pointer-events-none absolute right-full mr-3 hidden whitespace-nowrap rounded-none',
+          'border border-border bg-card px-2 py-1 text-xs text-foreground/80 opacity-0 transition-opacity',
+          'group-hover:opacity-100 group-focus-visible:opacity-100 sm:block',
+        )}
+        aria-hidden="true"
+      >
+        Ask CareerLinkAI
+      </span>
+    </button>
   );
 }
 

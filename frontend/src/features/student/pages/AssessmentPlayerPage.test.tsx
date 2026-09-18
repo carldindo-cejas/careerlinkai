@@ -99,10 +99,10 @@ describe('AssessmentPlayerPage', () => {
 
   /**
    * Each answer is POSTed as it is chosen — a student who closes the tab on question 40 comes back
-   * to question 40, which on a shared school computer is not a nicety. Advancing is now an
-   * explicit act, so the save and the move are two separate events.
+   * to question 40, which on a shared school computer is not a nicety — and choosing it moves the
+   * student on (prompt §7). Sixty items is otherwise fifty-nine presses of Next.
    */
-  it('saves each answer as it is chosen, and advances only when Next is pressed', async () => {
+  it('saves each answer as it is chosen, then moves on by itself', async () => {
     const user = userEvent.setup();
     renderPlayer();
 
@@ -113,10 +113,108 @@ describe('AssessmentPlayerPage', () => {
       expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q1', 'q1-o5'),
     );
 
-    // No auto-advance: the student is still looking at the question they just answered.
-    expect(screen.getByText('Question number 1?')).toBeInTheDocument();
+    // No Next required. The answer is saved first — the advance awaits the save chain — so the
+    // student can never be moved past an answer that did not land.
+    await screen.findByText('Question number 2?');
+  });
 
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+  /**
+   * **The one place auto-advance must not happen.** Submitting scores the attempt and generates
+   * recommendations; triggering that as a side effect of answering the last item would be an
+   * irreversible act nobody chose. Answering it leaves the student on it, with Finish enabled.
+   */
+  it('never submits by itself from the final question', async () => {
+    const user = userEvent.setup();
+    vi.mocked(studentAssessmentApi.getAttempt).mockResolvedValue(
+      attempt({
+        answers: [{ question_id: 'q1', selected_option_id: 'q1-o5', answer_text: null }],
+      }),
+    );
+
+    renderPlayer();
+
+    // Resumes on question 2, which is the last one.
+    await screen.findByText('Question number 2?');
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
+
+    await waitFor(() =>
+      expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q2', 'q2-o5'),
+    );
+
+    // Well past the auto-advance dwell, and still here. Nothing was submitted.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(screen.getByText('Question number 2?')).toBeInTheDocument();
+    expect(studentAssessmentApi.submit).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Finish assessment' })).toBeEnabled();
+  });
+
+  /**
+   * **Changing your mind must not overshoot.**
+   *
+   * Two answers to the same question are two commits, each of which wants to advance. If the first
+   * one's pending move still fired, the student would land two questions on — and the second answer
+   * would have been saved against a question no longer on screen. The commit token is what makes
+   * the older advance a no-op.
+   */
+  it('advances exactly one question when the answer is changed twice in quick succession', async () => {
+    vi.mocked(studentAssessmentApi.getAttempt).mockResolvedValue(
+      attempt({ questions: [1, 2, 3, 4].map((n) => question(n, 'Realistic')) }),
+    );
+
+    const user = userEvent.setup();
+    renderPlayer();
+
+    await screen.findByText('Question number 1?');
+
+    await user.click(screen.getByRole('radio', { name: 'Strongly Disagree' }));
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
+
+    await screen.findByText('Question number 2?');
+
+    // Settle well past a second dwell: the superseded advance must never arrive late either.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(screen.getByText('Question number 2?')).toBeInTheDocument();
+    expect(screen.queryByText('Question number 3?')).not.toBeInTheDocument();
+
+    // The last choice is the one the server was left holding.
+    const saves = vi.mocked(studentAssessmentApi.saveAnswer).mock.calls;
+    expect(saves.at(-1)).toEqual([ATTEMPT_ID, 'q1', 'q1-o5']);
+  });
+
+  /**
+   * Going back must keep what was chosen, let it be changed, and carry on from there — and it must
+   * cancel any advance that was still pending when Previous was pressed.
+   */
+  it('keeps the answer when the student goes back, and re-saves a change', async () => {
+    vi.mocked(studentAssessmentApi.getAttempt).mockResolvedValue(
+      attempt({ questions: [1, 2, 3].map((n) => question(n, 'Realistic')) }),
+    );
+
+    const user = userEvent.setup();
+    renderPlayer();
+
+    await screen.findByText('Question number 1?');
+    await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
+    await screen.findByText('Question number 2?');
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await screen.findByText('Question number 1?');
+
+    // The selection survived the round trip — it is keyed by question id, not by position.
+    expect(screen.getByRole('radio', { name: 'Strongly Agree' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    // Changing it saves the new value (the server's write is an upsert, so this updates rather
+    // than stacking a second answer) and moves on again.
+    await user.click(screen.getByRole('radio', { name: 'Strongly Disagree' }));
+
+    await waitFor(() =>
+      expect(studentAssessmentApi.saveAnswer).toHaveBeenLastCalledWith(ATTEMPT_ID, 'q1', 'q1-o1'),
+    );
     await screen.findByText('Question number 2?');
   });
 
@@ -143,6 +241,11 @@ describe('AssessmentPlayerPage', () => {
 
     // There is no escape hatch beside it either.
     expect(screen.queryByRole('button', { name: /skip/i })).not.toBeInTheDocument();
+
+    // And nothing moves on its own: auto-advance fires from an answer, and there is no answer.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(screen.getByText('Question number 1?')).toBeInTheDocument();
   });
 
   /**
@@ -201,6 +304,11 @@ describe('AssessmentPlayerPage', () => {
 
     await screen.findByText(/Network is down\./);
 
+    // Not by itself — the pending auto-advance reads the failure flag after the chain drains…
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByText('Question number 1?')).toBeInTheDocument();
+
+    // …and not by pressing Next either.
     await user.click(screen.getByRole('button', { name: 'Next' }));
 
     expect(screen.getByText('Question number 1?')).toBeInTheDocument();
@@ -219,7 +327,6 @@ describe('AssessmentPlayerPage', () => {
     expect(screen.getByText('2 questions left')).toBeInTheDocument();
 
     await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
-    await user.click(await screen.findByRole('button', { name: 'Next' }));
     await screen.findByText('Question number 2?');
 
     expect(screen.getByText('1 question left')).toBeInTheDocument();
@@ -351,10 +458,8 @@ describe('AssessmentPlayerPage', () => {
         expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q1', optionId),
       );
 
-      const next = screen.getByRole('button', { name: 'Next' });
-      await waitFor(() => expect(next).toBeEnabled());
-      await user.click(next);
-
+      // Every type is single-select over `question_options` on the wire, so every type advances the
+      // same way. A type that ever needed free text would fail here first.
       await screen.findByText('Question number 2?');
     });
   });
@@ -425,6 +530,27 @@ describe('AssessmentPlayerPage', () => {
       await waitFor(() =>
         expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q1', 'q1-o1'),
       );
+
+      // **And it stays put.** Browsing a five-point scale with the arrow keys must not move the
+      // page out from under the cursor — the commit gesture is Enter or Space, tested below.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(screen.getByText('Question number 1?')).toBeInTheDocument();
+    });
+
+    /** Enter on the focused option is the commit: it answers, and it moves on. */
+    it('commits and advances on Enter, and on Space', async () => {
+      const user = userEvent.setup();
+      renderPlayer();
+
+      await screen.findByText('Question number 1?');
+
+      screen.getByRole('radio', { name: 'Strongly Agree' }).focus();
+      await user.keyboard('{Enter}');
+
+      await waitFor(() =>
+        expect(studentAssessmentApi.saveAnswer).toHaveBeenCalledWith(ATTEMPT_ID, 'q1', 'q1-o5'),
+      );
+      await screen.findByText('Question number 2?');
     });
 
     /**
@@ -459,10 +585,6 @@ describe('AssessmentPlayerPage', () => {
       await screen.findByText('Question number 1?');
       await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
 
-      const next = await screen.findByRole('button', { name: 'Next' });
-      await waitFor(() => expect(next).toBeEnabled());
-      await user.click(next);
-
       const heading = await screen.findByText('Question number 2?');
 
       await waitFor(() => expect(heading).toHaveFocus());
@@ -496,7 +618,6 @@ describe('AssessmentPlayerPage', () => {
       expect(screen.getByText('0 of 2 answered')).toBeInTheDocument();
 
       await user.click(screen.getByRole('radio', { name: 'Strongly Agree' }));
-      await user.click(await screen.findByRole('button', { name: 'Next' }));
 
       await waitFor(() =>
         expect(screen.getByRole('status')).toHaveTextContent('Question 2 of 2'),

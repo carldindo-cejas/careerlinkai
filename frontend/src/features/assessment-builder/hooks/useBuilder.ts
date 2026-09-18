@@ -83,6 +83,39 @@ export function useDuplicateVersion(templateId: string) {
 }
 
 /**
+ * Archive or restore one version (prompt §4).
+ *
+ * Both invalidate the template, because the version list is part of it — and the assessment list
+ * too, since "has a published version" is the Status column's derived answer and archiving the last
+ * published version changes it.
+ */
+export function useArchiveVersion(templateId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (versionId: string) => builderApi.archiveVersion(versionId),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: builderKeys.template(templateId) }),
+        queryClient.invalidateQueries({ queryKey: ['assessments', 'list'] }),
+      ]),
+  });
+}
+
+export function useRestoreVersion(templateId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (versionId: string) => builderApi.restoreVersion(versionId),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: builderKeys.template(templateId) }),
+        queryClient.invalidateQueries({ queryKey: ['assessments', 'list'] }),
+      ]),
+  });
+}
+
+/**
  * Adding questions — and **the invalidation is awaited, not fired and forgotten.**
  *
  * `mutateAsync` resolves only once `onSuccess` has settled, so returning the refetch promise means

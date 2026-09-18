@@ -22,9 +22,21 @@ const buttonVariants = cva(
         // one that carries it out.
         danger: 'bg-destructive text-destructive-foreground hover:bg-[#9a322c]',
       },
+      /**
+       * **Every size is at least 44px tall on a phone, and the designed height from `sm` up.**
+       *
+       * WCAG 2.2 AA (Target Size, Minimum) puts the floor at 44×44 CSS px, and `h-8`/`h-10` are 32
+       * and 40 — comfortably clickable with a mouse and genuinely hard to hit with a thumb, which is
+       * how most students reach this product. `scripts/responsive-audit.mjs` measured sixty-odd of
+       * these across the counselor and student interfaces at 320–430px.
+       *
+       * Raised only below `sm`, deliberately: a desktop toolbar of 44px buttons is a toolbar that
+       * has lost its density for the benefit of a pointer nobody is using there. One rule, applied
+       * where the pointer is actually a finger.
+       */
       size: {
-        sm: 'h-8 px-3',
-        md: 'h-10 px-4',
+        sm: 'h-11 px-3 sm:h-8',
+        md: 'h-11 px-4 sm:h-10',
         lg: 'h-11 px-6 text-base',
       },
     },

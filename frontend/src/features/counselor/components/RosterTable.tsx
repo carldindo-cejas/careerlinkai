@@ -184,7 +184,7 @@ function RosterRow({
             type="button"
             onClick={onToggle}
             aria-expanded={open}
-            className="inline-flex items-center gap-2 text-left font-medium text-foreground hover:underline focus-visible:underline focus-visible:outline-none"
+            className="inline-flex min-h-11 max-w-[14rem] items-start gap-2 py-1 text-left font-medium text-foreground hover:underline focus-visible:underline focus-visible:outline-none sm:min-h-0 sm:py-0"
           >
             <ChevronDown
               className={cn(
@@ -193,7 +193,7 @@ function RosterRow({
               )}
               aria-hidden="true"
             />
-            {name}
+            <span className="break-words">{name}</span>
           </button>
         </td>
         <td className="py-2.5 pr-4 font-mono text-muted-foreground">{entry.username}</td>
@@ -204,9 +204,9 @@ function RosterRow({
           {error ? <p className="mb-1 text-sm text-destructive">{error.message}</p> : null}
 
           {isConfirming ? (
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               {/* Removal signs them out on the spot (§38) — say so before it happens. */}
-              <span className="text-sm text-muted-foreground">
+              <span className="w-full text-left text-sm text-muted-foreground sm:w-auto sm:text-right">
                 Remove {name}? This signs them out immediately.
               </span>
               <Button

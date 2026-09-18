@@ -668,6 +668,26 @@ const ANSWER_CONCURRENCY = 8;
  * top-level request either way. A test that did care about answering order would call the
  * endpoint directly rather than reach for a helper named "answer all of them".
  */
+/**
+ * `pick` returns a **response level, 0 = lowest score … n-1 = highest** — not a position in the
+ * payload.
+ *
+ * The two used to be the same number, and every caller here is written in terms of the first:
+ * `RIASEC_PICKS` is commented "0 → 1 (Strongly Disagree) … 4 → 5 (Strongly Agree)", and
+ * `player.test.ts` writes `return 4; // score 5`. Migration 0037 presents the Likert scale
+ * positive-first (§8A: Strongly Agree at the top), so payload position 0 is now the *highest*
+ * score — which would have silently inverted every scoring fixture in the suite while the scoring
+ * code itself was untouched.
+ *
+ * So the index is resolved against the options sorted by their **answer key** (`value`, which is
+ * `'1'`…`'5'` on a Likert item and is what the score is derived from), rather than against the
+ * order they happen to be presented in. The fixtures now say what they always meant, and they stay
+ * true whichever way the scale is drawn — which is the property §8A's "changing the visual order
+ * must not change the scoring" is actually asking anyone to be able to check.
+ *
+ * Options whose `value` is not numeric (a CUSTOM multiple-choice item) keep their payload order:
+ * there is no score ordering to resolve against, and position is the only meaning available.
+ */
 export async function answerAll(
   studentToken: string,
   attempt: any,
@@ -676,7 +696,7 @@ export async function answerAll(
   const questions: any[] = attempt.questions;
 
   const saveOne = async (question: any, index: number): Promise<void> => {
-    const option = question.options[pick(question, index)];
+    const option = byAscendingValue(question.options)[pick(question, index)];
 
     const response = await api('POST', `/student/attempts/${attempt.id}/answers`, {
       token: studentToken,
@@ -699,4 +719,19 @@ export async function answerAll(
   });
 
   await Promise.all(workers);
+}
+
+/**
+ * A question's options ordered lowest score first, for `answerAll`.
+ *
+ * The player payload deliberately carries **no score** (§37 — a student who can see that Strongly
+ * Agree is worth 5 stops answering an interest inventory), so this sorts on `value`, the stored
+ * answer key, which for both curated instruments is the score written as a string.
+ */
+function byAscendingValue(options: any[]): any[] {
+  const numeric = options.every((option) => Number.isFinite(Number(option.value)));
+
+  return numeric
+    ? [...options].sort((a, b) => Number(a.value) - Number(b.value))
+    : options;
 }

@@ -268,7 +268,28 @@ export function serializeAssessmentRow(row: AssessmentListRow) {
     title: row.template.title,
     description: row.template.description,
     category: row.template.category,
+    /**
+     * `GLOBAL` | `COUNSELOR_PRIVATE` — **the author type.** Paired with `author` below, this is the
+     * ownership relationship the schema has carried since 0005: a GLOBAL instrument is curated
+     * administrator content, a COUNSELOR_PRIVATE one belongs to the named counselor and is visible
+     * only to them and to their own classes' students.
+     */
     ownership: row.template.ownership,
+    /** The named creator (0037 display, `creator_id` since 0005). Null if the account is gone. */
+    author: row.author,
+    /** Migration 0037 — the instrument this was copied from, or null when authored from scratch. */
+    source_template_id: row.template.sourceTemplateId,
+    /** Migration 0037 — `SEQUENTIAL` | `RANDOM`, switchable from the table even after publish. */
+    presentation_mode: row.template.presentationMode,
+    /**
+     * **What this caller may do, answered by the server** (prompt §1, §5).
+     *
+     * The table used to derive "can I author this?" from `ownership !== 'GLOBAL'`, which agreed with
+     * the server only by coincidence of what a counselor's list happens to contain. One rule, one
+     * place: these come from the same `policies/assessment.ts` functions the write endpoints call.
+     */
+    can_manage: row.canManage,
+    can_copy: row.canCopy,
     /** `ARCHIVED` | `ACTIVE` | `DRAFT` — the stored column, for the Archive/Restore action. */
     status: row.template.status,
     /**
@@ -343,6 +364,18 @@ export function serializeAssessmentDates(row: AssessmentListRow) {
   };
 }
 
+/**
+ * What the signed-in caller may do with this template.
+ *
+ * Optional because two callers serialize templates and only one of them is a screen with buttons:
+ * the counselor's assign-picker list does not need it. When it is absent the keys are omitted
+ * rather than defaulted to `false`, so a client cannot mistake "not stated" for "refused".
+ */
+export interface TemplatePermissions {
+  canManage: boolean;
+  canCopy: boolean;
+}
+
 export function serializeTemplate(
   template: AssessmentTemplate,
   assignableVersion: AssessmentVersion | undefined,
@@ -351,6 +384,7 @@ export function serializeTemplate(
   /** Migration 0014 — resolved by the caller, which already batched them for the whole list. */
   type?: AssessmentType | null,
   scorings?: AssessmentScoring[],
+  permissions?: TemplatePermissions,
 ) {
   return {
     id: template.id,
@@ -358,6 +392,12 @@ export function serializeTemplate(
     title: template.title,
     description: template.description,
     ownership: template.ownership,
+    /** Migration 0037. See `serializeAssessmentRow` for what these three carry. */
+    source_template_id: template.sourceTemplateId,
+    presentation_mode: template.presentationMode,
+    ...(permissions === undefined
+      ? {}
+      : { can_manage: permissions.canManage, can_copy: permissions.canCopy }),
     status: template.status,
     assessment_type_id: template.assessmentTypeId,
     type:
@@ -587,5 +627,11 @@ export function serializeVersionSummary(version: AssessmentVersion) {
     created_at: version.createdAt,
     /** Migration 0016. NULL for a draft, and for a version archived before it ever published. */
     published_at: version.publishedAt,
+    /**
+     * Migration 0037 — the version this one's questions were copied from, by either copy path
+     * (Edit-a-copy within a template, or a counselor's copy of the whole instrument). NULL for a
+     * version drafted from nothing.
+     */
+    source_version_id: version.sourceVersionId,
   };
 }

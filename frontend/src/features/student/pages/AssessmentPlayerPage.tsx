@@ -31,26 +31,62 @@ import type { AssessmentQuestion } from '@/types/assessment';
  * state lives in this component, not in the query cache: re-reading the server after every tap
  * would put a network round trip between the student and the radio button they just pressed.
  *
- * ## Advancing is a transaction, not a state update
+ * ## Answering moves you on — and advancing is still a transaction, not a state update
  *
- * This screen previously auto-advanced on a 150 ms `setTimeout` and offered a **Skip** button that
- * moved on unconditionally. Both were ways to leave a required question unanswered, and the timer
- * made it a race: two taps inside one timeout window queued two advances, so a student could land
- * two questions further on than they had answered — and then be refused at submit, with no clue
- * which item they had missed.
+ * Choosing an answer advances to the next question (prompt §7). Sixty items is fifty-nine otherwise
+ * unnecessary presses of Next, and on a phone that is fifty-nine round trips to the bottom of the
+ * screen.
  *
- * The fix has three parts, and all three are needed:
+ * An earlier version of this screen did that with a bare 150 ms `setTimeout` alongside a **Skip**
+ * button, and both were wrong in the same way: they could move the student past a question they had
+ * not answered. Two taps inside one timeout window queued two advances, so a student landed two
+ * questions ahead of their answers and was refused at submit with no clue which item they had
+ * missed. Auto-advance is back because it is right; the timer-as-a-race is not.
  *
- *   1. **Saves are serialized** through one promise chain (`saveChain`). Answers to the same
+ * Five things make it safe, and every one of them is load-bearing:
+ *
+ *   1. **It only ever fires from an answer.** `commit` is called by a click, a tap, and Enter or
+ *      Space on a focused option — the three gestures that *mean* "this is my answer". There is no
+ *      path from "no answer" to "next question" at all, which is a stronger guarantee than a
+ *      disabled button.
+ *   2. **Saves are serialized** through one promise chain (`saveChain`). Answers to the same
  *      question can be changed as fast as a student can tap; the *last* one is still the one the
  *      server ends up holding, because the next POST does not start until the previous one has
  *      settled. Two unordered in-flight upserts could otherwise land in either order.
- *   2. **Advancing awaits that chain**, so the answer is durable before the question leaves the
- *      screen — which is what makes resume-where-you-left-off honest.
- *   3. **A synchronous ref latches the advance.** `disabled` on the button is not sufficient on
- *      its own: React state is applied asynchronously, so a double-click delivered inside one
- *      frame passes a state-based guard twice before the first render disables anything. The ref
- *      flips in the same tick as the click.
+ *   3. **Advancing awaits that chain**, so the answer is durable before the question leaves the
+ *      screen — which is what makes resume-where-you-left-off honest, and what stops an advance
+ *      over an answer that never reached the server.
+ *   4. **A later commit supersedes an earlier one's pending advance** (`commitToken`). A student who
+ *      taps Disagree and then immediately Strongly Agree has issued two commits; the first one's
+ *      advance must not fire, or the second answer is saved onto a question that is no longer on
+ *      screen and the student overshoots by one. The token is checked after the await, along with
+ *      "are we still on the question the commit came from" — so pressing Previous during the pause
+ *      also cancels it.
+ *   5. **Arrow keys do not advance.** They select as they move, which is what a native radio group
+ *      does — and a group where moving the cursor jumped to the next question would be impossible to
+ *      browse. Enter or Space on the option you landed on is the commit.
+ *
+ * **The last question never auto-submits.** Answering it leaves the student on it with Finish
+ * enabled. Submitting is the one irreversible act on this screen — it scores the attempt and
+ * generates recommendations — and an act like that is not something to trigger as a side effect of
+ * answering an item.
+ *
+ * A short dwell (`AUTO_ADVANCE_MS`) separates the tap from the move, so the student sees the option
+ * they chose fill in rather than watching the page change under their finger. It is *not* the guard
+ * — points 2 to 4 are — which is the difference between this and the version that had to be removed.
+ *
+ * `disabled` on Next is still not sufficient on its own, and the synchronous `advancing` ref still
+ * latches it: React state is applied asynchronously, so a double-click delivered inside one frame
+ * passes a state-based guard twice before the first render disables anything.
+ *
+ * ## Going back
+ *
+ * Previous is never gated on an answer — going back to *check* something must always work — and it
+ * never discards one: the selection lives in `answers`, keyed by question id, so returning to
+ * question 12 shows what was chosen there and changing it re-saves (the server's answer write is an
+ * upsert on `(attempt, question)`, so a change updates rather than stacking). It also cannot
+ * reshuffle anything: under RANDOM delivery the order was dealt once, server-side, at `start`, and
+ * this screen renders whatever order the payload arrived in.
  *
  * ## The options are a radio group, not five toggle buttons
  *
@@ -70,7 +106,7 @@ import type { AssessmentQuestion } from '@/types/assessment';
  *
  * Arrow keys select as they move, exactly as native radios do. That queues a save per press, which
  * the chain above serializes into a last-write-wins sequence — the same guarantee a student gets
- * for tapping two options quickly with a mouse.
+ * for tapping two options quickly with a mouse. They deliberately do **not** advance; see point 5.
  *
  * ## Where focus goes when the question changes
  *
@@ -79,6 +115,15 @@ import type { AssessmentQuestion } from '@/types/assessment';
  * question had changed short of reading the whole page again. Focus now moves to the question
  * heading, which announces it, and puts the group one Tab away.
  */
+/**
+ * How long the chosen option stays on screen before the question changes.
+ *
+ * Long enough to see the selection land, short enough not to feel like waiting. It is a courtesy,
+ * never a guard — nothing about correctness depends on this number, and setting it to 0 would leave
+ * every rule in the class doc intact.
+ */
+const AUTO_ADVANCE_MS = 220;
+
 export function AssessmentPlayerPage() {
   const { attemptId = '' } = useParams();
   const navigate = useNavigate();
@@ -112,8 +157,21 @@ export function AssessmentPlayerPage() {
   const saveChain = useRef<Promise<void>>(Promise.resolve());
   /** Did the most recent save fail? Read by `advance` once the chain has drained. */
   const saveFailed = useRef(false);
-  /** The synchronous half of the double-click guard. See the class doc, point 3. */
+  /** The synchronous half of the double-click guard. See the class doc. */
   const advancing = useRef(false);
+  /**
+   * The index, readable synchronously.
+   *
+   * A pending auto-advance has to ask "is the student still on the question this came from?" after
+   * its await, and `index` inside that closure is the value from the render the click happened in.
+   * The ref is the current one.
+   */
+  const indexRef = useRef(0);
+  /**
+   * Which commit a pending auto-advance belongs to. See the class doc, point 4: a newer answer
+   * supersedes an older one's pending move.
+   */
+  const commitToken = useRef(0);
 
   /** The question heading, focused when the question changes so the change is announced. */
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -150,7 +208,12 @@ export function AssessmentPlayerPage() {
       if (answer.selected_option_id) existing[answer.question_id] = answer.selected_option_id;
     }
     setAnswers(existing);
-    setIndex(Math.min(questions.findIndex((q) => !existing[q.id]) + 1 || 1, questions.length) - 1);
+
+    const resumeAt =
+      Math.min(questions.findIndex((q) => !existing[q.id]) + 1 || 1, questions.length) - 1;
+
+    indexRef.current = resumeAt;
+    setIndex(resumeAt);
     setHydrated(true);
   }
 
@@ -210,6 +273,7 @@ export function AssessmentPlayerPage() {
       }
 
       navigated.current = true;
+      indexRef.current = target;
       setIndex(target);
 
       return true;
@@ -217,6 +281,51 @@ export function AssessmentPlayerPage() {
       advancing.current = false;
     }
   }, []);
+
+  /**
+   * **Answer, then move on** — the click/tap/Enter path (prompt §7).
+   *
+   * `choose` records and saves; this adds the advance, and the two are separate functions because
+   * the arrow keys need the first without the second.
+   *
+   * Everything after the await is a re-check rather than an assumption, and each clause is a real
+   * case:
+   *
+   *   * a **newer commit** means the student changed their mind — its own advance will fire, and
+   *     this one moving as well would overshoot by one;
+   *   * a **failed save** means this is not an answered question, whatever the screen shows;
+   *   * a **different index** means the student pressed Previous (or the earlier commit's advance
+   *     already landed) during the pause, and dragging them forward from wherever they now are
+   *     would be the worst possible response to a deliberate navigation.
+   *
+   * The last question is excluded before any of that: answering it must not submit (see the doc).
+   */
+  const commit = useCallback(
+    (questionId: string, optionId: string, fromIndex: number, isLastQuestion: boolean) => {
+      choose(questionId, optionId);
+
+      if (isLastQuestion) {
+        return;
+      }
+
+      commitToken.current += 1;
+      const token = commitToken.current;
+
+      void (async () => {
+        await Promise.all([
+          saveChain.current,
+          new Promise((resolve) => setTimeout(resolve, AUTO_ADVANCE_MS)),
+        ]);
+
+        if (token !== commitToken.current) return;
+        if (saveFailed.current) return;
+        if (indexRef.current !== fromIndex) return;
+
+        await advance(fromIndex + 1);
+      })();
+    },
+    [advance, choose],
+  );
 
   if (isLoading) {
     return (
@@ -283,7 +392,15 @@ export function AssessmentPlayerPage() {
   // the `if (!question)` narrowing above into a nested function body.
   const { id: questionId, options } = question;
 
-  /** Arrow / Home / End across the group, selecting as it moves — what native radios do. */
+  /**
+   * The group's keyboard contract.
+   *
+   * **Arrows move and select; Enter and Space commit.** That split is the keyboard half of prompt
+   * §7's "only advance on a real answer": browsing a five-point scale with the arrow keys must be
+   * possible without the page changing out from under the cursor at every press, and the gesture
+   * that *means* "this one" is the one that moves on. It is also exactly how a native radio group
+   * inside a form behaves — arrows choose, Enter submits.
+   */
   function onOptionKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     const nodes = Array.from(
       groupRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
@@ -292,6 +409,21 @@ export function AssessmentPlayerPage() {
 
     // The keypress came from somewhere other than an option — leave it alone.
     if (current === -1 || nodes.length === 0) return;
+
+    // Enter / Space on the focused option: that is the answer, and it advances.
+    if (event.key === 'Enter' || event.key === ' ') {
+      const chosen = options[current];
+
+      if (chosen) {
+        // Space would otherwise scroll the page, and the button's own click would fire a second
+        // `commit` for the same gesture — two tokens, of which the first is immediately superseded.
+        // Harmless, but the advance would then be timed from the wrong one.
+        event.preventDefault();
+        commit(questionId, chosen.id, index, isLast);
+      }
+
+      return;
+    }
 
     let target: number;
 
@@ -315,13 +447,14 @@ export function AssessmentPlayerPage() {
     }
 
     // Only once a key we handle has actually matched — an unhandled key must keep its default,
-    // or Tab out of the group and Enter on an option would both be swallowed.
+    // or Tab out of the group would be swallowed.
     event.preventDefault();
 
     nodes[target]?.focus();
 
     const option = options[target];
 
+    // `choose`, not `commit`: selecting as the cursor moves, without leaving the question.
     if (option) choose(questionId, option.id);
   }
 
@@ -469,10 +602,14 @@ export function AssessmentPlayerPage() {
                   aria-checked={selected}
                   tabIndex={optionIndex === focusableOptionIndex ? 0 : -1}
                   // Selecting is never blocked by an in-flight save: the new choice is queued
-                  // behind it and wins, which is what a student changing their mind expects.
-                  onClick={() => choose(question.id, option.id)}
+                  // behind it and wins, which is what a student changing their mind expects — and
+                  // the newer commit supersedes the older one's pending advance.
+                  onClick={() => commit(question.id, option.id, index, isLast)}
                   className={[
-                    'rounded-none border px-4 py-3 text-left text-sm transition',
+                    // `min-h-12` is the touch target. A 5-point scale on a 320 px screen is five
+                    // rows a thumb has to hit without hitting its neighbour, and `py-3` alone
+                    // leaves a one-line option about 42 px tall.
+                    'flex min-h-12 items-center rounded-none border px-4 py-3 text-left text-sm transition',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
                     // Selected is the one filled object on the screen — the same steel block the
                     // primary button uses. Unselected is a hairline outline on the ground.
@@ -504,8 +641,31 @@ export function AssessmentPlayerPage() {
         </Alert>
       ) : null}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button variant="secondary" onClick={() => void onBack()} disabled={index === 0 || isSaving}>
+      {/*
+        **Sticky at the bottom under `sm`** (prompt §10).
+
+        On a phone the option list plus a long question pushes these two controls below the fold, so
+        a student who wants to go back has to scroll past the answers to find out they can. Pinned,
+        they are always where a thumb already is. `bottom-0` with the shell's own padding, a solid
+        background and a top border so the questions scroll *under* it rather than showing through;
+        `pb-[env(safe-area-inset-bottom)]` keeps it clear of the iOS home indicator.
+
+        It is static from `sm` up, where the whole screen fits and a pinned bar would only take
+        vertical space from the thing it is helping with.
+      */}
+      <div
+        className={[
+          'sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center justify-between gap-3',
+          'border-t border-border bg-background px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]',
+          'sm:static sm:mx-0 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0 sm:pb-0',
+        ].join(' ')}
+      >
+        <Button
+          variant="secondary"
+          className="min-h-11"
+          onClick={() => void onBack()}
+          disabled={index === 0 || isSaving}
+        >
           Back
         </Button>
 
@@ -515,7 +675,9 @@ export function AssessmentPlayerPage() {
             answer to "why can't I finish?". It is no longer attached to a second submit button:
             one screen, one way to finish.
           */}
-          <span className="text-sm text-muted-foreground">
+          {/* Hidden under `sm`: in the pinned bar it competes with the buttons for a 320 px row,
+              and the same fact is on screen two lines up as "12 of 60 answered". */}
+          <span className="hidden text-sm text-muted-foreground sm:inline">
             {remaining > 0
               ? `${remaining} ${remaining === 1 ? 'question' : 'questions'} left`
               : 'All questions answered'}
@@ -523,6 +685,7 @@ export function AssessmentPlayerPage() {
 
           {isLast ? (
             <Button
+              className="min-h-11"
               onClick={() => void onFinish()}
               disabled={!canLeaveQuestion || isSaving || submit.isPending}
               loading={isSaving || submit.isPending}
@@ -530,7 +693,15 @@ export function AssessmentPlayerPage() {
               {submit.isPending ? 'Scoring…' : 'Finish assessment'}
             </Button>
           ) : (
+            /*
+              Next stays, even though answering advances on its own. It is the way past an
+              **optional** question (`required: false` — the one case with nothing to commit), and
+              it is the fallback for anyone whose pointer or assistive technology did not take the
+              option press the way the page expected. A screen whose only way forward is a gesture
+              that can silently fail is a screen a student can get stuck on.
+            */
             <Button
+              className="min-h-11"
               onClick={() => void onNext()}
               disabled={!canLeaveQuestion || isSaving}
               loading={isSaving}

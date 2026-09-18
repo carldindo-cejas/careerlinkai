@@ -13,10 +13,12 @@ import {
   useAssessments,
   useAssessmentTypes,
   useAssignAssessment,
+  useCopyAssessment,
   useCreateAssessment,
   useDeleteAssessment,
   useRestoreAssessment,
   useSeedInstruments,
+  useSetPresentationMode,
   useUpdateAssessment,
 } from '@/features/assessment-builder/hooks/useAssessments';
 import { useAuthStore } from '@/stores/authStore';
@@ -29,6 +31,7 @@ import type {
   AssessmentRow,
   AssessmentSort,
   AssessmentStatusFilter,
+  PresentationMode,
 } from '@/types/assessmentAdmin';
 
 /**
@@ -47,9 +50,15 @@ import type {
  * `useEffect` resetting the page is the small consequence: page 4 of the unfiltered list rarely
  * exists in the filtered one, and a page past the end comes back empty.
  *
- * **View opens the builder** rather than a read-only mirror of it. Questions, dimensions, versions
- * and the §25 confirmation gate all live there already, and a second screen that showed the same
- * things without being able to act on them would be a page whose only purpose is to link to another.
+ * **The row opens the builder** (prompt §5) — the whole row, not a View button at the end of eight
+ * columns. Questions, dimensions, versions and the §25 confirmation gate all live there already, and
+ * a read-only mirror of that page would exist only to link to it. A counselor opening a *global*
+ * instrument now lands there too and sees it read-only, with Copy offered: the server allows the
+ * read and refuses the writes (`can_manage`), so the page states the rule rather than guessing it.
+ *
+ * **What a row's buttons may do is the server's answer, not this page's guess.** `can_manage` and
+ * `can_copy` ride on every row. They used to be derived here from `ownership !== 'GLOBAL'`, which
+ * agreed with the server only by coincidence of what a counselor's list happens to contain.
  */
 
 const PER_PAGE = 20;
@@ -124,6 +133,8 @@ export function AssessmentManagementPage() {
   const restore = useRestoreAssessment();
   const remove = useDeleteAssessment();
   const assign = useAssignAssessment();
+  const copy = useCopyAssessment();
+  const presentationMode = useSetPresentationMode();
   const seedInstruments = useSeedInstruments();
 
   const isAdmin = useAuthStore((state) => state.user?.role) === 'admin';
@@ -189,6 +200,52 @@ export function AssessmentManagementPage() {
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : `Could not archive ${row.title}.`,
+      );
+    }
+  }
+
+  /**
+   * Copy an instrument into one the signed-in user owns (prompt §1).
+   *
+   * **It navigates to the copy on success**, and that is the whole interaction rather than a flourish
+   * on it: the copy lands as a DRAFT v1 that has to be edited and published before any student can
+   * see it, so leaving the user on the list with a toast would leave the job half done and the next
+   * step invisible. The toast still names what happened, because the list they came from now has a
+   * row in it they did not have before.
+   */
+  async function onCopy(row: AssessmentRow) {
+    try {
+      const result = await copy.mutateAsync(row.id);
+
+      toast.success(
+        `Copied ${row.title} into “${result.assessment.title}” — ${result.question_count} questions, as a draft you own.`,
+      );
+
+      navigate(`${base}/assessment-templates/${result.assessment.id}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : `Could not copy ${row.title}.`);
+    }
+  }
+
+  /**
+   * Sequential ↔ random, from the table (prompt §6).
+   *
+   * The confirmation the toast gives is about *when* it takes effect, which is the one thing that is
+   * easy to assume wrongly: a class already sitting the assessment keeps the order it was dealt,
+   * because the order lives on each attempt rather than being recomputed per request.
+   */
+  async function onPresentationModeChange(row: AssessmentRow, mode: PresentationMode) {
+    try {
+      await presentationMode.mutateAsync({ id: row.id, mode });
+
+      toast.success(
+        mode === 'RANDOM'
+          ? `${row.title} will be shuffled for each student who starts it from now on.`
+          : `${row.title} will be shown in its authored order from now on.`,
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : `Could not change how ${row.title} is shown.`,
       );
     }
   }
@@ -278,30 +335,32 @@ export function AssessmentManagementPage() {
         page={page}
         onPageChange={setPage}
         /**
-         * **Who may author a row, as opposed to assign it.**
-         *
-         * An admin manages everything. A counselor's list is "the global instruments plus their
-         * own" (the server's own words), so within what a counselor can see, `GLOBAL` is exactly
-         * the set that is not theirs — which is the same line `canManageTemplate` draws on the
-         * server. Deriving it here rather than shipping a `can_manage` flag keeps the row payload
-         * unchanged; if the visibility rule ever widens, this has to move with it.
+         * The Owner column is an administrator's question. A counselor's list is "the shared
+         * instruments plus my own", so a column that could only ever print "Shared" or their own
+         * name is a column that costs width and says nothing.
          */
-        canManage={(row) => isAdmin || row.ownership !== 'GLOBAL'}
-        onView={(row) => navigate(`${base}/assessment-templates/${row.id}`)}
+        showOwner={isAdmin}
+        onOpen={(row) => navigate(`${base}/assessment-templates/${row.id}`)}
         onEdit={(row) => {
           setEditingRow(row);
           setFormOpen(true);
         }}
         onAssign={setAssigningRow}
+        onCopy={onCopy}
         onArchive={onArchive}
         onRestore={onRestore}
         onDelete={setDeletingRow}
+        onPresentationModeChange={onPresentationModeChange}
         busyId={
           archive.isPending
             ? (archive.variables ?? null)
             : restore.isPending
               ? (restore.variables ?? null)
-              : null
+              : copy.isPending
+                ? (copy.variables ?? null)
+                : presentationMode.isPending
+                  ? (presentationMode.variables?.id ?? null)
+                  : null
         }
       />
 

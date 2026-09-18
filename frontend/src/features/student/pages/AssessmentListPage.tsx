@@ -103,7 +103,7 @@ export function AssessmentListPage() {
           .{' '}
           <button
             type="button"
-            className="font-medium underline"
+            className="inline-flex min-h-11 items-center font-medium underline sm:min-h-0"
             onClick={() => navigate(paths.studentProfile)}
           >
             Complete your profile
@@ -209,7 +209,9 @@ function FilterSwitch({
             aria-pressed={active}
             onClick={() => onChange(option)}
             className={cn(
-              'inline-flex h-10 items-center gap-2 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+              // 40px is under the 44px touch floor, and these three are the first thing a student
+              // taps on this screen. Raised below `sm` only, like the Button primitive.
+              'inline-flex h-11 items-center gap-2 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:h-10',
               index > 0 && 'border-l border-border',
               active ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-secondary',
             )}

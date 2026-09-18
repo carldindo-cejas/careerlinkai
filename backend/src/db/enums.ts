@@ -62,6 +62,22 @@ export type AssessmentCategory = (typeof ASSESSMENT_CATEGORIES)[number];
 export const ASSESSMENT_OWNERSHIPS = ['GLOBAL', 'COUNSELOR_PRIVATE'] as const;
 export type AssessmentOwnership = (typeof ASSESSMENT_OWNERSHIPS)[number];
 
+/**
+ * How an instrument's items are dealt to a student (migration 0037).
+ *
+ * `SEQUENTIAL` is the authored `order_number`; `RANDOM` shuffles the items **once per attempt**,
+ * at `start`, and stores the result on `assessment_attempts.question_order`. Order is not a scoring
+ * input anywhere — the engine reads `assessment_answers.score` joined to `question_dimensions`,
+ * neither of which knows the sequence — so this is a delivery setting on the *template*, editable
+ * after publication, rather than part of a frozen version's content.
+ *
+ * **Items only.** Answer choices are never shuffled: a Likert scale whose anchors moved between
+ * questions would stop being a scale. §8A fixes their order positive-first, and `question_options.
+ * order_number` is the single place that decides it.
+ */
+export const PRESENTATION_MODES = ['SEQUENTIAL', 'RANDOM'] as const;
+export type PresentationMode = (typeof PRESENTATION_MODES)[number];
+
 export const TEMPLATE_STATUSES = ['DRAFT', 'ACTIVE', 'ARCHIVED'] as const;
 export type TemplateStatus = (typeof TEMPLATE_STATUSES)[number];
 

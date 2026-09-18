@@ -25,13 +25,29 @@ import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxon
  * is right that it is the single largest content task in the project.
  */
 
-/** §22: 5-point Likert, Strongly Disagree (1) → Strongly Agree (5). */
+/**
+ * §22's 5-point Likert scale, **presented positive-first** (prompt §8A, migration 0037).
+ *
+ * `order_number` runs 1..5 from Strongly Agree down to Strongly Disagree, while `score` and `value`
+ * are unchanged: Strongly Agree is 5 and Strongly Disagree is 1, exactly as they always were. The
+ * two columns answer different questions — `order_number` is where an option is drawn, `score` is
+ * what it is worth — and the whole of §8A is a change to the first one.
+ *
+ * Nothing in the scoring path reads position: `ScoringService` sums `assessment_answers.score`,
+ * which is snapshotted from `question_options.score` at the moment of answering (§13.5). So this
+ * ordering could not alter a result even if it were applied retroactively, which migration 0037
+ * does apply it to the two instruments already in the field.
+ *
+ * The midpoint is named as §8A names it. "Neutral" and "Neither Agree nor Disagree" are the same
+ * point on the same scale; the second says so without the reader having to decide whether "neutral"
+ * meant "no opinion" or "no answer".
+ */
 const LIKERT = [
-  { label: 'Strongly Disagree', value: '1', score: 1, orderNumber: 1 },
-  { label: 'Disagree', value: '2', score: 2, orderNumber: 2 },
-  { label: 'Neutral', value: '3', score: 3, orderNumber: 3 },
-  { label: 'Agree', value: '4', score: 4, orderNumber: 4 },
-  { label: 'Strongly Agree', value: '5', score: 5, orderNumber: 5 },
+  { label: 'Strongly Agree', value: '5', score: 5, orderNumber: 1 },
+  { label: 'Agree', value: '4', score: 4, orderNumber: 2 },
+  { label: 'Neither Agree nor Disagree', value: '3', score: 3, orderNumber: 3 },
+  { label: 'Disagree', value: '2', score: 2, orderNumber: 4 },
+  { label: 'Strongly Disagree', value: '1', score: 1, orderNumber: 5 },
 ];
 
 /**

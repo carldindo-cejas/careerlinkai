@@ -47,6 +47,8 @@ import { NotificationService } from '@/modules/platform/notification-service';
 import {
   authorizeAnswerAttempt,
   authorizeViewAttempt,
+  canAssignGlobally,
+  canAssignTemplate,
   canManageAssignment,
   canResetAttempt,
   canStartAttempt,
@@ -302,6 +304,20 @@ export class AssessmentAttemptService {
       status: 'IN_PROGRESS',
       startedAt: now(),
       submittedAt: null,
+      /**
+       * **Dealt exactly once, here, and never again** (migration 0037, prompt §6).
+       *
+       * This is the line that makes randomization safe rather than merely present. The order is
+       * decided at the moment the attempt is created and written alongside it, so Previous cannot
+       * reshuffle, a refresh cannot re-deal, F5 on question 40 comes back to the same question 40,
+       * and a counselor reading the result years later can still say what sequence the student was
+       * asked in. Generating it per *request* — even from a seed — would make the answer depend on
+       * code that is free to change; the array does not.
+       *
+       * `null` for a SEQUENTIAL instrument, which means "as authored" and is exactly what every
+       * attempt taken before this column existed also means.
+       */
+      questionOrder: await this.dealQuestionOrder(template, assignment.assessmentVersionId),
       createdAt: now(),
       updatedAt: now(),
     };
@@ -609,6 +625,16 @@ export class AssessmentAttemptService {
       .where(eq(users.id, attemptClass.counselorId))
       .limit(1);
 
+    /**
+     * **The authored order, deliberately — not the order this student was dealt** (0037).
+     *
+     * Appendix A is a reference document: it lists the instrument's items, grouped as the author
+     * grouped them, beside what this student answered. Under RANDOM delivery each student saw a
+     * different sequence, and printing each report in its own sequence would make two students'
+     * reports impossible to read side by side while `ReportItem.orderNumber` — the item's authored
+     * position — went on saying something else. The sequence a student was dealt is recorded on the
+     * attempt and is what the *player* traverses; it is not what the appendix is for.
+     */
     const questions = await this.db
       .select()
       .from(assessmentQuestions)
@@ -759,6 +785,27 @@ export class AssessmentAttemptService {
       );
     }
 
+    /**
+     * **The instrument itself has to be one the caller may reach** (prompt §2/§3).
+     *
+     * This check was missing, and its absence was the sharpest hole in the module: this endpoint
+     * authorized the *class* and the version's *status*, and nothing at all about whose instrument
+     * it was. A counselor could therefore take another counselor's private `assessment_version_id`
+     * — a UUID, but one that travels in the assigning counselor's own API responses, in a shared
+     * screenshot, in a URL — POST it against a class they legitimately own, and hand their students
+     * somebody else's private assessment. Every downstream check would pass, because every
+     * downstream check asks about the class.
+     *
+     * `canAssignTemplate` is the visibility rule: admin sees everything, everyone else sees the
+     * GLOBAL instruments plus their own. A 404 rather than a 403, so probing version ids cannot be
+     * used to discover which private instruments exist.
+     */
+    const assignedTemplate = await this.templateFor(version.assessmentTemplateId);
+
+    if (!canAssignTemplate(user, assignedTemplate)) {
+      throw ApiError.notFound('Assessment template not found.');
+    }
+
     const assignment: AssessmentAssignment = {
       id: uuid(),
       assessmentVersionId: versionId,
@@ -783,7 +830,9 @@ export class AssessmentAttemptService {
       ipAddress,
     });
 
-    const template = await this.templateFor(version.assessmentTemplateId);
+    // Already loaded above for the ownership check — this used to be a second read of the same row,
+    // and this path is the one written to a measured subrequest budget (§45).
+    const template = assignedTemplate;
 
     /**
      * §44: "New assessment assigned: {title}, due {deadline}." — to every *active* enrollment.
@@ -864,7 +913,36 @@ export class AssessmentAttemptService {
     },
     ipAddress: string | null,
   ): Promise<{ assigned: number; skipped: number; version: AssessmentVersion }> {
+    /**
+     * **A counselor cannot assign globally** (prompt §2). First, before anything is read or
+     * written, because this is a refusal of the *act* rather than a filter on its targets.
+     *
+     * A 403 rather than a 404: the caller may legitimately see this assessment and may legitimately
+     * assign it — to their own classes. What is refused is the breadth, and saying so is honest.
+     * Hiding it as "not found" would read as a bug and invite a workaround.
+     *
+     * Filtering GLOBAL down to the counselor's own classes would *not* have been an adequate
+     * substitute, which is the part worth being precise about: `scope = 'GLOBAL'` is a standing
+     * instruction, replayed by `applyGlobalAssignmentsToClass` onto every class created or
+     * reactivated afterwards — including other counselors' classes, which by definition do not
+     * exist yet and so cannot be filtered at the time of the act.
+     */
+    if (input.scope === 'GLOBAL' && !canAssignGlobally(user)) {
+      throw ApiError.forbidden(
+        'Only an administrator can assign an assessment to every class. Choose the classes you want instead.',
+      );
+    }
+
     const { version, template } = await this.versionWithTemplate(input.versionId);
+
+    /**
+     * The instrument's own visibility, on the broadcast path too (prompt §3). The route already
+     * applies `authorizeAssignTemplate`, and this is the Service-layer half of the same rule — the
+     * one that holds whoever the caller reached the Service through.
+     */
+    if (!canAssignTemplate(user, template)) {
+      throw ApiError.notFound('Assessment template not found.');
+    }
 
     if (version.status !== 'PUBLISHED') {
       throw ApiError.validation(
@@ -1391,15 +1469,55 @@ export class AssessmentAttemptService {
     return row?.unanswered ?? 0;
   }
 
+  /**
+   * The order this attempt will be delivered in, decided once at `start`.
+   *
+   * `null` — meaning "as authored" — for a SEQUENTIAL instrument, rather than an explicit copy of
+   * `order_number`. Two reasons, and the second is the one that matters: a stored array would go
+   * stale against a DRAFT version whose items are still being reordered, and NULL is the same value
+   * every pre-0037 attempt carries, so one branch reads both.
+   *
+   * **Only the items are shuffled.** Answer choices keep `question_options.order_number` — a Likert
+   * scale whose anchors moved between questions would stop being a scale, and §8A fixes that order
+   * positive-first deliberately.
+   */
+  private async dealQuestionOrder(
+    template: AssessmentTemplate,
+    versionId: string,
+  ): Promise<string[] | null> {
+    if (template.presentationMode !== 'RANDOM') {
+      return null;
+    }
+
+    const rows = await this.db
+      .select({ id: assessmentQuestions.id })
+      .from(assessmentQuestions)
+      .where(eq(assessmentQuestions.assessmentVersionId, versionId))
+      .orderBy(asc(assessmentQuestions.orderNumber));
+
+    return shuffle(rows.map((row) => row.id));
+  }
+
   private async loadAttemptContent(attempt: AssessmentAttempt): Promise<AttemptWithContent> {
     const version = await this.versionFor(attempt.assessmentVersionId);
     const template = await this.templateFor(version.assessmentTemplateId);
 
-    const questions = await this.db
+    const authored = await this.db
       .select()
       .from(assessmentQuestions)
       .where(eq(assessmentQuestions.assessmentVersionId, version.id))
       .orderBy(asc(assessmentQuestions.orderNumber));
+
+    /**
+     * **The attempt's own sequence wins over the authored one** — the whole of "stable random
+     * order", on the read side.
+     *
+     * Applied on *every* read of the attempt rather than only on the one that created it, which is
+     * what makes Previous, a refresh and a resume days later all traverse one list. The alternative
+     * — shuffling here — would re-deal the instrument on every request, and Previous would land the
+     * student somewhere they had never been.
+     */
+    const questions = applyQuestionOrder(authored, attempt.questionOrder);
 
     const questionIds = questions.map((question) => question.id);
 
@@ -1621,4 +1739,84 @@ export class AssessmentAttemptService {
       submittedCount: submittedByAssignment.get(row.assignment.id) ?? 0,
     }));
   }
+}
+
+/**
+ * Put a version's questions into the sequence an attempt was dealt.
+ *
+ * **Every question the version holds comes back exactly once, whatever the stored array says.**
+ * That is not defensive padding, it is the correctness condition: the array is written at `start`
+ * and read for the life of the attempt, and a DRAFT version whose items changed underneath it —
+ * or a stored array corrupted by anything at all — must not be able to hide a required question
+ * from a student who is then refused at submit for not answering it. So the stored ids are honoured
+ * as a *preference*: known ids first in their recorded order, then anything the array did not
+ * mention, in authored order.
+ *
+ * An unknown id in the array (an item deleted from the draft since) is simply skipped.
+ */
+export function applyQuestionOrder<T extends { id: string }>(
+  questions: T[],
+  order: string[] | null,
+): T[] {
+  if (order === null || order.length === 0) {
+    return questions;
+  }
+
+  const byId = new Map(questions.map((question) => [question.id, question]));
+  const ordered: T[] = [];
+  const placed = new Set<string>();
+
+  for (const id of order) {
+    const question = byId.get(id);
+
+    if (question !== undefined && !placed.has(id)) {
+      ordered.push(question);
+      placed.add(id);
+    }
+  }
+
+  for (const question of questions) {
+    if (!placed.has(question.id)) {
+      ordered.push(question);
+    }
+  }
+
+  return ordered;
+}
+
+/**
+ * Fisher–Yates over `crypto.getRandomValues`, not `Math.random()`.
+ *
+ * Not because an item order is a secret, but because `Math.random()` in a Worker is seeded per
+ * isolate and two students starting the same assessment on the same warm isolate can draw the same
+ * sequence — which is the one failure a shuffle is supposed to prevent. `crypto` is a Workers
+ * standard global and the same one `lib/crypto.ts` already mints ids from.
+ *
+ * Rejection sampling on the 32-bit draw keeps the distribution uniform: `value % (i + 1)` alone
+ * biases the low indices whenever `2**32` is not a multiple of `i + 1`.
+ */
+export function shuffle<T>(items: T[]): T[] {
+  const result = [...items];
+  const draw = new Uint32Array(1);
+
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const bound = i + 1;
+    const limit = Math.floor(0x1_0000_0000 / bound) * bound;
+
+    let value: number;
+
+    do {
+      crypto.getRandomValues(draw);
+      value = draw[0] ?? 0;
+    } while (value >= limit);
+
+    const j = value % bound;
+    const a = result[i] as T;
+    const b = result[j] as T;
+
+    result[i] = b;
+    result[j] = a;
+  }
+
+  return result;
 }

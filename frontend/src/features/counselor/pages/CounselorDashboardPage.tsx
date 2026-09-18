@@ -59,14 +59,14 @@ export function CounselorDashboardPage() {
         <div className="flex gap-2">
           <Link
             to={paths.counselorClasses}
-            className="inline-flex h-9 items-center gap-1.5 rounded-none bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            className="inline-flex h-11 items-center gap-1.5 rounded-none bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 sm:h-9"
           >
             <Plus className="size-4" aria-hidden="true" />
             New class
           </Link>
           <Link
             to={paths.counselorAssessmentTemplates}
-            className="inline-flex h-9 items-center gap-1.5 rounded-none border border-border bg-transparent px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+            className="inline-flex h-11 items-center gap-1.5 rounded-none border border-border bg-transparent px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary sm:h-9"
           >
             <ClipboardList className="size-4" aria-hidden="true" />
             Assessments
@@ -214,7 +214,7 @@ export function CounselorDashboardPage() {
                   <CardTitle>Your classes</CardTitle>
                   <Link
                     to={paths.counselorClasses}
-                    className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline"
+                    className="inline-flex min-h-11 items-center text-sm font-medium text-muted-foreground hover:text-foreground hover:underline sm:min-h-0"
                   >
                     Manage classes
                   </Link>

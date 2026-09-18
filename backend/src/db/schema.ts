@@ -1,5 +1,13 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import {
+  index,
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+  type AnySQLiteColumn,
+} from 'drizzle-orm/sqlite-core';
 
 import type {
   AiPolicyScope,
@@ -21,6 +29,7 @@ import type {
   KnowledgeVisibility,
   MatchType,
   NotificationCategory,
+  PresentationMode,
   ProcessingStatus,
   ProgramStatus,
   QuestionResolution,
@@ -749,7 +758,32 @@ export const assessmentTemplates = sqliteTable(
      * nullable rather than NOT NULL.
      */
     assessmentTypeId: text('assessment_type_id').references(() => assessmentTypes.id),
+    /**
+     * **This column and `creatorId` together are the author relationship.** `GLOBAL` is
+     * administrator-owned curated content; `COUNSELOR_PRIVATE` belongs to the counselor named by
+     * `creatorId` and is visible only to them and to their own classes' students (0037).
+     */
     ownership: text('ownership').$type<AssessmentOwnership>().notNull().default('GLOBAL'),
+    /**
+     * Migration 0037 — the instrument this one was copied from, or NULL when it was authored from
+     * scratch. Self-referencing: a counselor's copy of RIASEC is a *new template* they own, not a
+     * branch of the administrator's, because the template is the unit every policy and list scopes
+     * on. This is what keeps "where did this come from" answerable afterwards.
+     */
+    sourceTemplateId: text('source_template_id').references((): AnySQLiteColumn => assessmentTemplates.id, {
+      onDelete: 'set null',
+    }),
+    /**
+     * Migration 0037 — `SEQUENTIAL` | `RANDOM`. **On the template rather than the version, on
+     * purpose:** a published version is frozen (§12), and item order is not part of what a result
+     * means (scoring reads answers joined to dimension mappings, neither of which knows the
+     * sequence). So this is switchable at any time, including on RIASEC, and the record of what one
+     * student actually saw lives on `assessmentAttempts.questionOrder`.
+     */
+    presentationMode: text('presentation_mode')
+      .$type<PresentationMode>()
+      .notNull()
+      .default('SEQUENTIAL'),
     status: text('status').$type<TemplateStatus>().notNull().default('DRAFT'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -763,6 +797,7 @@ export const assessmentTemplates = sqliteTable(
     index('assessment_templates_status_index').on(table.status),
     index('assessment_templates_assessment_type_id_index').on(table.assessmentTypeId),
     index('assessment_templates_deleted_at_index').on(table.deletedAt),
+    index('assessment_templates_source_template_id_index').on(table.sourceTemplateId),
   ],
 );
 
@@ -822,6 +857,15 @@ export const assessmentVersions = sqliteTable(
      * different date entirely. The administrator's Date Published column and filter read this.
      */
     publishedAt: timestamp('published_at'),
+    /**
+     * Migration 0037 — the version whose questions, options, mappings and scoring config were
+     * copied into this one. Written by both copy paths: `duplicateVersion` (Edit-a-copy, same
+     * template) and `copyTemplateFor` (a counselor taking their own copy of a curated instrument).
+     * NULL for a version drafted from nothing.
+     */
+    sourceVersionId: text('source_version_id').references((): AnySQLiteColumn => assessmentVersions.id, {
+      onDelete: 'set null',
+    }),
   },
   (table) => [
     uniqueIndex('assessment_versions_template_number_unique').on(
@@ -1007,6 +1051,16 @@ export const assessmentAttempts = sqliteTable(
     status: text('status').$type<AttemptStatus>().notNull().default('IN_PROGRESS'),
     startedAt: text('started_at').notNull(),
     submittedAt: timestamp('submitted_at'),
+    /**
+     * Migration 0037 — **the exact sequence this student was asked in**, dealt once at `start` and
+     * never re-dealt. A JSON array of `assessment_questions.id`.
+     *
+     * `NULL` means "as authored" (`order_number`), which is both the default for a SEQUENTIAL
+     * instrument and the honest backfill for every attempt that predates the column. Stored rather
+     * than derived from a seed, because a seed plus an algorithm is only reproducible while the
+     * algorithm never changes, and this has to stay readable for as long as the result does.
+     */
+    questionOrder: text('question_order', { mode: 'json' }).$type<string[]>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
