@@ -1,6 +1,6 @@
-import { ArrowLeft, ExternalLink, Loader2, MapPin, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ExternalLink, Loader2, MapPin, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -59,14 +59,8 @@ export function CollegeDetailPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Link
-        to={paths.adminColleges}
-        className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="size-4" aria-hidden="true" />
-        All colleges
-      </Link>
-
+      {/* "All colleges" used to sit here; the shell's back control (AppShell) now stands one step
+          above every page, and two of them on one screen is one too many. */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">

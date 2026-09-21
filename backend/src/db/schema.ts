@@ -835,7 +835,13 @@ export const assessmentQuestions = sqliteTable(
   },
   (table) => [
     index('assessment_questions_version_id_index').on(table.assessmentVersionId),
-    index('assessment_questions_version_order_index').on(
+    /**
+     * Unique since migration 0021, and it replaced the plain index on the same two columns rather
+     * than joining it: two items claiming position 7 is a bug that surfaces as an arbitrary render
+     * order rather than as an error, so nothing was ever going to report it. It still serves the
+     * player's read-a-version-in-order query exactly as the plain index did.
+     */
+    uniqueIndex('assessment_questions_version_order_unique').on(
       table.assessmentVersionId,
       table.orderNumber,
     ),
@@ -850,12 +856,16 @@ export const questionOptions = sqliteTable(
       .notNull()
       .references(() => assessmentQuestions.id, { onDelete: 'cascade' }),
     label: text('label').notNull(),
+    /** The stored answer key, unique within its question since migration 0021. */
     value: text('value').notNull(),
     /** **Never serialized to a student** (§37) — see `serializeQuestion`. */
     score: real('score').notNull(),
     orderNumber: integer('order_number').notNull(),
   },
-  (table) => [index('question_options_question_id_index').on(table.questionId)],
+  (table) => [
+    index('question_options_question_id_index').on(table.questionId),
+    uniqueIndex('question_options_question_value_unique').on(table.questionId, table.value),
+  ],
 );
 
 /**
