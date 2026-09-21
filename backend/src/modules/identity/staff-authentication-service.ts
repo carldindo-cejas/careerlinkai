@@ -22,11 +22,14 @@ import { staffTokenTtlHours } from '@/lib/config';
 import { generateToken, hashToken, timingSafeEqualString } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
+import { translateUniqueViolation } from '@/lib/db-errors';
 import { issueToken, revokeAllTokensForUser, revokeToken } from '@/lib/tokens';
 import type {
+  ChangeEmailInput,
   ChangePasswordInput,
   LoginInput,
   ResetPasswordInput,
+  UpdateAccountInput,
 } from '@/modules/identity/schemas';
 import { AuditService } from '@/modules/platform/audit-service';
 import { sendPasswordResetEmail } from '@/modules/platform/email-service';
@@ -171,6 +174,196 @@ export class StaffAuthenticationService {
       targetId: user.id,
       ipAddress,
     });
+  }
+
+  /**
+   * Edit your own account — the name side of `/counselor/profile` (prompt-driven, 2026-09-20).
+   *
+   * No password is asked for here, and that is the deliberate line this service draws: a display
+   * name, a phone number and a one-line bio are labels on an account, not ways into it. The two
+   * things that *are* ways in — the email and the password — each have their own method that
+   * re-proves the current password first.
+   *
+   * **A counselor's `users.name` is derived, never typed.** It is `first_name last_name`, written
+   * in the same batch as the profile, because those two fields sit side by side on this very form
+   * and a counselor who corrects one and not the other would otherwise be left with a roster
+   * saying one thing and a sidebar saying another. An administrator has no counselor profile for
+   * the parts to live in, so their `name` is the field they edit directly.
+   */
+  async updateAccount(
+    user: User,
+    input: UpdateAccountInput,
+    ipAddress: string | null,
+  ): Promise<{ user: User; counselorProfile: CounselorProfile | null }> {
+    const profile = await this.counselorProfileFor(user);
+    const timestamp = now();
+
+    if (profile === null) {
+      // An administrator (or a counselor whose profile row is missing): only the display name is
+      // editable, and it has to be given — a request that changes nothing is a 422, not a no-op
+      // reported as success.
+      if (input.name === undefined) {
+        throw ApiError.validation({ name: ['A name is required.'] });
+      }
+
+      const nextUser: User = { ...user, name: input.name, updatedAt: timestamp };
+
+      await this.db
+        .update(users)
+        .set({ name: nextUser.name, updatedAt: timestamp })
+        .where(eq(users.id, user.id));
+
+      await this.audit.write({
+        action: 'STAFF_PROFILE_UPDATED',
+        module: MODULE,
+        userId: user.id,
+        targetType: 'user',
+        targetId: user.id,
+        oldValues: { name: user.name },
+        newValues: { name: nextUser.name },
+        ipAddress,
+      });
+
+      return { user: nextUser, counselorProfile: null };
+    }
+
+    const nextProfile: CounselorProfile = {
+      ...profile,
+      firstName: input.first_name ?? profile.firstName,
+      lastName: input.last_name ?? profile.lastName,
+      phone: input.phone !== undefined ? input.phone : profile.phone,
+      employeeNumber:
+        input.employee_number !== undefined ? input.employee_number : profile.employeeNumber,
+      specialization:
+        input.specialization !== undefined ? input.specialization : profile.specialization,
+      bio: input.bio !== undefined ? input.bio : profile.bio,
+      updatedAt: timestamp,
+    };
+
+    const nextUser: User = {
+      ...user,
+      name: `${nextProfile.firstName} ${nextProfile.lastName}`.trim(),
+      updatedAt: timestamp,
+    };
+
+    await this.db.batch([
+      this.db
+        .update(users)
+        .set({ name: nextUser.name, updatedAt: timestamp })
+        .where(eq(users.id, user.id)),
+      this.db
+        .update(counselorProfiles)
+        .set({
+          firstName: nextProfile.firstName,
+          lastName: nextProfile.lastName,
+          phone: nextProfile.phone,
+          employeeNumber: nextProfile.employeeNumber,
+          specialization: nextProfile.specialization,
+          bio: nextProfile.bio,
+          updatedAt: timestamp,
+        })
+        .where(eq(counselorProfiles.id, profile.id)),
+    ]);
+
+    await this.audit.write({
+      action: 'STAFF_PROFILE_UPDATED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'user',
+      targetId: user.id,
+      oldValues: { name: user.name },
+      newValues: { name: nextUser.name },
+      ipAddress,
+    });
+
+    return { user: nextUser, counselorProfile: nextProfile };
+  }
+
+  /**
+   * Change the address this account signs in with.
+   *
+   * Four things happen, and each one closes something the others would leave open:
+   *
+   *   1. **The current password is verified**, on the DO, exactly as `changePassword` does — the
+   *      email is the login identifier *and* the reset destination, so changing it is a credential
+   *      change wearing a settings-field costume. An unattended session on a staffroom machine is
+   *      otherwise one form submission away from becoming somebody else's account.
+   *   2. **The new address is checked against every row, soft-deleted ones included**, because
+   *      `users_email_unique` covers them and a pre-check that did not would report success and
+   *      then 500. The index is still what actually holds the invariant — two requests can both
+   *      pass the pre-check — so the write is translated on the way out too.
+   *   3. **`email_verified_at` is cleared.** Nothing in this deployment gates on it, but it is the
+   *      record of an address having been proven, and this one has not been.
+   *   4. **Any pending reset token for the old address is deleted.** A link already mailed to the
+   *      mailbox this account just stopped using must not still open it.
+   *
+   * What deliberately does *not* happen is a session revocation. Nothing the caller holds became
+   * less trustworthy — they proved the password a line ago — and signing them out of the tab they
+   * are reading the confirmation in is a punishment, not a protection.
+   *
+   * One consequence is worth naming: the §38 lockout counter is a Durable Object named after the
+   * email (`staffAuthGuard`), so the failed-login count starts fresh under the new address. That
+   * is the honest behaviour — the counter belongs to the address being attacked, not to the
+   * account — and every hash carries its own salt and iteration count, so nothing about
+   * verification depends on which instance derived it.
+   */
+  async changeEmail(
+    user: User,
+    input: ChangeEmailInput,
+    ipAddress: string | null,
+  ): Promise<{ user: User; counselorProfile: CounselorProfile | null }> {
+    const guard = this.guardFor(user);
+
+    if (!(await guard.verify(input.current_password, user.password))) {
+      throw ApiError.validation({
+        current_password: ['Your current password is incorrect.'],
+      });
+    }
+
+    const email = input.email.trim().toLowerCase();
+
+    if (email === (user.email ?? '').toLowerCase()) {
+      throw ApiError.validation({
+        email: ['That is already the address on this account.'],
+      });
+    }
+
+    const taken = await this.db.query.users.findFirst({ where: eq(users.email, email) });
+
+    if (taken) {
+      throw ApiError.validation({ email: ['This email address is already in use.'] });
+    }
+
+    const timestamp = now();
+    const nextUser: User = { ...user, email, emailVerifiedAt: null, updatedAt: timestamp };
+
+    try {
+      await this.db
+        .update(users)
+        .set({ email, emailVerifiedAt: null, updatedAt: timestamp })
+        .where(eq(users.id, user.id));
+    } catch (error) {
+      translateUniqueViolation(error, 'email', 'This email address is already in use.');
+    }
+
+    if (user.email !== null) {
+      await this.db
+        .delete(passwordResetTokens)
+        .where(eq(passwordResetTokens.email, user.email.toLowerCase()));
+    }
+
+    await this.audit.write({
+      action: 'STAFF_EMAIL_CHANGED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'user',
+      targetId: user.id,
+      oldValues: { email: user.email },
+      newValues: { email },
+      ipAddress,
+    });
+
+    return { user: nextUser, counselorProfile: await this.counselorProfileFor(user) };
   }
 
   /**

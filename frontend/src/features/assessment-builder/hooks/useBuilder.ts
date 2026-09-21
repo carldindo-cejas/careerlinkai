@@ -64,6 +64,58 @@ export function useCreateVersion(templateId: string) {
 }
 
 /**
+ * Copy a version into a fresh DRAFT — the edit path for anything already published.
+ *
+ * The invalidation is **awaited** (`mutateAsync` resolves once `onSuccess` settles) for the same
+ * reason `useAddQuestions` awaits its own: the caller selects the returned draft immediately, and
+ * selecting a version the cached template does not list yet renders as "the button did nothing".
+ */
+export function useDuplicateVersion(templateId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (versionId: string) => builderApi.duplicateVersion(versionId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: builderKeys.template(templateId),
+      }),
+  });
+}
+
+/**
+ * Archive or restore one version (prompt §4).
+ *
+ * Both invalidate the template, because the version list is part of it — and the assessment list
+ * too, since "has a published version" is the Status column's derived answer and archiving the last
+ * published version changes it.
+ */
+export function useArchiveVersion(templateId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (versionId: string) => builderApi.archiveVersion(versionId),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: builderKeys.template(templateId) }),
+        queryClient.invalidateQueries({ queryKey: ['assessments', 'list'] }),
+      ]),
+  });
+}
+
+export function useRestoreVersion(templateId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (versionId: string) => builderApi.restoreVersion(versionId),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: builderKeys.template(templateId) }),
+        queryClient.invalidateQueries({ queryKey: ['assessments', 'list'] }),
+      ]),
+  });
+}
+
+/**
  * Adding questions — and **the invalidation is awaited, not fired and forgotten.**
  *
  * `mutateAsync` resolves only once `onSuccess` has settled, so returning the refetch promise means

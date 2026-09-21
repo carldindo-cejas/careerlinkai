@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 
 import { createQueryClient } from '@/app/queryClient';
 import { Toaster } from '@/components/ui/Toaster';
+import { useAuthTabSync } from '@/features/auth/hooks/useAuthTabSync';
 
 export interface AppProvidersProps {
   children: ReactNode;
@@ -18,6 +19,7 @@ export interface AppProvidersProps {
  */
 export function AppProviders({ children }: AppProvidersProps) {
   const [queryClient] = useState(createQueryClient);
+  useAuthTabSync(queryClient);
 
   return (
     <QueryClientProvider client={queryClient}>

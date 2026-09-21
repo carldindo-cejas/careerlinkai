@@ -6,6 +6,7 @@ import type {
   ChatTurn,
   ProgramCollegesResponse,
   RecommendationSet,
+  StudentBrief,
 } from '@/types/recommendation';
 
 /**
@@ -89,8 +90,42 @@ export const chatApi = {
     return unwrap(httpClient.post<ApiSuccess<ChatTurn>>('/student/chat', { message }));
   },
 
+  /** The Student Brief and starter questions (AI-COVERAGE-PLAN.md Phase 4). */
+  getBrief(): Promise<StudentBrief> {
+    return unwrap(httpClient.get<ApiSuccess<StudentBrief>>('/student/brief'));
+  },
+
   async clear(): Promise<void> {
     await httpClient.delete('/student/chat');
+  },
+
+  /**
+   * Mark one answer as wrong (Phase 4).
+   *
+   * The one signal that leads straight to a fix: the chunk ids behind the answer are already
+   * recorded, so an admin can follow the flag to the passage that produced it.
+   */
+  flagAnswer(messageId: string): Promise<{ message_id: string }> {
+    return unwrap(
+      httpClient.post<ApiSuccess<{ message_id: string }>>(
+        `/student/chat/messages/${messageId}/feedback`,
+      ),
+    );
+  },
+
+  /**
+   * *"Request to add to knowledge"* — the other half of an honest refusal (migration 0030).
+   *
+   * The server accepts it only on an answer it marked as a no-coverage refusal, so this is never
+   * a way to nominate an answer the assistant actually gave. The question itself is already in the
+   * admin's backlog; this adds the student's own voice to it, which is what ranks it.
+   */
+  requestKnowledge(messageId: string): Promise<{ message_id: string }> {
+    return unwrap(
+      httpClient.post<ApiSuccess<{ message_id: string }>>(
+        `/student/chat/messages/${messageId}/knowledge-request`,
+      ),
+    );
   },
 };
 

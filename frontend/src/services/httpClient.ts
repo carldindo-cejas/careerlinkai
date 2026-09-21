@@ -46,8 +46,36 @@ httpClient.interceptors.request.use((config) => {
 });
 
 /**
+ * A request that never reached the server carries no status and no envelope — axios reports it as
+ * the bare string "Network Error", which is what the user then reads in an alert box.
+ *
+ * The browser knows more than axios passes on: `ERR_NAME_NOT_RESOLVED`, `ERR_NETWORK_CHANGED` and
+ * friends all arrive here as `ERR_NETWORK`, and they mean the same thing to the person looking at
+ * the screen — the machine's connection dropped, nothing was sent, and retrying is the fix. A
+ * timeout is worth distinguishing because the opposite may be true: the request may well have
+ * been received, so "try again" is advice with a caveat.
+ */
+function transportMessage(error: AxiosError<ApiError>): string | null {
+  if (error.code === 'ERR_CANCELED') {
+    // A request the app itself aborted — a navigation, a superseded query. Not a failure to report.
+    return null;
+  }
+
+  if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+    return 'The server took too long to answer. Check whether it went through before trying again.';
+  }
+
+  return 'We could not reach the server — your connection dropped. Nothing was saved. Try again.';
+}
+
+/**
  * Normalise every failure into an ApiRequestError, and sign the user out on a 401 so
  * a revoked or expired token cannot leave the app in a half-authenticated state.
+ *
+ * **Only a 401 ends the session.** A 429, a 500 or a dropped connection means the request failed,
+ * not that the token did, and treating those alike is half of why the 18 September 2026 incident
+ * looked like a capacity problem: every transient failure presented to the student as being
+ * thrown out. The route guards make the same distinction — see `ProtectedRoute`.
  */
 httpClient.interceptors.response.use(
   (response) => response,
@@ -56,16 +84,18 @@ httpClient.interceptors.response.use(
     const body = error.response?.data;
 
     if (status === 401) {
-      useAuthStore.getState().clear();
+      // `endSession`, not `clear`: the server rejected this token, so the sign-in screen has
+      // something to explain when the student lands back on it.
+      useAuthStore.getState().endSession();
     }
 
-    return Promise.reject(
-      new ApiRequestError(
-        body?.message ?? error.message ?? 'The request failed.',
-        status,
-        body?.errors ?? {},
-      ),
-    );
+    // No response at all: the failure is the connection, not anything the server said.
+    const message =
+      error.response === undefined
+        ? (transportMessage(error) ?? error.message)
+        : (body?.message ?? error.message ?? 'The request failed.');
+
+    return Promise.reject(new ApiRequestError(message, status, body?.errors ?? {}));
   },
 );
 

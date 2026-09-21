@@ -1,4 +1,4 @@
-import { Lock } from 'lucide-react';
+import { Info, Lock } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
@@ -13,7 +13,7 @@ import {
   useUpdateProfile,
 } from '@/features/student/hooks/useAssessment';
 import { toast } from '@/stores/toastStore';
-import type { UpdateProfilePayload } from '@/types/assessment';
+import type { StudentProfile, UpdateProfilePayload } from '@/types/assessment';
 
 /**
  * Profile completion (FULLPLAN §37: *"grade, subject grades, strand — 2-option selector"*).
@@ -37,6 +37,23 @@ import type { UpdateProfilePayload } from '@/types/assessment';
  * the class the counselor enrolled the student in. Where a class supplies one, the select is
  * read-only and names the class — because the server refuses the edit with a 422, and a form that
  * offered the control anyway would be offering a button whose submission always fails.
+ *
+ * ## The name became editable on 2026-09-20 (prompt-driven)
+ *
+ * It was read-only, on the grounds that the roster owned it. But the roster is where a name is
+ * first *typed*, by a counselor working down a class list — which is exactly where a misspelling,
+ * a maiden name or a nickname enters the system, and the student is the only person who can say
+ * it is wrong. It matters more than a settings field usually would because this name is printed
+ * onto the exported result report, which ends up in a guidance file.
+ *
+ * Two things the card has to say out loud, because both are the first question a student asks:
+ *
+ *   * **Their username does not change.** It is what they sign in with, the counselor identifies
+ *     them by it, and the server never touches it.
+ *   * **Their counselor is told.** This is not a change a student makes privately — the roster a
+ *     counselor works from changes underneath them, so they get a notification naming the old
+ *     name, the new one and the unchanged username. Saying so here is the difference between a
+ *     student correcting a misspelling and a student discovering later that somebody was told.
  */
 export function StudentProfilePage() {
   const { data: profile, isLoading, isError, error } = useProfile();
@@ -49,6 +66,8 @@ export function StudentProfilePage() {
     if (!profile) return;
 
     setForm({
+      first_name: profile.first_name,
+      last_name: profile.last_name,
       grade_level_id: profile.grade_level_id,
       shs_strand_id: profile.shs_strand_id,
       math_grade: profile.math_grade === null ? null : Number(profile.math_grade),
@@ -88,6 +107,20 @@ export function StudentProfilePage() {
     if (profile?.derived.shs_strand) delete payload.shs_strand_id;
 
     /*
+      The name is dropped from the payload unless it actually moved.
+
+      The server already refuses to treat an unchanged name as a rename — it compares before
+      deciding — so this is not what makes the notification correct. It is here because the form
+      posts every field it renders, and sending a name on every grade edit would make the request
+      claim something it does not mean. The one place that costs anything real is the audit log,
+      which should record renames rather than saves.
+    */
+    if (profile && !nameChanged(profile, form)) {
+      delete payload.first_name;
+      delete payload.last_name;
+    }
+
+    /*
       A toast rather than the inline banner this screen used to show. The banner was permanent —
       it stayed on screen for the rest of the session, so a student who saved once could not tell
       a fresh save from the previous one. A field-level 422 still renders inline, next to the field
@@ -109,7 +142,7 @@ export function StudentProfilePage() {
   const className = profile.derived.class_name;
 
   return (
-    <form className="flex max-w-2xl flex-col gap-6" onSubmit={onSubmit}>
+    <form data-tour="profile-form" className="flex max-w-2xl flex-col gap-6" onSubmit={onSubmit}>
       <div>
         <h1 className="text-xl font-semibold text-foreground">My profile</h1>
         <p className="text-sm text-muted-foreground">
@@ -122,6 +155,69 @@ export function StudentProfilePage() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Your name</CardTitle>
+          <CardDescription>
+            This is the name printed on your results when you export or print them. If it is
+            spelled wrong, or it is not what you go by, change it here.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="first_name">First name</Label>
+              <Input
+                id="first_name"
+                autoComplete="given-name"
+                value={form.first_name ?? ''}
+                aria-invalid={Boolean(errors?.first_name)}
+                onChange={(e) => setForm((f) => ({ ...f, first_name: e.target.value }))}
+              />
+              {errors?.first_name ? (
+                <p className="text-sm text-destructive">{errors.first_name[0]}</p>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="last_name">Last name</Label>
+              <Input
+                id="last_name"
+                autoComplete="family-name"
+                value={form.last_name ?? ''}
+                aria-invalid={Boolean(errors?.last_name)}
+                // `null`, not `''`, so clearing the field means "I have one name" on the wire
+                // rather than "my last name is the empty string" (§13.1).
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, last_name: e.target.value === '' ? null : e.target.value }))
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave this blank if you go by one name.
+              </p>
+              {errors?.last_name ? (
+                <p className="text-sm text-destructive">{errors.last_name[0]}</p>
+              ) : null}
+            </div>
+          </div>
+
+          {/*
+            Both consequences, stated before the save rather than discovered after it. The
+            username one prevents a student locking themselves out in their own head; the
+            counselor one is the thing a student is entitled to know before they act.
+          */}
+          <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+            <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              Your username stays the same — you will still sign in the way you always have. Your
+              guidance counselor is told when you change your name, so their class list matches
+              yours.
+            </span>
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Academic track</CardTitle>
           <CardDescription>
             Your strand is the single most important field on this page — it decides which programs
@@ -130,7 +226,7 @@ export function StudentProfilePage() {
         </CardHeader>
 
         <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
+          <div data-tour="profile-strand" className="flex flex-col gap-1.5">
             <Label htmlFor="strand">Strand</Label>
             {/*
               Exactly two options (§13.1, v1.2), now served from `shs_strands` rather than
@@ -205,11 +301,12 @@ export function StudentProfilePage() {
           </CardDescription>
         </CardHeader>
 
-        <CardContent className="grid gap-4 sm:grid-cols-2">
+        <CardContent data-tour="profile-grades" className="grid gap-4 sm:grid-cols-2">
           {/*
-            The general weighted average was removed on 2026-07-27. §27's academic fit and
-            eligibility are computed from the mean of whichever of these three are present, so
-            filling in even one is enough for the engine to have a real signal instead of a neutral.
+            The general weighted average was removed on 2026-07-27. §27's academic fit is computed
+            from the mean of whichever of these three are present, so filling in even one is enough
+            for the engine to have a real signal instead of a neutral. (The separate eligibility
+            tier that also read this average was dropped from the program composite on 2026-09-18.)
           */}
           <GradeField
             id="math_grade"
@@ -248,6 +345,19 @@ export function StudentProfilePage() {
       </div>
     </form>
   );
+}
+
+/**
+ * Whether what is in the form is a different name from what is on the profile.
+ *
+ * Both sides are trimmed, and a blank last name is compared as `null`, because that is what the
+ * server stores: a student who adds a trailing space to their surname and saves has not renamed
+ * themselves, and the notification their counselor would get says otherwise.
+ */
+function nameChanged(profile: StudentProfile, form: UpdateProfilePayload): boolean {
+  const last = form.last_name?.trim() ? form.last_name.trim() : null;
+
+  return (form.first_name ?? '').trim() !== profile.first_name || last !== profile.last_name;
 }
 
 /**

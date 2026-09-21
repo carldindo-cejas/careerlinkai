@@ -4,7 +4,7 @@ import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useResult } from '@/features/student/hooks/useAssessment';
-import { paths, type ResultPageState } from '@/routes/paths';
+import { paths, resultReportPath, type ResultPageState } from '@/routes/paths';
 import type { AssessmentResult, DimensionScore } from '@/types/assessment';
 
 /**
@@ -95,6 +95,13 @@ export function ResultPage() {
         <Button variant="ghost" onClick={() => navigate(paths.studentRecommendations)}>
           See my recommendations
         </Button>
+
+        {/* The two printable exports in docs_report/ — Report 1 (RIASEC) and Report 2 (SCCT). */}
+        {result.assessment?.category === 'RIASEC' || result.assessment?.category === 'SCCT' ? (
+          <Button variant="ghost" onClick={() => navigate(resultReportPath(attemptId))}>
+            Print report
+          </Button>
+        ) : null}
       </div>
     </div>
   );

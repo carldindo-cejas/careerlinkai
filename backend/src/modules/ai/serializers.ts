@@ -11,16 +11,42 @@ import type {
  */
 
 export function serializeKnowledgeDocument(
-  document: KnowledgeDocument & { chunkCount?: number },
+  document: KnowledgeDocument & {
+    chunkCount?: number;
+    authorName?: string;
+    authorRole?: string;
+  },
 ): Record<string, unknown> {
   return {
     id: document.id,
+    title: document.title,
     file_name: document.fileName,
-    file_type: document.fileType,
+    source_type: document.sourceType,
+    entity_type: document.entityType,
+    entity_id: document.entityId,
     processing_status: document.processingStatus,
     visibility: document.visibility,
     archived_at: document.archivedAt,
     chunk_count: document.chunkCount ?? null,
+    /**
+     * Who wrote this, and in what capacity (migration 0031's second half).
+     *
+     * `uploaded_by` has been on the row since §33 and never left the server, because until
+     * counselors could contribute there was only ever one kind of author and naming them added
+     * nothing. Now the corpus has two, and the distinction is the one an admin reviewing a wrong
+     * answer needs first: a school-published entry and one counselor's note are different things
+     * to act on, even when they read identically.
+     *
+     * The id travels alongside the name because the client uses it for the only thing it can act
+     * on — deciding whether an entry is the viewer's own — and a name is not an identity.
+     *
+     * Undefined on the write paths, which serialize a row they just built and have no join in
+     * hand. `null` rather than a fabricated name: the field says "not loaded here", and a client
+     * that renders a byline from it will render nothing rather than something wrong.
+     */
+    added_by: document.uploadedBy,
+    added_by_name: document.authorName ?? null,
+    added_by_role: document.authorRole ?? null,
     created_at: document.createdAt,
     updated_at: document.updatedAt,
   };
@@ -45,6 +71,7 @@ export function serializeExplanation(
     recommendation_id: explanation.recommendationId,
     explanation_text: explanation.explanationText,
     ai_model: explanation.aiModel,
+    sources: explanation.sources ?? [],
     created_at: explanation.createdAt,
   };
 }
@@ -62,6 +89,26 @@ export function serializeChatMessage(message: ChatMessage): Record<string, unkno
     role: message.role,
     content: message.content,
     ai_request_id: message.aiRequestId,
+    sources: message.sources ?? [],
+    answer_kind: message.answerKind,
+    feedback: message.feedback,
+    /**
+     * Whether this answer can be — or has been — nominated for the knowledge base (migration
+     * 0030). `OFFERED` puts *"Request to add to knowledge"* under a no-coverage refusal; NULL, the
+     * ordinary value, offers nothing.
+     */
+    knowledge_request: message.knowledgeRequest,
+    /**
+     * When the question this refusal was about got answered (migration 0033). The panel swaps
+     * "Requested" for "Answered — ask again", so a student who asked is not left guessing.
+     */
+    knowledge_answered_at: message.knowledgeAnsweredAt,
+    /**
+     * Where this answer offered to take the student (migration 0038). The client turns the id into
+     * a route and an on-screen anchor and renders the *"Yes, show me"* button; an id it does not
+     * know renders nothing, and the answer's own sentence has already said where to go.
+     */
+    nav_target: message.navTarget,
     created_at: message.createdAt,
   };
 }

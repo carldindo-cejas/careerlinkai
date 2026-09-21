@@ -1,5 +1,6 @@
+import { Copy } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -11,16 +12,21 @@ import { Textarea } from '@/components/ui/textarea';
 import { QuestionWorkspace } from '@/features/assessment-builder/components/QuestionWorkspace';
 import {
   useAddDimensions,
+  useArchiveVersion,
   useBuilderTemplate,
   useCreateVersion,
+  useDuplicateVersion,
   useGenerateFromDescription,
   useGenerateFromDocument,
   useGenerationStatus,
   usePublishVersion,
+  useRestoreVersion,
   useVersionReview,
   type GenerationProgress,
 } from '@/features/assessment-builder/hooks/useBuilder';
+import { useCopyAssessment } from '@/features/assessment-builder/hooks/useAssessments';
 import { extractText, ExtractionError } from '@/features/admin/utils/extractText';
+import { toast } from '@/stores/toastStore';
 import type { BuilderDimension, BuilderTemplate, VersionReview } from '@/types/builder';
 
 /**
@@ -31,10 +37,26 @@ import type { BuilderDimension, BuilderTemplate, VersionReview } from '@/types/b
  * **per-mapping human confirmation** → publish. The confirm buttons are deliberately one per
  * mapping with no "approve all": the §25 gate's entire point is that a human actually looked
  * at each dimension assignment, and the UI does not offer a way to not look.
+ *
+ * ## Who can be here, and what they can do
+ *
+ * Since backend 0037 a counselor may **open** a curated global instrument — they assign it, they
+ * answer students' questions about it, and they can now take their own copy — but may not write to
+ * it. The server says which of those applies, on the payload, as `can_manage`; this page renders
+ * from that answer rather than re-deriving it from `ownership`. A rule written twice is a rule that
+ * eventually disagrees with itself, and the copy that cannot be enforced is the one that drifts.
+ *
+ * Read-only here means every authoring control is absent and **Make my own copy** is offered in
+ * their place — which is the honest next step, not a consolation: the copy is a new instrument the
+ * counselor owns outright, carrying these same sixty questions as a draft they can edit.
  */
 export function TemplateBuilderPage() {
   const { templateId } = useParams<{ templateId: string }>();
   const { data: template, isLoading, isError, error } = useBuilderTemplate(templateId!);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const base = location.pathname.startsWith('/admin') ? '/admin' : '/counselor';
+  const copy = useCopyAssessment();
 
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
 
@@ -46,29 +68,79 @@ export function TemplateBuilderPage() {
     return <Alert>We could not load this template. {error?.message}</Alert>;
   }
 
+  /**
+   * **Absent means no.** `can_manage` is optional on the type because one caller (the assign
+   * picker's list) serializes templates without permissions — and "not stated" must read as refused
+   * rather than as permitted, or a payload shape change would quietly unlock the authoring controls.
+   */
+  const canManage = template.can_manage === true;
+  const canCopy = template.can_copy === true;
+
   const versions = template.versions ?? [];
   const activeVersionId =
     selectedVersionId ?? versions.find((version) => version.status === 'DRAFT')?.id ?? versions[0]?.id ?? null;
 
+  async function onCopy() {
+    if (template === undefined) return;
+
+    try {
+      const result = await copy.mutateAsync(template.id);
+
+      toast.success(
+        `Copied into “${result.assessment.title}” — ${result.question_count} questions, as a draft you own.`,
+      );
+
+      navigate(`${base}/assessment-templates/${result.assessment.id}`);
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'The copy could not be made.');
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-xl font-semibold text-foreground">
-          {template.title}
-          <Badge>{template.category}</Badge>
-          <Badge>{template.ownership === 'GLOBAL' ? 'Global' : 'Private'}</Badge>
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Dimensions first, then a version, then questions — by hand or drafted with AI. Nothing
-          publishes until every AI-proposed mapping has been confirmed by a person.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          {/* `flex-wrap` and `break-words`: a long instrument title plus two badges does not fit on
+              one line at 360 px, and a heading that overflows takes the page's width with it. */}
+          <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold text-foreground">
+            <span className="break-words">{template.title}</span>
+            <Badge>{template.category}</Badge>
+            <Badge>{template.ownership === 'GLOBAL' ? 'Shared' : 'Private'}</Badge>
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {canManage
+              ? 'Dimensions first, then a version, then questions — by hand or drafted with AI. Nothing publishes until every AI-proposed mapping has been confirmed by a person.'
+              : 'You can read this instrument and assign it to your classes. Editing it means taking your own copy.'}
+          </p>
+        </div>
+
+        {canCopy ? (
+          <Button variant={canManage ? 'secondary' : 'primary'} loading={copy.isPending} onClick={() => void onCopy()}>
+            <Copy className="size-4" aria-hidden="true" />
+            Make my own copy
+          </Button>
+        ) : null}
       </div>
 
-      <DimensionsCard template={template} />
+      {/*
+        The read-only explanation, once, at the top — rather than a disabled control on every card
+        saying it separately. Someone who cannot edit this page needs to know *why* and *what
+        instead*, and both fit in a sentence.
+      */}
+      {canManage ? null : (
+        <Alert tone="info">
+          This is a shared instrument managed by an administrator, so it is read-only here. Make your
+          own copy to edit the questions — the copy keeps every question, option and scoring mapping,
+          as a draft that belongs to you.
+        </Alert>
+      )}
+
+      <DimensionsCard template={template} canManage={canManage} />
       <VersionsCard
         template={template}
         activeVersionId={activeVersionId}
         onSelect={setSelectedVersionId}
+        canManage={canManage}
       />
 
       {activeVersionId !== null ? (
@@ -76,6 +148,8 @@ export function TemplateBuilderPage() {
           key={activeVersionId}
           versionId={activeVersionId}
           templateId={template.id}
+          onSelectVersion={setSelectedVersionId}
+          canManage={canManage}
           /* The template owns the dimensions (they are shared by every version, §12), so they are
              passed down rather than re-fetched inside the workspace. */
           dimensions={template.dimensions ?? []}
@@ -87,12 +161,21 @@ export function TemplateBuilderPage() {
 
 // --- Dimensions --------------------------------------------------------------------------------
 
-function DimensionsCard({ template }: { template: BuilderTemplate }) {
+function DimensionsCard({
+  template,
+  canManage,
+}: {
+  template: BuilderTemplate;
+  canManage: boolean;
+}) {
   const addDimensions = useAddDimensions(template.id);
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
 
-  const frozen = (template.versions ?? []).some((version) => version.status === 'PUBLISHED');
+  // Two different reasons the form is absent, and they are not the same sentence: frozen means
+  // "nobody can change these any more" (§12), read-only means "not you, not this instrument".
+  const frozen =
+    !canManage || (template.versions ?? []).some((version) => version.status === 'PUBLISHED');
   const dimensions = template.dimensions ?? [];
 
   return (
@@ -120,7 +203,9 @@ function DimensionsCard({ template }: { template: BuilderTemplate }) {
 
         {frozen ? (
           <p className="text-sm text-muted-foreground">
-            A version of this template has published, so its dimensions are frozen.
+            {canManage
+              ? 'A version of this template has published, so its dimensions are frozen.'
+              : 'What this instrument measures. Read-only — take your own copy to change it.'}
           </p>
         ) : (
           <div className="flex items-end gap-3">
@@ -164,17 +249,39 @@ function DimensionsCard({ template }: { template: BuilderTemplate }) {
 
 // --- Versions ----------------------------------------------------------------------------------
 
+/**
+ * The version list — **and the only place an already-published instrument becomes editable again.**
+ *
+ * "New version" and "Edit a copy" are two different acts and the card offers both, because
+ * collapsing them is what made the curated RIASEC and SCCT instruments effectively read-only:
+ * their single version is PUBLISHED and therefore frozen (invariant 1), and the only button on
+ * offer produced an *empty* v2. Correcting one item meant retyping sixty. "Edit a copy" duplicates
+ * the version whole — every question, option, mapping and the scoring config — into a DRAFT, then
+ * selects it, so the author lands in the ordinary workspace with the real content in front of them.
+ *
+ * The frozen version itself is never touched, and remains the one assigned classes are sitting.
+ */
 function VersionsCard({
   template,
   activeVersionId,
   onSelect,
+  canManage,
 }: {
   template: BuilderTemplate;
   activeVersionId: string | null;
   onSelect: (versionId: string) => void;
+  canManage: boolean;
 }) {
   const createVersion = useCreateVersion(template.id);
+  const duplicateVersion = useDuplicateVersion(template.id);
+  const archiveVersion = useArchiveVersion(template.id);
+  const restoreVersion = useRestoreVersion(template.id);
   const versions = template.versions ?? [];
+  const busy =
+    createVersion.isPending ||
+    duplicateVersion.isPending ||
+    archiveVersion.isPending ||
+    restoreVersion.isPending;
 
   return (
     <Card>
@@ -182,32 +289,111 @@ function VersionsCard({
         <div>
           <CardTitle>Versions</CardTitle>
           <CardDescription>
-            A published version is frozen forever — fix a mistake by publishing the next one.
+            {canManage
+              ? 'A published version is frozen forever — edit a copy of it and publish that as the next one. "New version" starts empty instead, for a genuinely new edition.'
+              : 'Every edition of this instrument. Students always sit the published one.'}
           </CardDescription>
         </div>
-        <Button
-          variant="secondary"
-          disabled={createVersion.isPending}
-          onClick={() => createVersion.mutate()}
-        >
-          New version
-        </Button>
+        {canManage ? (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => createVersion.mutate()}
+          >
+            New version
+          </Button>
+        ) : null}
       </CardHeader>
-      <CardContent className="flex flex-wrap gap-2">
+      <CardContent className="flex flex-col gap-2">
         {versions.length === 0 ? (
           <p className="text-sm text-muted-foreground">No versions yet — create one to start adding questions.</p>
         ) : (
-          versions.map((version) => (
-            <Button
-              key={version.id}
-              variant={version.id === activeVersionId ? 'primary' : 'secondary'}
-              onClick={() => onSelect(version.id)}
-            >
-              v{version.version_number} · {version.status}
-            </Button>
-          ))
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            {versions.map((version) => (
+              <div key={version.id} className="flex flex-wrap items-center gap-1">
+                <Button
+                  variant={version.id === activeVersionId ? 'primary' : 'secondary'}
+                  onClick={() => onSelect(version.id)}
+                >
+                  v{version.version_number} · {version.status}
+                </Button>
+                {/* Only on a frozen version, and only for someone who may write to this template.
+                    A DRAFT is already editable in place, and offering to copy it there would invite
+                    two half-finished drafts of the same edition. */}
+                {canManage && version.status !== 'DRAFT' ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title={`Copy v${version.version_number}'s questions into a new draft you can edit`}
+                    disabled={busy}
+                    onClick={() => {
+                      void duplicateVersion
+                        .mutateAsync(version.id)
+                        .then((draft) => onSelect(draft.id))
+                        // The mutation's own `isError` renders the message; this keeps the
+                        // rejection out of the console as an unhandled promise rejection.
+                        .catch(() => undefined);
+                    }}
+                  >
+                    {duplicateVersion.isPending ? 'Copying…' : 'Edit a copy'}
+                  </Button>
+                ) : null}
+
+                {/*
+                  **Archive one edition, published included** (prompt §4).
+
+                  Nothing is deleted: every attempt names its own `assessment_version_id`, so a
+                  student's result from last year still resolves to the exact questions it was
+                  produced against. What archiving changes is that nobody can *start* it — which is
+                  what an author wants of v1 once v2 is out, and is why this is not the same act as
+                  archiving the whole instrument.
+
+                  The confirmation says the one thing that is easy to assume wrongly: attempts
+                  already under way are untouched. Ending those is closing the assignment (§21).
+                */}
+                {canManage ? (
+                  version.status === 'ARCHIVED' ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title={`Bring v${version.version_number} back`}
+                      disabled={busy}
+                      onClick={() => {
+                        void restoreVersion.mutateAsync(version.id).catch(() => undefined);
+                      }}
+                    >
+                      Restore
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title={`Retire v${version.version_number} — students can no longer start it`}
+                      disabled={busy}
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `Archive v${version.version_number}? Students will no longer be able to start it. Results already recorded against it are unchanged, and anyone part-way through keeps their attempt.`,
+                          )
+                        ) {
+                          return;
+                        }
+
+                        void archiveVersion.mutateAsync(version.id).catch(() => undefined);
+                      }}
+                    >
+                      Archive
+                    </Button>
+                  )
+                ) : null}
+              </div>
+            ))}
+          </div>
         )}
         {createVersion.isError ? <Alert>{createVersion.error.message}</Alert> : null}
+        {duplicateVersion.isError ? <Alert>{duplicateVersion.error.message}</Alert> : null}
+        {archiveVersion.isError ? <Alert>{archiveVersion.error.message}</Alert> : null}
+        {restoreVersion.isError ? <Alert>{restoreVersion.error.message}</Alert> : null}
       </CardContent>
     </Card>
   );
@@ -219,11 +405,16 @@ function VersionWorkspace({
   versionId,
   templateId,
   dimensions,
+  onSelectVersion,
+  canManage,
 }: {
   versionId: string;
   templateId: string;
   dimensions: BuilderDimension[];
+  onSelectVersion: (versionId: string) => void;
+  canManage: boolean;
 }) {
+  const duplicateVersion = useDuplicateVersion(templateId);
   const { data: review, isLoading, isError, error } = useVersionReview(versionId);
 
   if (isLoading) {
@@ -234,11 +425,72 @@ function VersionWorkspace({
     return <Alert>We could not load this version. {error?.message}</Alert>;
   }
 
-  const draft = review.status === 'DRAFT';
+  /**
+   * Editable means **both**: this version is a draft (invariant 1 — a published version is frozen
+   * forever), and this caller may write to this template at all (0037). The two are independent, and
+   * an editor that checked only the first would put a working question editor in front of a
+   * counselor whose every keystroke the server 404s.
+   */
+  const draft = review.status === 'DRAFT' && canManage;
+
+  /**
+   * **§5's permanent rule, honoured in the UI as well as the server.** RIASEC and SCCT can never be
+   * AI-generated or AI-edited by any principal, and `authorizeGenerateWithAi` refuses them with a
+   * 403. Now that a curated instrument can have a DRAFT version — the copy this page's "Edit a
+   * copy" makes — a category-blind `draft` check would put the "Draft with AI" panel in front of an
+   * author whose every click it 403s. The rule is enforced on the server; this stops the UI from
+   * offering an act the system will refuse.
+   */
+  const aiAllowed = review.template.category === 'CUSTOM';
 
   return (
     <>
-      {draft ? <GeneratePanel review={review} /> : null}
+      {/*
+        **The read-only explanation, at the point of confusion.**
+
+        Landing on RIASEC shows sixty questions that will not respond to a click, and the reason —
+        this version published, and a published version is frozen — is otherwise only inferable from
+        a `PUBLISHED` badge three cards up. Saying it here, next to the way out, is what turns
+        "these are locked" into "these are edited by copying". The button is the same act as the
+        version list's "Edit a copy"; it is repeated because this is where someone discovers they
+        need it.
+      */}
+      {draft || !canManage ? null : (
+        <Card>
+          <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle>
+                v{review.version_number} is {review.status.toLowerCase()} and
+                read-only
+              </CardTitle>
+              <CardDescription>
+                Students who sat this version keep the instrument their answers
+                were scored against, so it can never change. Copy it into a
+                draft to edit the questions, then publish that draft as the next
+                version.
+              </CardDescription>
+            </div>
+            <Button
+              disabled={duplicateVersion.isPending}
+              onClick={() => {
+                void duplicateVersion
+                  .mutateAsync(review.id)
+                  .then((created) => onSelectVersion(created.id))
+                  .catch(() => undefined);
+              }}
+            >
+              {duplicateVersion.isPending ? 'Copying…' : 'Edit a copy'}
+            </Button>
+          </CardHeader>
+          {duplicateVersion.isError ? (
+            <CardContent>
+              <Alert>{duplicateVersion.error.message}</Alert>
+            </CardContent>
+          ) : null}
+        </Card>
+      )}
+
+      {draft && aiAllowed ? <GeneratePanel review={review} /> : null}
 
       {/*
         The workspace replaces what used to be two cards — a read-only review list and a separate

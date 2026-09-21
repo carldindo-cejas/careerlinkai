@@ -35,8 +35,13 @@ export async function extractText(file: File): Promise<string> {
     text = await extractPdf(file);
   } else if (extension === 'docx') {
     text = await extractDocx(file);
+  } else if (extension === 'txt' || extension === 'md') {
+    // No parser, no dynamic import, no bundle cost: a text file is already its own extraction.
+    // Accepting these is free, and they are the format a school's existing handouts and FAQ
+    // notes are most likely to already be in (AiNormalisation Phase 1).
+    text = await file.text();
   } else {
-    throw new ExtractionError('Only PDF and DOCX files are supported.');
+    throw new ExtractionError('Only PDF, DOCX, TXT and MD files are supported.');
   }
 
   const trimmed = text.trim();

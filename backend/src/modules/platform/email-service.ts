@@ -1,5 +1,5 @@
 import type { Env } from '@/env';
-import { describeError, pipelineLogger } from '@/lib/logger';
+import { describeError, pipelineLogger, type PipelineLogger } from '@/lib/logger';
 import { resetPasswordUrl } from '@/modules/identity/reset-link';
 
 /**
@@ -100,8 +100,42 @@ export async function sendPasswordResetEmail(
   env: Env,
   input: PasswordResetEmailInput,
 ): Promise<EmailOutcome> {
-  const logger = pipelineLogger(PIPELINE, { user_id: input.userId });
+  const url = resetPasswordUrl(env.FRONTEND_URL, input.to, input.token);
 
+  return deliver(env, pipelineLogger(PIPELINE, { user_id: input.userId }), {
+    to: input.to,
+    subject: 'Reset your CareerLinkAI password',
+    text: plainTextBody(url, input.expiresInMinutes),
+    html: htmlBody(url, input.expiresInMinutes),
+  });
+}
+
+/** One message, already rendered. The senders above and below build these; `deliver` posts them. */
+interface Message {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}
+
+/**
+ * Post one message to Resend and classify the outcome.
+ *
+ * **Shares the never-throws contract of every sender in this module** (see the file header): a
+ * caller that let an exception escape would turn a bad key or a rate limit into a 500 on an
+ * endpoint whose whole design is to answer identically whether or not the address is registered.
+ * Every failure path below returns an `EmailOutcome` instead.
+ *
+ * Nothing here logs the message body, and no caller may pass a credential in the subject: the
+ * bodies carry reset links and signup codes, which are live credentials for as long as they are
+ * valid, and Workers Logs has a different and longer-lived audience than the mailbox they were
+ * addressed to.
+ */
+async function deliver(
+  env: Env,
+  logger: PipelineLogger,
+  message: Message,
+): Promise<EmailOutcome> {
   // **This check is load-bearing for the test suite, not only for local development.** It runs
   // before anything touches the network, and `wrangler.test.toml` sets no key — so the suite
   // cannot dial api.resend.com even if a test's stub fails to install. That is the same
@@ -115,8 +149,6 @@ export async function sendPasswordResetEmail(
     return { sent: false, reason: 'not_configured' };
   }
 
-  const url = resetPasswordUrl(env.FRONTEND_URL, input.to, input.token);
-
   let response: Response;
 
   try {
@@ -128,10 +160,10 @@ export async function sendPasswordResetEmail(
       },
       body: JSON.stringify({
         from: `CareerLinkAI <${env.EMAIL_FROM}>`,
-        to: [input.to],
-        subject: 'Reset your CareerLinkAI password',
-        text: plainTextBody(url, input.expiresInMinutes),
-        html: htmlBody(url, input.expiresInMinutes),
+        to: [message.to],
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
       }),
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
@@ -166,6 +198,106 @@ export async function sendPasswordResetEmail(
   logger.info('sent', { message_id: messageId });
 
   return { sent: true, messageId };
+}
+
+const SIGNUP_PIPELINE = 'counselor_signup_email';
+
+export interface SignupCodeEmailInput {
+  /** The address that asked to register. There is no user id yet — that is the whole point. */
+  to: string;
+  /** The six-digit code, in plaintext. **Never logged**, same rule as the reset token. */
+  code: string;
+  /** Mirrors `SIGNUP_CODE_TTL_MINUTES`, so the copy cannot drift from the check that enforces it. */
+  expiresInMinutes: number;
+}
+
+/**
+ * The counselor-signup verification code (migration 0034).
+ *
+ * A code rather than a link, unlike the password reset, and the difference is worth stating: a
+ * reset link authenticates somebody who already has an account, so it can safely carry a bearer
+ * token in a URL. A signup code is typed back into a form the person already has open in front of
+ * them — which means it survives an email client that mangles links, works when the mail is read on
+ * a phone and the form is on a lab desktop, and cannot be turned into a one-click account by
+ * anything that prefetches URLs.
+ *
+ * The log line carries no address and no code. `to` is omitted deliberately: unlike the reset
+ * sender there is no user id to correlate on, and writing the raw address into Workers Logs would
+ * make the log a list of everyone who tried to register.
+ */
+export async function sendCounselorSignupCodeEmail(
+  env: Env,
+  input: SignupCodeEmailInput,
+): Promise<EmailOutcome> {
+  const logger = pipelineLogger(SIGNUP_PIPELINE, { kind: 'code' });
+
+  return deliver(env, logger, {
+    to: input.to,
+    subject: 'Your CareerLinkAI verification code',
+    text: [
+      'Verify your CareerLinkAI counselor account',
+      '',
+      'Someone asked to create a CareerLinkAI counselor account with this email address.',
+      `Enter this code on the sign-up page within ${input.expiresInMinutes} minutes:`,
+      '',
+      input.code,
+      '',
+      'If you did not ask for this, you can ignore this email — no account will be created.',
+    ].join('\n'),
+    html: [
+      '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.5;color:#111">',
+      '<h1 style="font-size:20px;margin:0 0 16px">Verify your CareerLinkAI account</h1>',
+      '<p style="margin:0 0 16px">Someone asked to create a CareerLinkAI counselor account with this email address.</p>',
+      `<p style="margin:0 0 8px">Enter this code on the sign-up page within ${input.expiresInMinutes} minutes:</p>`,
+      `<p style="margin:0 0 24px;font-size:32px;font-weight:700;letter-spacing:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(input.code)}</p>`,
+      '<p style="margin:0;font-size:13px;color:#555">If you did not ask for this, ignore this email — no account will be created.</p>',
+      '</div>',
+    ].join(''),
+  });
+}
+
+/**
+ * Sent instead of a code when the address **already has an account** (migration 0034).
+ *
+ * This message is what makes the anti-enumeration response honest rather than obstructive.
+ * `/auth/counselor-signup` answers identically for a free address and a registered one — §38's
+ * rule, held everywhere else in this module — which on its own would leave the real owner of the
+ * address staring at a code-entry form waiting for a code that is never coming. So they get this
+ * instead, and the dead end becomes a signpost.
+ *
+ * Note what it does **not** contain: no code, no link that creates anything, and nothing that
+ * differs based on the account's status. Somebody who does not own this mailbox learns nothing,
+ * because they never see it.
+ */
+export async function sendAccountExistsEmail(env: Env, to: string): Promise<EmailOutcome> {
+  const logger = pipelineLogger(SIGNUP_PIPELINE, { kind: 'account_exists' });
+  const signIn = `${env.FRONTEND_URL.replace(/\/+$/, '')}/login`;
+  const forgot = `${env.FRONTEND_URL.replace(/\/+$/, '')}/forgot-password`;
+
+  return deliver(env, logger, {
+    to,
+    subject: 'You already have a CareerLinkAI account',
+    text: [
+      'You already have a CareerLinkAI account',
+      '',
+      'Someone asked to create a CareerLinkAI account with this email address, but one already',
+      'exists for it — so no new account was created and no verification code was issued.',
+      '',
+      `Sign in here: ${signIn}`,
+      `Forgotten your password? ${forgot}`,
+      '',
+      'If this was not you, you can ignore this email — nothing about your account has changed.',
+    ].join('\n'),
+    html: [
+      '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.5;color:#111">',
+      '<h1 style="font-size:20px;margin:0 0 16px">You already have an account</h1>',
+      '<p style="margin:0 0 16px">Someone asked to create a CareerLinkAI account with this email address, but one already exists for it — so no new account was created.</p>',
+      `<p style="margin:0 0 16px"><a href="${escapeHtml(signIn)}" style="background:#1d4ed8;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;display:inline-block">Sign in</a></p>`,
+      `<p style="margin:0 0 16px;font-size:13px;color:#555">Forgotten your password? <a href="${escapeHtml(forgot)}">Reset it here</a>.</p>`,
+      '<p style="margin:0;font-size:13px;color:#555">If this was not you, ignore this email — nothing about your account has changed.</p>',
+      '</div>',
+    ].join(''),
+  });
 }
 
 /**

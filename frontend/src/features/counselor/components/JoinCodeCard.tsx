@@ -1,10 +1,11 @@
-import { Check, Copy, RefreshCw } from 'lucide-react';
+import { Check, Copy, RefreshCw, Share2 } from 'lucide-react';
 import { useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useRegenerateCode } from '@/features/counselor/hooks/useClasses';
+import { joinLinkPath } from '@/routes/paths';
 import { ApiRequestError } from '@/types/api';
 import type { ClassRoom } from '@/types/class';
 
@@ -12,10 +13,13 @@ import type { ClassRoom } from '@/types/class';
  * The class code (FULLPLAN §38, §57).
  *
  * This code is the *entire* secret behind passwordless student access — there is no
- * password to fall back on. Two consequences are visible in this component:
+ * password to fall back on. Three consequences are visible in this component:
  *
  *   - it is displayed in a monospace face with wide tracking, because students copy it by
  *     hand off a projector, and the alphabet already excludes I/O/0/1 for the same reason;
+ *   - the join link carries the code in its path, so sharing the link *is* sharing the code —
+ *     it goes to the class the same way the code would, and a regenerated code kills old links
+ *     along with it;
  *   - regenerating is presented as the revocation it actually is, not as a refresh.
  */
 export interface JoinCodeCardProps {
@@ -23,7 +27,7 @@ export interface JoinCodeCardProps {
 }
 
 export function JoinCodeCard({ classRoom }: JoinCodeCardProps) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'code' | 'link' | null>(null);
   const [isConfirmingRegenerate, setIsConfirmingRegenerate] = useState(false);
 
   const regenerate = useRegenerateCode(classRoom.id);
@@ -32,10 +36,41 @@ export function JoinCodeCard({ classRoom }: JoinCodeCardProps) {
   const isExpired =
     classRoom.join_code_expires_at !== null && new Date(classRoom.join_code_expires_at) < new Date();
 
+  // The page's own origin, so production shares careerlinkai.online and a dev server shares itself.
+  const joinLink = `${window.location.origin}${joinLinkPath(classRoom.join_code)}`;
+
+  const flash = (what: 'code' | 'link') => {
+    setCopied(what);
+    window.setTimeout(() => setCopied(null), 2000);
+  };
+
   const copy = async () => {
     await navigator.clipboard.writeText(classRoom.join_code);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
+    flash('code');
+  };
+
+  /**
+   * The device's share sheet where there is one — on a phone that is Messenger or SMS, which is
+   * how a class link actually travels — and a copied link everywhere else. Dismissing the sheet is
+   * the counselor changing their mind, not an error, so it falls through to nothing.
+   */
+  const share = async () => {
+    if ('share' in navigator) {
+      try {
+        await navigator.share({
+          title: `Join ${classRoom.name}`,
+          text: `Join ${classRoom.name} on CareerLinkAI — open the link and enter your username.`,
+          url: joinLink,
+        });
+        return;
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') return;
+        // Refused for any other reason (no share target, blocked by policy) — copy instead.
+      }
+    }
+
+    await navigator.clipboard.writeText(joinLink);
+    flash('link');
   };
 
   const error = regenerate.error instanceof ApiRequestError ? regenerate.error : null;
@@ -45,7 +80,8 @@ export function JoinCodeCard({ classRoom }: JoinCodeCardProps) {
       <CardHeader>
         <CardTitle>Class code</CardTitle>
         <CardDescription>
-          Students sign in with this code and their username. They never get a password.
+          Students sign in with this code and their username. They never get a password. Share
+          the join link and the code is filled in for them — they only type their username.
         </CardDescription>
       </CardHeader>
 
@@ -58,14 +94,30 @@ export function JoinCodeCard({ classRoom }: JoinCodeCardProps) {
           </p>
 
           <Button variant="secondary" size="sm" onClick={() => void copy()}>
-            {copied ? (
+            {copied === 'code' ? (
               <Check className="size-4" aria-hidden="true" />
             ) : (
               <Copy className="size-4" aria-hidden="true" />
             )}
-            {copied ? 'Copied' : 'Copy'}
+            {copied === 'code' ? 'Copied' : 'Copy'}
+          </Button>
+
+          <Button variant="secondary" size="sm" onClick={() => void share()}>
+            {copied === 'link' ? (
+              <Check className="size-4" aria-hidden="true" />
+            ) : (
+              <Share2 className="size-4" aria-hidden="true" />
+            )}
+            {copied === 'link' ? 'Link copied' : 'Share'}
           </Button>
         </div>
+
+        <p className="break-all text-sm text-muted-foreground">
+          Join link:{' '}
+          <span className="font-mono text-foreground">
+            {joinLink.replace(/^https?:\/\//, '')}
+          </span>
+        </p>
 
         {/* A code on a class that refuses joins is a trap: it looks usable and is not. */}
         {!isActive ? (

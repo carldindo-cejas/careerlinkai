@@ -27,6 +27,7 @@ import { now } from '@/lib/datetime';
 import {
   academicAverage,
   rankTop,
+  rankTopDistinct,
   scoreCareer,
   scoreProgram,
   TOP_N,
@@ -83,7 +84,8 @@ const MODULE = 'Recommendation';
  * without this silently starting to fail again.
  */
 const D1_MAX_BOUND_PARAMETERS = 100;
-const RECOMMENDATION_COLUMNS = 10;
+// 11 since migration 0036 added `components`: 8 rows × 11 = 88 bindings per insert.
+const RECOMMENDATION_COLUMNS = 11;
 const ROWS_PER_INSERT = Math.floor((D1_MAX_BOUND_PARAMETERS - 10) / RECOMMENDATION_COLUMNS);
 
 /** Split rows into inserts that each stay under D1's bound-parameter ceiling. */
@@ -186,6 +188,7 @@ export class RecommendationService {
         matchScore: match.matchScore,
         ranking: index + 1,
         reason: match.reason,
+        components: { ...match.components },
         createdAt: generatedAt,
       })),
       ...rankedPrograms.map((match, index) => ({
@@ -198,6 +201,7 @@ export class RecommendationService {
         matchScore: match.matchScore,
         ranking: index + 1,
         reason: match.reason,
+        components: { ...match.components },
         createdAt: generatedAt,
       })),
     ];
@@ -383,12 +387,17 @@ export class RecommendationService {
     recommendationId: string,
     explanationText: string,
     aiModel: string,
+    /** The knowledge entries this paragraph was written from (migration 0025), shown to the student. */
+    sources: string[] = [],
   ): Promise<RecommendationExplanation> {
     const row = {
       id: uuid(),
       recommendationId,
       explanationText,
       aiModel,
+      // Empty means "nothing to name", which is stored as NULL: a column that says [] and a
+      // column that says nothing would render identically and mean the same thing.
+      sources: sources.length === 0 ? null : sources,
       createdAt: now(),
     };
 
@@ -555,7 +564,8 @@ export class RecommendationService {
    * submit (D17), where every D1 call counts against the Free plan's 50-subrequest ceiling
    * (§45). The rows per student are a handful; picking the newest per category in JS is free.
    */
-  private async latestScoredResults(
+  /** Public since the Student Brief reads the same two results the engine does. */
+  async latestScoredResults(
     studentId: string,
   ): Promise<Record<'riasec' | 'scct', { resultId: string; attemptId: string } | null>> {
     const rows = await this.db
@@ -632,6 +642,93 @@ export class RecommendationService {
     }
 
     return profile;
+  }
+
+  /**
+   * Score chosen programs for one student with the **same §27 formula** as `generateFor`
+   * (2026-09-13, found on production).
+   *
+   * A student asked *"my top programs are not offered at BISU Calape but I want to study there —
+   * what should I choose based on my results?"* and was shown the campus's program list, because
+   * only the top ten of the whole catalog are ever stored. Every other program still has a score —
+   * the engine computes one for all of them on each generation and keeps ten — so the honest answer
+   * is to compute the same score for that campus's programs and rank them. Nothing is persisted:
+   * this is the arithmetic the recommendations page already stands on, restricted to a shortlist
+   * the student chose.
+   *
+   * Null when the student has not finished both instruments, exactly like `generateFor`. At most 90
+   * ids (D1's 100-parameter ceiling, §45); a single college offers far fewer.
+   */
+  async scoreProgramsFor(
+    studentId: string,
+    programIds: string[],
+  ): Promise<
+    | {
+        programId: string;
+        name: string;
+        collegeId: string;
+        collegeName: string;
+        matchScore: number;
+        reason: string;
+        components: Record<string, number>;
+        careers: string[];
+      }[]
+    | null
+  > {
+    const { riasec, scct } = await this.latestScoredResults(studentId);
+
+    if (riasec === null || scct === null) {
+      return null;
+    }
+
+    const profile = await this.riasecProfileFor(riasec.attemptId);
+
+    if (profile === null) {
+      return null;
+    }
+
+    const careerConfidenceIndex = await this.scoring.compositeIndexFor(scct.attemptId);
+
+    if (careerConfidenceIndex === null) {
+      return null;
+    }
+
+    if (programIds.length === 0) {
+      return [];
+    }
+
+    const student = await this.signalsFor(studentId, profile, careerConfidenceIndex);
+    const rows = await this.db
+      .select({ program: programs, college: colleges })
+      .from(programs)
+      .innerJoin(colleges, eq(programs.collegeId, colleges.id))
+      .where(inArray(programs.id, programIds.slice(0, 90)));
+    const linked = await this.catalog.scorableCareersForMany(rows.map(({ program }) => program.id));
+
+    return rows
+      .map(({ program, college }) => {
+        const careersOf = linked.get(program.id) ?? [];
+        const match = scoreProgram(
+          student,
+          { id: program.id, name: program.name, recommendedStrand: program.recommendedStrand },
+          careersOf.map((career) => ({
+            title: career.title,
+            typicalRiasecCode: career.typicalRiasecCode,
+          })),
+        );
+
+        return {
+          programId: program.id,
+          name: program.name,
+          collegeId: college.id,
+          collegeName: college.name,
+          matchScore: match.matchScore,
+          reason: match.reason,
+          components: { ...match.components },
+          careers: careersOf.map((career) => career.title).sort(),
+        };
+      })
+      .sort((a, b) => b.matchScore - a.matchScore || a.name.localeCompare(b.name));
   }
 
   /** §27's student side: the interest profile, the SCCT index, and the two profile fields. */
@@ -730,16 +827,26 @@ export class RecommendationService {
         ...scoreProgram(
           student,
           target,
-          linked.map((career) => career.typicalRiasecCode),
+          linked.map((career) => ({
+            title: career.title,
+            typicalRiasecCode: career.typicalRiasecCode,
+          })),
         ),
         name: program.name,
+        /*
+          What this row *is*, as opposed to which college's copy of it this row is. The canonical
+          id when the offering has been matched to one; the name otherwise, so two unmapped copies
+          of the same degree still collapse. See `rankTopDistinct`.
+        */
+        canonicalKey: program.programCatalogId ?? `name:${program.name.trim().toLowerCase()}`,
       };
     });
 
-    return rankTop(
+    return rankTopDistinct(
       matches,
       (m) => m.matchScore,
       (m) => m.name,
+      (m) => m.canonicalKey,
       TOP_N,
     );
   }

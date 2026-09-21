@@ -66,6 +66,27 @@ export interface Env {
   EMAIL_FROM: string;
   WORKERS_AI_TEXT_MODEL: string;
   WORKERS_AI_EMBEDDING_MODEL: string;
+  /** The §30 rerank model (`@cf/baai/bge-reranker-base`) — see `AiGatewayService.rerank`. */
+  WORKERS_AI_RERANK_MODEL: string;
+  /**
+   * The retrieval similarity floor (AiNormalisation D2). A var rather than a constant because it
+   * is the one retrieval number that can only be set correctly by measuring against a live
+   * corpus — and a corpus changes without a deploy.
+   */
+  RETRIEVAL_SIMILARITY_THRESHOLD: string;
+  /**
+   * `"true"` enables the §34 verifier pass — one extra ~30-token model call on answers that
+   * survive the free checks and still assert a figure (AiNormalisation Phase 3). The only part
+   * of the grounding contract that costs neurons, so it is off unless the budget allows.
+   */
+  AI_VERIFIER_ENABLED: string;
+  /**
+   * Cloudflare AI Gateway's id (Phase 4) — free, and it adds response caching, analytics and rate
+   * limiting in front of the `AI` binding with no service-code change. Empty disables it, which is
+   * the default: the gateway has to be created in the dashboard first, and a var naming one that
+   * does not exist would fail every model call.
+   */
+  AI_GATEWAY_ID: string;
   STUDENT_JOIN_CODE_TTL_DAYS: string;
   STUDENT_TOKEN_TTL_HOURS: string;
   STAFF_TOKEN_TTL_HOURS: string;

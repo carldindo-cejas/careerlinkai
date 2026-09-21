@@ -1,0 +1,50 @@
+/*
+  The tour overlay's own stylesheet.
+
+  It is a file rather than a block in `index.css` because `index.css` is in the entry chunk, which
+  every screen in every shell downloads — and this rule is used by exactly one lazily-loaded
+  component that a returning student never fetches at all. Imported from `StudentTour.tsx`, Vite
+  emits it as part of that chunk's CSS and it arrives only when a tour actually runs.
+*/
+
+/**
+ * The tour spotlight's breathing halo (prompt-driven, 2026-09-20).
+ *
+ * The overlay dims the whole screen except one rectangle. On a busy page that rectangle can be
+ * a 44px button at the top right, and a still 2px outline around it is easy to miss when
+ * everything else went dark at the same instant — the eye is drawn to the *change*, and the
+ * change was everywhere.
+ *
+ * So the ring breathes: a soft glow grows outward and fades, slowly, forever. Slow on purpose —
+ * 2.6s is about the length of a calm breath, and anything faster reads as an alarm rather than as
+ * a pointer. It is a `box-shadow` rather than a `transform` so the ring itself never moves: it
+ * must stay exactly on the element it is tracking, and a scaling outline would drift off the
+ * thing it is supposed to be naming.
+ *
+ * The ring's own border is a Tailwind class on the element; only the halo lives here.
+ */
+@keyframes tour-spotlight-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 50%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 12px color-mix(in srgb, var(--primary) 0%, transparent);
+  }
+}
+
+.tour-spotlight {
+  animation: tour-spotlight-breathe 2.6s ease-in-out infinite;
+}
+
+/*
+  Reduced motion keeps the ring and drops the breath, and then holds the halo at its brightest
+  rather than removing it: the whole job of this animation is "look here", and a student who asked
+  for less movement still has to be able to find the thing being pointed at.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight {
+    animation: none;
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 28%, transparent);
+  }
+}

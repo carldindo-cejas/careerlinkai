@@ -1,8 +1,13 @@
 /* eslint-disable @typescript-eslint/require-await -- async-interface stubs have nothing to await */
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { chatConversations, knowledgeChunks, knowledgeDocuments } from '@/db/schema';
+import {
+  aiRequests,
+  chatConversations,
+  knowledgeChunks,
+  knowledgeDocuments,
+} from '@/db/schema';
 import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { AiGatewayService, type WorkersAiClient } from '@/modules/ai/ai-gateway-service';
@@ -85,8 +90,9 @@ async function seedChunk(content: string): Promise<string> {
   await db().insert(knowledgeDocuments).values({
     id: documentId,
     uploadedBy: admin.id,
+    title: 'guidance.pdf',
     fileName: 'guidance.pdf',
-    fileType: 'pdf',
+    sourceType: 'pdf',
     storagePath: `knowledge/${documentId}/guidance.pdf`,
     processingStatus: 'COMPLETED',
     visibility: 'GLOBAL',
@@ -175,11 +181,13 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
   it('answers, and persists both sides of the turn', async () => {
     await clearConversation();
 
-    const { service } = pipeline({ responses: ['Your top match leans Investigative.'] });
+    // No retrieval behind this one, so there is nothing to cite — and the sentence claims only
+    // what the student's own computed results already say, which is what Gate 2 is for.
+    const { service } = pipeline({ responses: ['That is your strongest match on your own results.'] });
     const turn = await service.ask(studentId, 'Why is this my top match?', await currentSet());
 
     expect(turn.failure).toBeNull();
-    expect(turn.answer.content).toBe('Your top match leans Investigative.');
+    expect(turn.answer.content).toBe('That is your strongest match on your own results.');
     // The generation is linked to its `ai_requests` row — the §13.7 provenance pointer.
     expect(turn.answer.aiRequestId).not.toBeNull();
 
@@ -199,7 +207,7 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     const set = await currentSet();
     const { service, prompts } = pipeline({ responses: ['Sure.'] });
 
-    await service.ask(studentId, 'What are my options?', set);
+    await service.ask(studentId, 'What are my top options?', set);
 
     const user = prompts[0]!.user;
 
@@ -217,7 +225,9 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
       policy: { instructions: 'Mention the guidance office.', restrictions: 'No fees.' },
     });
 
-    await service.ask(studentId, 'Hello', await currentSet());
+    // "Hello" is answerable from nothing, and Phase 3 refuses that rather than generating — so
+    // this asks something Gate 2 covers, since what is under test is the prompt, not the gate.
+    await service.ask(studentId, 'What are my results?', await currentSet());
 
     expect(prompts[0]!.system).toContain('Mention the guidance office.');
     expect(prompts[0]!.system).toContain('No fees.');
@@ -228,7 +238,7 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
 
     const chunkId = await seedChunk('Nursing programs at this school require a Grade 11 average.');
     const { service, prompts } = pipeline({
-      responses: ['The materials mention a Grade 11 average.'],
+      responses: ['The materials mention a Grade 11 average [1].'],
       matches: [{ id: chunkId, score: 0.9 }],
     });
 
@@ -261,11 +271,11 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     const set = await currentSet();
     const { service, prompts } = pipeline({ responses: ['One.', 'Two.'] });
 
-    await service.ask(studentId, 'First question', set);
-    await service.ask(studentId, 'Second question', set);
+    await service.ask(studentId, 'My first question about these results', set);
+    await service.ask(studentId, 'My second question about these results', set);
 
     expect(prompts[1]!.user).toContain('RECENT CONVERSATION');
-    expect(prompts[1]!.user).toContain('First question');
+    expect(prompts[1]!.user).toContain('My first question about these results');
     expect(prompts[1]!.user).toContain('One.');
   });
 
@@ -279,7 +289,7 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     const { service } = pipeline({
       responses: ['You will definitely get into this program.'],
     });
-    const turn = await service.ask(studentId, 'Will I get in?', await currentSet());
+    const turn = await service.ask(studentId, 'Will I get into my top match?', await currentSet());
 
     expect(turn.failure).toBe('FAILED_VALIDATION');
     expect(turn.answer.content).not.toContain('definitely');
@@ -294,7 +304,7 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
 
     const { service } = pipeline({ responses: [], failGeneration: true });
     const set = await currentSet();
-    const turn = await service.ask(studentId, 'Anything?', set);
+    const turn = await service.ask(studentId, 'Anything about my results?', set);
 
     expect(turn.failure).toBe('MODEL_ERROR');
     expect(turn.answer.content).toContain(set!.careers[0]!.career.title);
@@ -309,11 +319,11 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     await clearConversation();
 
     const { service } = pipeline({ responses: [], failGeneration: true });
-    const turn = await service.ask(studentId, 'A question worth keeping', await currentSet());
+    const turn = await service.ask(studentId, 'A question worth keeping about my results', await currentSet());
 
     const messages = await service.messagesFor(studentId, turn.conversation.id);
 
-    expect(messages[0]!.content).toBe('A question worth keeping');
+    expect(messages[0]!.content).toBe('A question worth keeping about my results');
   });
 
   /** A student with no recommendations gets an honest answer, not a crash. */
@@ -324,6 +334,44 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
     const turn = await service.ask(studentId, 'What are my results?', null);
 
     expect(turn.answer.content).toContain('completed both the RIASEC and SCCT assessments');
+  });
+
+  /**
+   * The navigation gate (migration 0038). Two things are asserted and the second is the point:
+   * the answer names the screen, **and** no model was called to produce it. A question about where
+   * a button is must never reach a generation — there is nothing in the corpus to ground it, and
+   * an ungrounded model asked to describe our navigation invents a plausible one.
+   */
+  it('answers a "where is it" question from the destination table, with no model call', async () => {
+    await clearConversation();
+
+    // A response is stubbed precisely so its absence from the transcript proves it went unused.
+    const { service, prompts } = pipeline({ responses: ['Should never be reached.'] });
+    const turn = await service.ask(
+      studentId,
+      'Where do I download my results?',
+      await currentSet(),
+    );
+
+    expect(prompts).toHaveLength(0);
+    expect(turn.failure).toBeNull();
+    expect(turn.answer.aiRequestId).toBeNull();
+    expect(turn.answer.content).toContain('Print results');
+    expect(turn.answer.content).toContain('Want me to take you there?');
+    // The id the client resolves to a route and an element — persisted, so the button survives a
+    // transcript reloaded next week.
+    expect(turn.answer.navTarget).toBe('report-download');
+    // Answered, not refused: there is no gap here for an admin to write an entry about.
+    expect(turn.answer.knowledgeRequest).toBeNull();
+  });
+
+  it('leaves a question that merely sounds like one alone', async () => {
+    await clearConversation();
+
+    const { service } = pipeline({ responses: ['Several colleges offer it.'] });
+    const turn = await service.ask(studentId, 'Where can I study nursing?', await currentSet());
+
+    expect(turn.answer.navTarget).toBeNull();
   });
 });
 
@@ -349,7 +397,10 @@ describe('the chat endpoints', () => {
 
     const response = await api('POST', '/student/chat', {
       token: studentToken,
-      body: { message: 'What should I take?' },
+      // Phrased as a question about their own results: with no corpus behind it, Phase 3 refuses
+      // anything the student's results cannot answer *before* reaching the model, so a bare
+      // "what should I take?" would exit at that gate and never exercise the outage path.
+      body: { message: 'What should I take, based on my top matches?' },
     });
 
     expect(response.status).toBe(201);
@@ -430,5 +481,83 @@ describe('the chat endpoints', () => {
     const response = await api('GET', '/student/chat');
 
     expect(response.status).toBe(401);
+  });
+
+  /**
+   * "Request to add to knowledge" (migration 0030) on a message that is not a refusal — or not
+   * this student's — is a 404, the same answer this module gives to "not yours" and "not real"
+   * everywhere else. An id alone is not authority, and the mark the service wrote is the only
+   * thing that makes the transition legal.
+   */
+  it('404s a knowledge request against a message that is not an offered refusal', async () => {
+    await clearConversation();
+
+    const asked = await api('POST', '/student/chat', {
+      token: studentToken,
+      body: { message: 'Why is this my top match?' },
+    });
+
+    // With the AI bindings absent this is the deterministic fallback, not a coverage gap — so
+    // there is nothing here for an admin to write, and nothing to file.
+    const response = await api(
+      'POST',
+      `/student/chat/messages/${asked.body.data.answer.id}/knowledge-request`,
+      { token: studentToken },
+    );
+
+    expect(asked.body.data.answer.knowledge_request).toBeNull();
+    expect(response.status).toBe(404);
+  });
+});
+
+describe('a reply in which the model says it does not know (SELF_REPORTED_GAP)', () => {
+  /**
+   * Found testing on production: a cited, honest "I don't have that" passed every check and was
+   * recorded as a success, so the question never reached the backlog and the student was never
+   * offered the knowledge request. The reply itself was good, so it is kept — only the bookkeeping
+   * changes.
+   */
+  it('keeps the honest reply, files the gap and offers the knowledge request', async () => {
+    await clearConversation();
+
+    const chunkId = await seedChunk('BS Mechanical Engineering is offered at University of Bohol.');
+    const reply =
+      "I don't have any information about that program at another campus. BS Mechanical Engineering is offered at University of Bohol [1].";
+    const { service } = pipeline({ responses: [reply], matches: [{ id: chunkId, score: 0.9 }] });
+    const question = `Is Mechanical Engineering offered at another campus ${uuid()}?`;
+
+    const turn = await service.ask(studentId, question, await currentSet());
+
+    expect(turn.failure).toBeNull();
+    expect(turn.answer.content).toBe(reply);
+    expect(turn.answer.knowledgeRequest).toBe('OFFERED');
+
+    const logged = await db()
+      .select()
+      .from(aiRequests)
+      .where(
+        and(
+          eq(aiRequests.status, 'FAILED'),
+          sql`json_extract(${aiRequests.inputContext}, '$.retrieval_query') = ${question}`,
+        ),
+      );
+
+    // The SKIPPED row is what the AI-gaps backlog reads — without it the report never sees this.
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.failureReason).toMatch(/^SKIPPED: .*SELF_REPORTED_GAP/);
+  });
+
+  it('offers nothing on an ordinary grounded answer', async () => {
+    await clearConversation();
+
+    const chunkId = await seedChunk('Nursing programs at this school require a Grade 11 average.');
+    const { service } = pipeline({
+      responses: ['The materials mention a Grade 11 average [1].'],
+      matches: [{ id: chunkId, score: 0.9 }],
+    });
+
+    const turn = await service.ask(studentId, 'What do I need for nursing?', await currentSet());
+
+    expect(turn.answer.knowledgeRequest).toBeNull();
   });
 });

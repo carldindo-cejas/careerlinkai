@@ -1,6 +1,5 @@
 import {
   ArrowRight,
-  BellRing,
   BookOpen,
   ClipboardList,
   Compass,
@@ -8,7 +7,7 @@ import {
   Plus,
   Users,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { BarList } from '@/components/charts/BarList';
 import { chartColors } from '@/components/charts/colors';
@@ -18,23 +17,26 @@ import { StatCard } from '@/components/dashboard/StatCard';
 import { Alert } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useCounselorDashboard } from '@/features/counselor/hooks/useDashboard';
-import { useNotifications } from '@/features/notifications/hooks/useNotifications';
 import { classDetailPath, paths } from '@/routes/paths';
 import { useAuthStore } from '@/stores/authStore';
 
 /**
  * Counselor dashboard (FULLPLAN §37, §54 — Phase 6), management pass over the idea2
  * reference: the caseload at a glance — KPI row, completion tracking, per-class
- * statistics, recommendation coverage, quick actions and the latest activity. Every
+ * statistics, recommendation coverage, quick actions and the classes themselves. Every
  * number is pulled live from the domain tables; nothing here is a cache or a mock.
+ *
+ * **"Recent activity" was removed on 2026-09-20** (prompt-driven). It rendered the same scoped
+ * feed the bell in the top bar polls, five rows of it, at the very bottom of the longest screen
+ * in this shell — so it was a second copy of a control that is already one click away on every
+ * page, placed where a counselor scrolls past everything else to reach it. The bell is the feed;
+ * this screen is the numbers.
  */
 export function CounselorDashboardPage() {
   const user = useAuthStore((state) => state.user);
   const profile = user?.counselor_profile;
   const { data, isLoading, isError, error } = useCounselorDashboard();
-  // The same scoped feed the bell polls — reused here as "recent activity", so the two
-  // never disagree and the dashboard costs no extra endpoint.
-  const { data: notifications } = useNotifications();
+  const navigate = useNavigate();
 
   const attemptsTotal = data ? data.attempts.scored + data.attempts.in_progress : 0;
   const completionPercent =
@@ -59,14 +61,14 @@ export function CounselorDashboardPage() {
         <div className="flex gap-2">
           <Link
             to={paths.counselorClasses}
-            className="inline-flex h-9 items-center gap-1.5 rounded-none bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            className="inline-flex h-11 items-center gap-1.5 rounded-none bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 sm:h-9"
           >
             <Plus className="size-4" aria-hidden="true" />
             New class
           </Link>
           <Link
             to={paths.counselorAssessmentTemplates}
-            className="inline-flex h-9 items-center gap-1.5 rounded-none border border-border bg-transparent px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+            className="inline-flex h-11 items-center gap-1.5 rounded-none border border-border bg-transparent px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary sm:h-9"
           >
             <ClipboardList className="size-4" aria-hidden="true" />
             Assessments
@@ -80,7 +82,14 @@ export function CounselorDashboardPage() {
 
       {data ? (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/*
+            `grid-cols-2` from 0px up (prompt-driven, 2026-09-20), matching the student
+            dashboard's KPI row. Stacked one-per-row these four tiles were most of a phone
+            screen's height before a single chart came into view, and a stat tile is a label, a
+            number and one short line — it fits in a half column, which `StatCard` is built for
+            and pins in its own notes.
+          */}
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
             <StatCard
               icon={<GraduationCap className="size-4" aria-hidden="true" />}
               label="Classes"
@@ -214,7 +223,7 @@ export function CounselorDashboardPage() {
                   <CardTitle>Your classes</CardTitle>
                   <Link
                     to={paths.counselorClasses}
-                    className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline"
+                    className="inline-flex min-h-11 items-center text-sm font-medium text-muted-foreground hover:text-foreground hover:underline sm:min-h-0"
                   >
                     Manage classes
                   </Link>
@@ -239,7 +248,28 @@ export function CounselorDashboardPage() {
                     </thead>
                     <tbody>
                       {data.classes.map((row) => (
-                        <tr key={row.id} className="border-b border-border last:border-b-0">
+                        /*
+                          The whole row opens the class (prompt-driven, 2026-09-20). The name is
+                          still a real `<Link>` and still the only focusable thing in the row —
+                          that is what keyboard and screen-reader users follow, and what a
+                          middle-click or "open in new tab" acts on. The row handler is a
+                          convenience layered over it for the pointer, not a replacement: a `<tr>`
+                          with a `role="link"` and a tabindex would be a worse link than the one
+                          already inside it.
+                        */
+                        <tr
+                          key={row.id}
+                          onClick={(event) => {
+                            // The name inside is a real link and has already done this. Without
+                            // the guard, clicking it navigates twice to the same route — harmless
+                            // today, and exactly the kind of thing that stops being harmless the
+                            // first time one of these rows links somewhere else.
+                            if ((event.target as HTMLElement).closest('a')) return;
+
+                            void navigate(classDetailPath(row.id));
+                          }}
+                          className="cursor-pointer border-b border-border transition-colors last:border-b-0 hover:bg-muted/40"
+                        >
                           <td className="px-6 py-3">
                             <Link
                               to={classDetailPath(row.id)}
@@ -266,39 +296,6 @@ export function CounselorDashboardPage() {
             </Card>
           )}
 
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <BellRing className="size-4 text-muted-foreground" aria-hidden="true" />
-                <CardTitle>Recent activity</CardTitle>
-              </div>
-              <CardDescription>The latest notifications scoped to you.</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              {notifications && notifications.items.length > 0 ? (
-                <ul>
-                  {notifications.items.slice(0, 5).map((notification) => (
-                    <li
-                      key={notification.id}
-                      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-6 py-2.5 text-sm first:border-t-0"
-                    >
-                      <span className="font-medium text-foreground">{notification.title}</span>
-                      <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                        {notification.message}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {notification.created_at
-                          ? new Date(notification.created_at).toLocaleString()
-                          : ''}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="px-6 pb-5 text-sm text-muted-foreground">Nothing yet.</p>
-              )}
-            </CardContent>
-          </Card>
         </>
       ) : null}
     </div>

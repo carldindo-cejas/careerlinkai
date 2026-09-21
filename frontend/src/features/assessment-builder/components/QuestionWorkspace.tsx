@@ -402,7 +402,10 @@ function NavigatorRow({
         type="button"
         onClick={onSelect}
         aria-current={selected ? 'true' : undefined}
-        className="min-w-0 flex-1 text-left"
+        // The question list is the builder's primary navigation, and on a phone it was a 38px row.
+        // `min-h-11` below `sm` puts it over the 44px touch floor without changing the desktop
+        // density the list depends on to show sixty items.
+        className="min-h-11 min-w-0 flex-1 text-left sm:min-h-0"
       >
         <span className="flex items-center gap-1.5">
           <span className="text-xs font-semibold tabular-nums text-muted-foreground">

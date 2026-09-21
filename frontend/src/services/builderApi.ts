@@ -57,6 +57,46 @@ export const builderApi = {
     );
   },
 
+  /**
+   * **How a published instrument is edited.** Copies a version whole — questions, options,
+   * mappings and its full scoring config — into a new DRAFT, and hands back that draft.
+   *
+   * Distinct from `createVersion`, which mints an *empty* one. Both are needed: a genuinely new
+   * edition of an instrument starts blank, while fixing a typo in RIASEC's sixty items must not.
+   */
+  duplicateVersion(versionId: string): Promise<BuilderVersionSummary> {
+    return unwrap(
+      httpClient.post<ApiSuccess<BuilderVersionSummary>>(
+        `/assessment-versions/${versionId}/duplicate`,
+      ),
+    );
+  },
+
+  /**
+   * **Retire one edition** (prompt §4) — including a published one.
+   *
+   * Not a delete, and nothing beneath it is deleted either: every attempt names its
+   * `assessment_version_id`, so a result from last year still resolves to the exact questions it was
+   * produced against. What changes is that students can no longer *start* it. An attempt already in
+   * progress is unaffected — ending that is closing the assignment, which is a different act.
+   */
+  archiveVersion(versionId: string): Promise<BuilderVersionSummary> {
+    return unwrap(
+      httpClient.post<ApiSuccess<BuilderVersionSummary>>(
+        `/assessment-versions/${versionId}/archive`,
+      ),
+    );
+  },
+
+  /** Back to PUBLISHED or DRAFT, whichever it was before. The server decides which. */
+  restoreVersion(versionId: string): Promise<BuilderVersionSummary> {
+    return unwrap(
+      httpClient.post<ApiSuccess<BuilderVersionSummary>>(
+        `/assessment-versions/${versionId}/restore`,
+      ),
+    );
+  },
+
   /** The §31 review payload — questions WITH scores and mappings (the author's view). */
   getVersion(versionId: string): Promise<VersionReview> {
     return unwrap(httpClient.get<ApiSuccess<VersionReview>>(`/assessment-versions/${versionId}`));

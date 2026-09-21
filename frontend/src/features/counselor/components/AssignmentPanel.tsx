@@ -52,7 +52,7 @@ export function AssignmentPanel({ classId }: { classId: string }) {
 
       <CardContent className="flex flex-col gap-6">
         <div className="flex flex-wrap items-end gap-3">
-          <div className="flex min-w-64 flex-1 flex-col gap-1.5">
+          <div className="flex w-full min-w-0 flex-1 flex-col gap-1.5 sm:min-w-64">
             <Label htmlFor="assessment">Assessment</Label>
             <Select
               id="assessment"
@@ -76,6 +76,7 @@ export function AssignmentPanel({ classId }: { classId: string }) {
           </div>
 
           <Button
+            className="min-h-11 w-full sm:w-auto"
             disabled={!versionId || assign.isPending}
             onClick={() =>
               assign.mutate({ versionId }, { onSuccess: () => setVersionId('') })

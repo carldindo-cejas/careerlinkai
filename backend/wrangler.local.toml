@@ -66,6 +66,13 @@ APP_ENV = "local"
 FRONTEND_URL = "http://localhost:5173"
 WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+WORKERS_AI_RERANK_MODEL = "@cf/baai/bge-reranker-base"
+# AiNormalisation D2 - the retrieval similarity floor, tunable without a code deploy.
+RETRIEVAL_SIMILARITY_THRESHOLD = "0.55"
+AI_VERIFIER_ENABLED = "false"
+# Empty until an AI Gateway is created in the Cloudflare dashboard. Naming one that does not
+# exist would fail every model call, so the default is off rather than aspirational.
+AI_GATEWAY_ID = ""
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
 STAFF_TOKEN_TTL_HOURS = "168"

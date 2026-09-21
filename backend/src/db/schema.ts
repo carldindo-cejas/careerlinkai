@@ -1,5 +1,13 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import {
+  index,
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+  type AnySQLiteColumn,
+} from 'drizzle-orm/sqlite-core';
 
 import type {
   AiPolicyScope,
@@ -11,14 +19,20 @@ import type {
   AssignmentStatus,
   AttemptStatus,
   CatalogStatus,
+  ChatAnswerKind,
   ChatRole,
   ClassStatus,
   EnrollmentStatus,
+  KnowledgeEntityType,
+  KnowledgeRequestState,
+  KnowledgeSourceType,
   KnowledgeVisibility,
   MatchType,
   NotificationCategory,
+  PresentationMode,
   ProcessingStatus,
   ProgramStatus,
+  QuestionResolution,
   QuestionSource,
   QuestionType,
   ScoringAlgorithm,
@@ -201,8 +215,9 @@ export const studentProfiles = sqliteTable(
     /**
      * **`gwa` is gone** (prompt-driven, 2026-07-27). The column still exists in D1 — dropping it
      * would destroy data for no gain — but nothing in this codebase reads or writes it, and it is
-     * absent here so that nothing can. §27's `academicFit` and `programEligibility` now read the
-     * average of whichever subject grades below are present.
+     * absent here so that nothing can. §27's `academicFit` now reads the average of whichever
+     * subject grades below are present (`programEligibility`, which read the same average on
+     * coarser tiers, left the program composite on 2026-09-18).
      */
     mathGrade: real('math_grade'),
     scienceGrade: real('science_grade'),
@@ -244,6 +259,53 @@ export const passwordResetTokens = sqliteTable('password_reset_tokens', {
   email: text('email').primaryKey().notNull(),
   tokenHash: text('token_hash').notNull(),
   createdAt: createdAt(),
+});
+
+/**
+ * A counselor self-signup that has not had its emailed code verified yet (migration 0034).
+ *
+ * Deliberately **not** a `users` row with `status = 'pending'`: an unverified submission would
+ * permanently squat the address under `users_email_unique` (which covers soft-deleted rows), and
+ * every abandoned one would appear in `/admin/counselors` as an account to deal with. The `users`
+ * row is created at verification; until then the whole signup lives here.
+ *
+ * One row per email, upserted — starting a second signup invalidates the first, exactly as
+ * `passwordResetTokens` does, so there is never a question of which code is live. The password is
+ * already derived (`AuthGuardDO`, full §38 work factor) before this row is written; the migration
+ * explains why the derivation cannot wait for verification.
+ */
+export const counselorSignupRequests = sqliteTable(
+  'counselor_signup_requests',
+  {
+    email: text('email').primaryKey().notNull(),
+    /** SHA-256 of the six-digit code, via `hashToken` — never the code itself. */
+    codeHash: text('code_hash').notNull(),
+    passwordHash: text('password_hash').notNull(),
+    firstName: text('first_name').notNull(),
+    lastName: text('last_name').notNull(),
+    phone: text('phone'),
+    employeeNumber: text('employee_number'),
+    specialization: text('specialization'),
+    bio: text('bio'),
+    createdAt: createdAt(),
+  },
+  (table) => [index('counselor_signup_requests_created_at_index').on(table.createdAt)],
+);
+
+/**
+ * Operator-controlled flags (migration 0034). Generic key/value, with the keys themselves declared
+ * as a registry in `modules/platform/settings-service.ts` — so a new flag costs a constant rather
+ * than a migration, and a mistyped key is a type error rather than a setting that silently reads
+ * as its default forever.
+ *
+ * Today it holds exactly one: whether counselors may register themselves.
+ */
+export const appSettings = sqliteTable('app_settings', {
+  key: text('key').primaryKey().notNull(),
+  value: text('value').notNull(),
+  /** NULL for the seeded default, which no person chose. */
+  updatedBy: text('updated_by').references(() => users.id),
+  updatedAt: updatedAt(),
 });
 
 // --- Class & Enrollment (§13.2) ------------------------------------------------------
@@ -697,7 +759,32 @@ export const assessmentTemplates = sqliteTable(
      * nullable rather than NOT NULL.
      */
     assessmentTypeId: text('assessment_type_id').references(() => assessmentTypes.id),
+    /**
+     * **This column and `creatorId` together are the author relationship.** `GLOBAL` is
+     * administrator-owned curated content; `COUNSELOR_PRIVATE` belongs to the counselor named by
+     * `creatorId` and is visible only to them and to their own classes' students (0037).
+     */
     ownership: text('ownership').$type<AssessmentOwnership>().notNull().default('GLOBAL'),
+    /**
+     * Migration 0037 — the instrument this one was copied from, or NULL when it was authored from
+     * scratch. Self-referencing: a counselor's copy of RIASEC is a *new template* they own, not a
+     * branch of the administrator's, because the template is the unit every policy and list scopes
+     * on. This is what keeps "where did this come from" answerable afterwards.
+     */
+    sourceTemplateId: text('source_template_id').references((): AnySQLiteColumn => assessmentTemplates.id, {
+      onDelete: 'set null',
+    }),
+    /**
+     * Migration 0037 — `SEQUENTIAL` | `RANDOM`. **On the template rather than the version, on
+     * purpose:** a published version is frozen (§12), and item order is not part of what a result
+     * means (scoring reads answers joined to dimension mappings, neither of which knows the
+     * sequence). So this is switchable at any time, including on RIASEC, and the record of what one
+     * student actually saw lives on `assessmentAttempts.questionOrder`.
+     */
+    presentationMode: text('presentation_mode')
+      .$type<PresentationMode>()
+      .notNull()
+      .default('SEQUENTIAL'),
     status: text('status').$type<TemplateStatus>().notNull().default('DRAFT'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -711,6 +798,7 @@ export const assessmentTemplates = sqliteTable(
     index('assessment_templates_status_index').on(table.status),
     index('assessment_templates_assessment_type_id_index').on(table.assessmentTypeId),
     index('assessment_templates_deleted_at_index').on(table.deletedAt),
+    index('assessment_templates_source_template_id_index').on(table.sourceTemplateId),
   ],
 );
 
@@ -770,6 +858,15 @@ export const assessmentVersions = sqliteTable(
      * different date entirely. The administrator's Date Published column and filter read this.
      */
     publishedAt: timestamp('published_at'),
+    /**
+     * Migration 0037 — the version whose questions, options, mappings and scoring config were
+     * copied into this one. Written by both copy paths: `duplicateVersion` (Edit-a-copy, same
+     * template) and `copyTemplateFor` (a counselor taking their own copy of a curated instrument).
+     * NULL for a version drafted from nothing.
+     */
+    sourceVersionId: text('source_version_id').references((): AnySQLiteColumn => assessmentVersions.id, {
+      onDelete: 'set null',
+    }),
   },
   (table) => [
     uniqueIndex('assessment_versions_template_number_unique').on(
@@ -955,6 +1052,16 @@ export const assessmentAttempts = sqliteTable(
     status: text('status').$type<AttemptStatus>().notNull().default('IN_PROGRESS'),
     startedAt: text('started_at').notNull(),
     submittedAt: timestamp('submitted_at'),
+    /**
+     * Migration 0037 — **the exact sequence this student was asked in**, dealt once at `start` and
+     * never re-dealt. A JSON array of `assessment_questions.id`.
+     *
+     * `NULL` means "as authored" (`order_number`), which is both the default for a SEQUENTIAL
+     * instrument and the honest backfill for every attempt that predates the column. Stored rather
+     * than derived from a seed, because a seed plus an algorithm is only reproducible while the
+     * algorithm never changes, and this has to stay readable for as long as the result does.
+     */
+    questionOrder: text('question_order', { mode: 'json' }).$type<string[]>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1077,6 +1184,11 @@ export const recommendations = sqliteTable(
     /** 1 = best **within its own type**. A career's 69.1 and a program's 76.1 are not comparable. */
     ranking: integer('ranking').notNull(),
     reason: text('reason').notNull(),
+    /**
+     * The §27 components behind `matchScore`, unrounded (migration 0036). NULL on rows generated
+     * before it. Read by the Student Brief so the assistant can say which component carried a score.
+     */
+    components: text('components', { mode: 'json' }).$type<Record<string, number>>(),
     createdAt: createdAt(),
   },
   (table) => [
@@ -1109,6 +1221,12 @@ export const recommendationExplanations = sqliteTable(
       .references(() => recommendations.id, { onDelete: 'cascade' }),
     explanationText: text('explanation_text').notNull(),
     aiModel: text('ai_model').notNull(),
+    /**
+     * The titles of the knowledge entries this paragraph was written from (migration 0025),
+     * shown to the student under it. Stored rather than derived: the corpus changes, and an
+     * answer must keep naming what it was actually written from.
+     */
+    sources: text('sources', { mode: 'json' }).$type<string[]>(),
     createdAt: createdAt(),
   },
   (table) => [
@@ -1132,10 +1250,36 @@ export const knowledgeDocuments = sqliteTable(
     uploadedBy: text('uploaded_by')
       .notNull()
       .references(() => users.id),
+    /**
+     * What a human calls this entry (migration 0022). For an upload it is the file name; for a
+     * pasted note or a Q&A pair it is the only human-readable handle the row has.
+     */
+    title: text('title').notNull(),
     fileName: text('file_name').notNull(),
-    fileType: text('file_type').$type<'pdf' | 'docx'>().notNull(),
-    /** The R2 object key — the original is retained to settle any extraction dispute. */
-    storagePath: text('storage_path').notNull(),
+    sourceType: text('source_type').$type<KnowledgeSourceType>().notNull(),
+    /**
+     * The R2 object key of the **original file** — retained to settle any extraction dispute.
+     * NULL for an authored entry (migration 0022), which has no original: its text is the
+     * original. The extracted-text sidecar every row has is derived, not provenance, and is
+     * addressed by convention (`knowledge/{id}/extracted.txt`) rather than stored here.
+     */
+    storagePath: text('storage_path'),
+    /**
+     * What this entry is *about*, for the catalog auto-sync (migration 0022) — `career` or
+     * `program` plus that row's id, unique together. It is how a re-sync finds the entry it
+     * wrote last night and updates it, instead of adding a second one every run.
+     */
+    entityType: text('entity_type').$type<KnowledgeEntityType>(),
+    entityId: text('entity_id'),
+    /**
+     * SHA-256 of the text this entry was generated from (migration 0024).
+     *
+     * It exists so the catalog sync can answer "has this changed?" from the row it already read,
+     * instead of reading the text back from R2 — one binding call per career, on every run, is a
+     * subrequest bill the Free plan's 50-per-invocation ceiling cannot pay (§45). NULL means
+     * unknown, which compares unequal and causes one conservative rewrite.
+     */
+    contentHash: text('content_hash'),
     processingStatus: text('processing_status').$type<ProcessingStatus>().notNull(),
     visibility: text('visibility').$type<KnowledgeVisibility>().notNull(),
     /**
@@ -1150,6 +1294,8 @@ export const knowledgeDocuments = sqliteTable(
   (table) => [
     index('knowledge_documents_uploaded_by_index').on(table.uploadedBy),
     index('knowledge_documents_processing_status_index').on(table.processingStatus),
+    index('knowledge_documents_source_type_index').on(table.sourceType),
+    uniqueIndex('knowledge_documents_entity_unique').on(table.entityType, table.entityId),
   ],
 );
 
@@ -1165,14 +1311,78 @@ export const knowledgeChunks = sqliteTable(
     /** NULL until the embedding batch lands — the idempotency check for `GenerateEmbeddingJob`. */
     vectorId: text('vector_id'),
     tokenCount: integer('token_count'),
+    /**
+     * Denormalized from the parent document (migration 0023), and the same three values go into
+     * the Vectorize record's metadata at upsert.
+     *
+     * Denormalized because it has to be: the filtering that matters happens **inside Vectorize**,
+     * before any row is read, so a vector carries its own metadata or it cannot be filtered at
+     * all. Keeping the columns here as well means the keyword half of hybrid retrieval filters on
+     * exactly the same values as the vector half, rather than on a join that could disagree.
+     */
+    sourceType: text('source_type').$type<KnowledgeSourceType>(),
+    entityType: text('entity_type').$type<KnowledgeEntityType>(),
+    entityId: text('entity_id'),
     createdAt: createdAt(),
   },
   (table) => [
     index('knowledge_chunks_document_id_index').on(table.documentId),
+    index('knowledge_chunks_entity_index').on(table.entityType, table.entityId),
     uniqueIndex('knowledge_chunks_document_number_unique').on(
       table.documentId,
       table.chunkNumber,
     ),
+  ],
+);
+
+/**
+ * A question that has left the unanswered backlog, and who decided so (migration 0031).
+ *
+ * The fact the AI-gaps report was missing. `ai_requests` failures and `chat_messages`
+ * knowledge-requests are both records of past events — neither can ever stop being true — so
+ * before this table an answered question stayed at the top of the backlog forever, looking exactly
+ * like one nobody had touched.
+ *
+ * Keyed on normalised question text rather than on an id, because this system has no question
+ * entity: a question is text reached two ways (`ai_requests.input_context.retrieval_query` and the
+ * raw `chat_messages.content` of the preceding turn), which are the same sentence and rarely the
+ * same bytes. `questionKey()` in `insights-service.ts` is the single definition of that
+ * normalisation — it is SQL, applied identically when writing this row and when matching it, so
+ * there is no second implementation to drift.
+ */
+export const knowledgeQuestionResolutions = sqliteTable(
+  'knowledge_question_resolutions',
+  {
+    id: text('id').primaryKey().notNull(),
+    /** Normalised by `questionKey()`. Never assemble this in application code. */
+    questionKey: text('question_key').notNull(),
+    /** The question as a human last saw it — `questionKey` is lossy and is not for display. */
+    question: text('question').notNull(),
+    resolution: text('resolution').$type<QuestionResolution>().notNull(),
+    /**
+     * The entry that answers it. NULL for `DISMISSED`, and nullable for `ANSWERED` as well: the
+     * entry is written first and this row second, so an interruption between the two leaves the
+     * answer in the corpus and the question in the backlog rather than the reverse.
+     *
+     * The read follows it to decide whether the resolution still holds — an archived or FAILED
+     * document does not cover anything, so its question returns to the backlog by itself.
+     */
+    documentId: text('document_id').references(() => knowledgeDocuments.id),
+    resolvedBy: text('resolved_by')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    // One resolution per question — what makes two people answering at once an upsert rather
+    // than two rows the read would have to pick a winner from.
+    uniqueIndex('knowledge_question_resolutions_key_unique').on(table.questionKey),
+    index('knowledge_question_resolutions_resolved_by_index').on(
+      table.resolvedBy,
+      table.createdAt,
+    ),
+    index('knowledge_question_resolutions_document_index').on(table.documentId),
   ],
 );
 
@@ -1224,6 +1434,23 @@ export const aiPolicies = sqliteTable(
     instructions: text('instructions'),
     restrictions: text('restrictions'),
     isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
+    /**
+     * The two fallback tiers below the knowledge base (migration 0029), switchable without a
+     * deploy because they are guardrails and invariant 5 says guardrails are not hardcoded.
+     *
+     * They gate whether a student may be shown a sentence that did not come from the school's own
+     * materials: `webSearchEnabled` allows Gate 3, which grounds an answer in cited web pages, and
+     * `generalKnowledgeEnabled` allows Gate 4, which answers from the model's own knowledge with
+     * no grounding at all and says so on screen.
+     *
+     * Read from the **active** policy row only. No active row means both are off — unlike
+     * `instructions`/`restrictions`, whose absence degrades to the base prompt, an absent switch
+     * here must not read as permission.
+     */
+    webSearchEnabled: integer('web_search_enabled', { mode: 'boolean' }).notNull().default(true),
+    generalKnowledgeEnabled: integer('general_knowledge_enabled', { mode: 'boolean' })
+      .notNull()
+      .default(true),
     updatedBy: text('updated_by')
       .notNull()
       .references(() => users.id),
@@ -1282,16 +1509,63 @@ export const chatMessages = sqliteTable(
      * the fallback is not model output and must not be recorded as one.
      */
     aiRequestId: text('ai_request_id').references(() => aiRequests.id, { onDelete: 'set null' }),
+    /**
+     * The titles of the knowledge entries behind this answer (migration 0025), shown under it.
+     * NULL on a user message, on a deterministic reply, and on any answer with nothing to name —
+     * where the absence is itself the signal that this is not a sourced fact.
+     */
+    sources: text('sources', { mode: 'json' }).$type<string[]>(),
+    /**
+     * Which gate produced this answer (migration 0029) — see `CHAT_ANSWER_KINDS`.
+     *
+     * NULL on every user message, and on every assistant message written before 0029: the panel
+     * treats NULL exactly as it treated those rows before the column existed, rather than
+     * back-filling a claim about provenance that nobody recorded at the time.
+     */
+    answerKind: text('answer_kind').$type<ChatAnswerKind>(),
+    /**
+     * A student saying *this answer was wrong* (migration 0026). `DOWN` or NULL — there is no
+     * `UP`, because a rating on an answer nobody questioned tells an admin nothing they can act
+     * on, while a thumbs-down leads straight to the passage that caused it via the chunk ids
+     * already recorded on this message's `ai_requests` row.
+     */
+    feedback: text('feedback').$type<'DOWN'>(),
+    /**
+     * The "Request to add to knowledge" lifecycle (migration 0030).
+     *
+     * `OFFERED` marks an answer that was a no-coverage refusal — recorded when the answer is
+     * written, so the panel can offer the button on a transcript reloaded a week later rather than
+     * re-deriving it by matching the reply text. `REQUESTED` is the student having pressed it, and
+     * is the signal `/admin/ai-insights` ranks its backlog by. NULL on everything else.
+     */
+    knowledgeRequest: text('knowledge_request').$type<KnowledgeRequestState>(),
+    /**
+     * When the question behind a REQUESTED refusal was answered and the student told (migration
+     * 0033). Also the notification's idempotency key: only NULL rows are notified, and the
+     * statement that claims them sets it, so nobody is told twice.
+     */
+    knowledgeAnsweredAt: text('knowledge_answered_at'),
+    /**
+     * Where this answer offered to take the student (migration 0038) — a destination id from
+     * `knowledge/student-destinations.ts`, which the client resolves to a route and an element on
+     * it. NULL on every user message and on every answer that was not a navigation question, which
+     * is nearly all of them.
+     *
+     * An id rather than a URL, and no CHECK constraint: see the migration for both.
+     */
+    navTarget: text('nav_target'),
     createdAt: createdAt(),
   },
   (table) => [
     index('chat_messages_conversation_id_index').on(table.conversationId),
+    index('chat_messages_feedback_index').on(table.feedback, table.createdAt),
     index('chat_messages_conversation_created_index').on(
       table.conversationId,
       table.createdAt,
       table.id,
     ),
     index('chat_messages_ai_request_id_index').on(table.aiRequestId),
+    index('chat_messages_knowledge_request_index').on(table.knowledgeRequest, table.createdAt),
   ],
 );
 
@@ -1353,6 +1627,8 @@ export type User = typeof users.$inferSelect;
 export type CounselorProfile = typeof counselorProfiles.$inferSelect;
 export type StudentProfile = typeof studentProfiles.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
+export type CounselorSignupRequest = typeof counselorSignupRequests.$inferSelect;
+export type AppSetting = typeof appSettings.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type ClassRoom = typeof classes.$inferSelect;
 export type ClassStudent = typeof classStudents.$inferSelect;
@@ -1387,6 +1663,7 @@ export type Recommendation = typeof recommendations.$inferSelect;
 export type RecommendationExplanation = typeof recommendationExplanations.$inferSelect;
 export type KnowledgeDocument = typeof knowledgeDocuments.$inferSelect;
 export type KnowledgeChunk = typeof knowledgeChunks.$inferSelect;
+export type KnowledgeQuestionResolution = typeof knowledgeQuestionResolutions.$inferSelect;
 export type AiRequest = typeof aiRequests.$inferSelect;
 export type AiPolicy = typeof aiPolicies.$inferSelect;
 export type ChatConversation = typeof chatConversations.$inferSelect;

@@ -155,7 +155,9 @@ function choose(entry, highDimensions) {
 async function runStudent(username, riasecProfile, riasecKey, scctKey) {
   const join = await api('/student-access/join', {
     method: 'POST',
-    body: { class_code: CLASS_CODE, username },
+    // `confirm: true` — a join is two calls now (see StudentAccessService); the unconfirmed
+    // one resolves a name and issues no token.
+    body: { class_code: CLASS_CODE, username, confirm: true },
   });
 
   check(`[${username}] joins the class`, join.status === 200, `status ${join.status}`);

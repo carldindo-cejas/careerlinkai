@@ -62,6 +62,12 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   /**
+   * Which gate answered (migration 0029, recorded since 2026-09-13). CURATED: an admin's words.
+   * KNOWLEDGE: a generation that passed the grounding contract. CANNED: a lookup from the catalog or
+   * the student's results (it names a source) or a refusal (it does not). Null on older messages.
+   */
+  answer_kind?: 'CURATED' | 'KNOWLEDGE' | 'WEB' | 'GENERAL' | 'CANNED' | null;
+  /**
    * The `ai_requests` row behind an assistant message, or null.
    *
    * Its absence is **meaningful**, not incidental: an assistant message with no request behind it
@@ -69,12 +75,75 @@ export interface ChatMessage {
    * panel labels it as such rather than passing computed text off as a generation.
    */
   ai_request_id: string | null;
+  /**
+   * The knowledge entries this answer was written from — shown under it as *"Based on: …"*.
+   *
+   * Empty is the common and correct state: a deterministic reply, a refusal, or an answer built
+   * from the student's own computed results has nothing to name. The **absence** of a source line
+   * is itself information — an answer with no visible source is visibly not a sourced fact.
+   */
+  sources: string[];
+  /** `DOWN` once a student has marked this answer wrong (Phase 4). Null otherwise. */
+  feedback: 'DOWN' | null;
+  /**
+   * Whether this answer can be nominated for the knowledge base (migration 0030).
+   *
+   * `OFFERED` is a no-coverage refusal — the assistant saying it has nothing on file — and is what
+   * puts *"Request to add to knowledge"* under it. `REQUESTED` is the student having pressed that.
+   * Null is every other message, and offers nothing.
+   */
+  knowledge_request: 'OFFERED' | 'REQUESTED' | null;
+  /**
+   * When the question behind a REQUESTED refusal was answered (migration 0033). The panel says so,
+   * rather than leaving a student who asked to find out by asking again. Optional only because a
+   * transcript cached from before that deploy does not carry it.
+   */
+  knowledge_answered_at?: string | null;
+  /**
+   * Where this answer offered to take the student (migration 0038) — a destination id, never a URL.
+   *
+   * Set only on an answer to a navigation question (*"where do I download my results?"*), which is
+   * what puts *"Yes, show me"* under it. The id is resolved by `features/student/tour/stops.ts`
+   * into a route and an element to highlight; one this build does not recognise renders no button
+   * at all, and the answer's own sentence has already said where to go.
+   *
+   * Optional, because a transcript cached from before that deploy does not carry it.
+   */
+  nav_target?: string | null;
   created_at: string | null;
 }
 
 export interface ChatTranscript {
   conversation_id: string | null;
   messages: ChatMessage[];
+}
+
+/** One RIASEC or SCCT dimension in the Student Brief. */
+export interface BriefDimension {
+  code: string;
+  name: string;
+  score: number;
+  band: string | null;
+}
+
+/** `GET /student/brief` — what the assistant knows about the signed-in student (AI-COVERAGE-PLAN.md). */
+export interface StudentBrief {
+  profile: {
+    grade_level: string | null;
+    strand: string | null;
+    grades: { math: number | null; science: number | null; english: number | null };
+    average: number | null;
+  };
+  riasec: { complete: boolean; holland_code: string | null; dimensions: BriefDimension[] };
+  scct: {
+    complete: boolean;
+    confidence_index: number | null;
+    band: string | null;
+    dimensions: BriefDimension[];
+  };
+  has_recommendations: boolean;
+  /** Starter questions, each one answered without a model call. */
+  suggestions: string[];
 }
 
 export interface ChatTurn {

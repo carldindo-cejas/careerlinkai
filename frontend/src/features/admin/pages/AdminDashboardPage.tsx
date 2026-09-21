@@ -145,7 +145,7 @@ export function AdminDashboardPage() {
                 </div>
                 <Link
                   to={paths.adminAuditLog}
-                  className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline"
+                  className="inline-flex min-h-11 items-center text-sm font-medium text-muted-foreground hover:text-foreground hover:underline sm:min-h-0"
                 >
                   Open the audit log
                 </Link>

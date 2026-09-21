@@ -1,0 +1,26 @@
+-- Migration 0036 — the score components behind each recommendation
+--
+-- AI-COVERAGE-PLAN.md Phase 1 (2026-09-13).
+--
+-- §27 computes every match score from named components — RIASEC compatibility, SCCT career
+-- confidence, academic fit, strand alignment, eligibility, and the fixed student-preference term —
+-- and until now it returned them to `RecommendationService` and threw them away. Only the rounded
+-- composite and the reason sentence were stored.
+--
+-- That made the most common question a student asks the chat assistant unanswerable: "why is
+-- Accountancy above Architecture when I am Artistic?" The honest answer is arithmetic — which
+-- component carried the score — and the assistant could not see it. A production transcript on
+-- 2026-09-12 shows the model restating the reason sentence because that was all it had.
+--
+-- Stored as JSON, one object per row, keys exactly as `lib/recommendation.ts` names them
+-- (`riasecCompatibility`, `careerConfidenceIndex`, `studentPreference`, and for programs also
+-- `academicFit`, `strandAlignment`, `programEligibility`). Unrounded, like the engine carries them.
+--
+-- NULL on every row generated before this migration. Recommendations are derived, replaceable data
+-- (see `RecommendationService.generateFor`), so regenerating a student fills it — the engine is
+-- deterministic and no score moves. The Student Brief states "not available" for a NULL rather
+-- than guessing.
+--
+-- No index: the column is read only as part of a row that was already found by student.
+
+ALTER TABLE recommendations ADD COLUMN components TEXT;

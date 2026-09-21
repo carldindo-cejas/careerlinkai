@@ -1,4 +1,5 @@
 import type { AssessmentCategory } from '@/types/assessment';
+import type { PresentationMode } from '@/types/assessmentAdmin';
 
 /**
  * The assessment builder's types (Phase 5b — FULLPLAN §20, §31).
@@ -26,6 +27,8 @@ export interface BuilderVersionSummary {
   created_at: string;
   /** Migration 0016 — NULL for a draft, and for a version archived before it ever published. */
   published_at: string | null;
+  /** Migration 0037 — the version this one's questions were copied from, by either copy path. */
+  source_version_id?: string | null;
 }
 
 /** The three item types the builder's type selector offers. */
@@ -62,6 +65,19 @@ export interface BuilderTemplate {
   ownership: 'GLOBAL' | 'COUNSELOR_PRIVATE';
   status: 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
   ai_generatable: boolean;
+  /** Backend migration 0037 — the instrument this was copied from, if any. */
+  source_template_id?: string | null;
+  presentation_mode?: PresentationMode;
+  /**
+   * **Server-decided** (backend 0037). A counselor may now *open* a curated global instrument — they
+   * assign it, they answer questions about it, and they can copy it — but may not write to it. The
+   * page renders read-only on `can_manage: false` rather than offering controls the server refuses.
+   *
+   * Optional because one caller (the assign picker's template list) serializes templates without
+   * permissions; absent means "not stated", which the page treats as no.
+   */
+  can_manage?: boolean;
+  can_copy?: boolean;
   dimensions?: BuilderDimension[];
   versions?: BuilderVersionSummary[];
 }

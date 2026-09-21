@@ -29,4 +29,10 @@ Rules:
 - Never state or imply a guaranteed outcome ("you will become...", "you are destined for...").
 - If the knowledge context does not cover something, say so rather than inventing it.
 - Keep the response to 2-4 sentences.
-- Reference at least one specific piece of retrieved context if one is relevant.`;
+- CITE. The knowledge context is numbered. Put the marker of each passage you use in the
+  sentence that uses it, like this: "Nursing programs favour Social interests [1]." An
+  explanation with no marker is discarded and the student sees only their computed reason,
+  so cite as you write rather than at the end.
+- Never state a figure, a school name, a program code or a date that does not appear in the
+  material above. Saying "the materials do not cover that" is always better than being
+  approximately right.`;

@@ -1,0 +1,490 @@
+/*
+ * The results exports — the document styles shared by the RIASEC and SCCT reports in
+ * docs_report/…/CareerLinkAI {RIASEC,SCCT} Report.dc.html, lifted out of those mockups' <style>
+ * blocks and inline styles. Colors, faces and spacing come from the Industry tokens
+ * (industry.css); the small print sizes are the mockups' own, since the token scale carries no
+ * type sizes.
+ *
+ * The mockups were laid out by a `doc-page` element (A4, 0.62in margins, a running header and
+ * footer). Here the same three slots are a table's thead / tbody / tfoot, which browsers repeat
+ * on every printed page without a script.
+ *
+ * The printed sheet is one continuous flow: no section, not the appendix and not the second
+ * report, is forced onto a fresh page, and nothing taller than a few lines refuses to split. Each
+ * of those rules used to push its block to the next page and leave the rest of the one before it
+ * empty — up to two thirds of a sheet at a time. What still keeps together is small enough that
+ * the gap it can leave is a few lines at most: a table row, the hero panel, the title block, the
+ * signature row, and a heading with the first lines under it.
+ */
+
+/*
+ * The sheet's size is chosen at run time — ResultReportPage writes `@page { size: … }` for the
+ * paper the student picked (paperSize.ts), and sets `--rr-sheet-width` to match so the column on
+ * screen is the width of that sheet. The margin is the same on every size.
+ */
+@page {
+  margin: 0.62in;
+}
+
+.rr {
+  max-width: var(--rr-sheet-width, 210mm);
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-6);
+}
+
+.rr .rk {
+  font-family: var(--font-heading);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+.rr .mono {
+  font-family: ui-monospace, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.rr table.rt {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10.5px;
+}
+.rr table.rt th {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  text-align: left;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 9.5px;
+  color: var(--color-accent-800);
+  border-bottom: 1px solid var(--color-text);
+  padding: var(--space-1) var(--space-2);
+}
+.rr table.rt td {
+  border-bottom: 1px solid var(--color-divider);
+  padding: var(--space-1) var(--space-2);
+  vertical-align: top;
+}
+.rr table.rt tr {
+  break-inside: avoid;
+}
+.rr .num {
+  text-align: right;
+  font-family: ui-monospace, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rr .bar {
+  height: 7px;
+  background: var(--color-neutral-200);
+  border: 1px solid var(--color-divider);
+}
+.rr .bar > i {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+}
+.rr .panel {
+  border: 1px solid var(--color-divider);
+  padding: var(--space-3) var(--space-4);
+}
+.rr h2.sec {
+  font-size: 19px;
+  margin: 0 0 2px;
+  border-bottom: 2px solid var(--color-text);
+  padding-bottom: 3px;
+}
+
+/* The page table: header and footer slots repeat per printed page. */
+.rr-page {
+  width: 100%;
+  border-collapse: collapse;
+}
+.rr-page > thead > tr > td,
+.rr-page > tbody > tr > td,
+.rr-page > tfoot > tr > td {
+  padding: 0;
+  vertical-align: top;
+}
+
+.rr-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-text);
+}
+.rr-header img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+.rr-header-body {
+  flex: 1;
+  min-width: 0;
+}
+.rr-header-title {
+  font-family: var(--font-heading);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.1;
+}
+.rr-header-meta {
+  font-size: 9.5px;
+  color: var(--color-neutral-700);
+  text-align: right;
+  line-height: 1.3;
+}
+
+.rr-footer {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-end;
+  padding-top: var(--space-2);
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--color-divider);
+  font-size: 8.5px;
+  color: var(--color-neutral-700);
+  line-height: 1.35;
+}
+.rr-footer-copy {
+  flex: 1;
+}
+.rr-footer-mark {
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.rr-title {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.rr-title .blueprint {
+  padding: var(--space-3);
+}
+.rr-title img {
+  width: 58px;
+  height: 58px;
+  object-fit: contain;
+}
+.rr-title-body {
+  flex: 1;
+}
+.rr-title h1 {
+  font-size: 34px;
+  margin: 0 0 2px;
+}
+.rr-title p {
+  margin: 0;
+  font-size: 11px;
+  max-width: 74%;
+  color: var(--color-neutral-800);
+}
+
+.rr-meta {
+  margin-bottom: var(--space-4);
+}
+.rr-meta .rr-student {
+  font-size: 12px;
+}
+.rr-meta .rr-date {
+  font-size: 11px;
+}
+
+.rr-hero {
+  display: flex;
+  gap: var(--space-6);
+  align-items: center;
+  margin-bottom: var(--space-4);
+  background: var(--color-accent-100);
+}
+.rr-hero-code {
+  text-align: center;
+  padding-right: var(--space-6);
+  border-right: 1px solid var(--color-divider);
+}
+.rr-hero-code .rr-hero-value {
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1.05;
+}
+.rr-hero-code .rr-hero-value.rr-hero-code-letters {
+  letter-spacing: 0.18em;
+}
+.rr-hero-sub {
+  font-size: 10px;
+  color: var(--color-neutral-700);
+}
+.rr-hero-body {
+  flex: 1;
+}
+.rr-hero-top3 {
+  font-family: var(--font-heading);
+  font-size: 17px;
+  line-height: 1.2;
+}
+.rr-hero-summary {
+  font-family: var(--font-heading);
+  font-size: 19px;
+  line-height: 1.2;
+}
+.rr-hero p {
+  margin: var(--space-1) 0 0;
+  font-size: 10.5px;
+  color: var(--color-neutral-800);
+}
+
+.rr-lead {
+  margin: 0 0 var(--space-2);
+}
+.rr-section {
+  margin-bottom: var(--space-4);
+}
+.rr-dim-desc {
+  font-size: 9px;
+  color: var(--color-neutral-700);
+  font-weight: 400;
+}
+
+.rr-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 var(--space-4);
+}
+.rr-grid-2.rr-grid-2-wide {
+  grid-template-columns: 1fr 1.25fr;
+}
+.rr-grid-dist {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+.rr-grid-matches {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.rr-formula {
+  font-size: 13px;
+  margin: var(--space-2) 0;
+}
+.rr-composite {
+  font-size: 11px;
+  margin: var(--space-2) 0 0;
+  line-height: 1.7;
+}
+.rr-note {
+  font-size: 10px;
+  margin: 0;
+}
+.rr-example {
+  font-size: 10.5px;
+  margin: var(--space-2) 0 0;
+}
+.rr-subhead {
+  margin-bottom: var(--space-2);
+}
+.rr-subhead-strong {
+  font-weight: 700;
+}
+.rr-reason {
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--color-neutral-700);
+}
+.rr-strong {
+  font-weight: 700;
+}
+.rr-medium {
+  font-weight: 500;
+}
+
+.rr-ack {
+  margin-bottom: var(--space-1);
+}
+.rr-ack p {
+  font-size: 10px;
+  margin: var(--space-2) 0 var(--space-3);
+}
+.rr-signatures {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--space-6);
+  margin-top: var(--space-8);
+}
+.rr-signature {
+  border-top: 1px solid var(--color-text);
+  padding-top: var(--space-1);
+}
+.rr-signature-label {
+  font-size: 10px;
+  font-weight: 500;
+}
+.rr-signature-name {
+  font-size: 9px;
+  color: var(--color-neutral-700);
+  min-height: 1.35em;
+}
+
+/* Follows the acknowledgement directly — on paper too, where it used to force a new page. */
+.rr-appendix {
+  margin-top: var(--space-6);
+}
+.rr-appendix-dim {
+  margin-bottom: var(--space-3);
+}
+.rr-appendix-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--color-text);
+  padding-bottom: 2px;
+  margin-bottom: var(--space-1);
+}
+.rr-appendix-name {
+  font-family: var(--font-heading);
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.rr-appendix-score {
+  font-size: 10px;
+}
+.rr-fill {
+  flex: 1;
+}
+.rr-fine {
+  font-size: 9.5px;
+  color: var(--color-neutral-700);
+  margin: 0;
+}
+
+/* Screen chrome: the print controls and section toggles. Never printed. */
+.rr-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+.rr-toolbar .rr-fill {
+  flex: 1;
+}
+.rr-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+}
+.rr-paper {
+  font: inherit;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-divider);
+  background: transparent;
+  color: inherit;
+}
+.rr-toolbar-error {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 13px;
+  color: #b23b34;
+}
+
+@media (max-width: 640px) {
+  .rr {
+    padding: var(--space-4);
+  }
+  .rr-grid-2,
+  .rr-grid-2.rr-grid-2-wide,
+  .rr-grid-dist,
+  .rr-grid-matches,
+  .rr-signatures {
+    grid-template-columns: 1fr;
+  }
+  .rr-hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .rr-hero-code {
+    padding-right: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-divider);
+    padding-bottom: var(--space-3);
+  }
+  .rr-title p {
+    max-width: none;
+  }
+}
+
+@media print {
+  /* The app shell's `height: 100%` would size the sheet to one page box; the report is longer. */
+  html,
+  body,
+  #root {
+    height: auto;
+    background: none;
+  }
+  .industry {
+    background: none;
+  }
+  .rr {
+    max-width: none;
+    padding: 0;
+  }
+  .rr-toolbar {
+    display: none;
+  }
+  .rr-page > thead {
+    display: table-header-group;
+  }
+  .rr-page > tfoot {
+    display: table-footer-group;
+  }
+
+  /* "Print both": the second report carries straight on below the first. */
+  article.rr + article.rr {
+    margin-top: var(--space-8);
+  }
+
+  /*
+   * The small units that still keep together — see the note at the top of this file. The two
+   * calculation panels are a few lines each; split, they left a lone kicker at the foot of a page.
+   *
+   * `.rr-grid-dist` is the Likert distribution beside the bands table: two five-row tables, about
+   * 44mm, and the pair is a legend for the scale the whole report is read against. Cut down the
+   * middle it turned into two halves of a table with no heading on the second, so it travels
+   * whole — on the sheet as in the PDF, where the same block is `keepTogether`.
+   */
+  .rr-title,
+  .rr-hero,
+  .rr-grid-2 > .panel,
+  .rr-grid-dist,
+  .rr-signatures {
+    break-inside: avoid;
+  }
+  .rr h2.sec,
+  .rr .rr-lead,
+  .rr .rr-subhead,
+  .rr-ack > .rk,
+  .rr-appendix-head {
+    break-after: avoid;
+  }
+
+  /*
+   * The distribution bars and the hero's tint are fills, which browsers drop from print unless
+   * the reader ticks "Background graphics" — and an empty bar track reads as a score of zero.
+   */
+  .rr .bar,
+  .rr .bar > i,
+  .rr-hero {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

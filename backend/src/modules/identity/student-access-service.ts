@@ -12,7 +12,7 @@ import {
 import { studentTokenTtlHours } from '@/lib/config';
 import { isExpired } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
-import { issueToken, revokeAllTokensForUser } from '@/lib/tokens';
+import { hasActiveToken, issueToken, revokeAllTokensForUser } from '@/lib/tokens';
 import { normalizeJoinCode } from '@/modules/classes/join-code';
 import type { JoinClassInput } from '@/modules/identity/schemas';
 import { AuditService, type JoinFailureReason } from '@/modules/platform/audit-service';
@@ -33,7 +33,50 @@ import { AuditService, type JoinFailureReason } from '@/modules/platform/audit-s
 
 const MODULE = 'Identity';
 
+/**
+ * What a join answers with, in two shapes (fixes 1 and 2 of the September 2026 incident).
+ *
+ * ## Why a join is two requests now
+ *
+ * A student's credential is a class code their whole class can read off the whiteboard plus a
+ * username that is, by design, guessable from their name or their seat number. The production
+ * trail for 18 September 2026 is what that costs: 79 joins, 18 accounts, 10 devices — and **61 of
+ * those joins deleted a session somebody else was in the middle of using**, 56 of them from a
+ * different device, a median 53 seconds apart. Students were signing in as each other, mostly by
+ * typing a neighbour's roster number, and each one silently evicted the last.
+ *
+ * Nothing in the old flow could tell those apart from a legitimate sign-in, because a join *was* a
+ * takeover: resolve the credentials, delete every token the account held, issue a new one. The
+ * student who typed the wrong number saw somebody else's assessment and never learned it; the
+ * student who owned it was bounced to this screen with no explanation and re-joined, evicting
+ * whoever had just arrived.
+ *
+ * So the resolution and the takeover are now two separate acts. The first (`JoinPreview`) proves
+ * the credentials and **says whose account this is**, which is what catches the mistyped seat
+ * number — a student recognises their own name and a stranger's equally well. The second, which
+ * only happens if the caller sends `confirm`, is the one that issues a token and signs other
+ * devices out, and by then the person has been told that is what it does.
+ *
+ * ## What this does *not* fix
+ *
+ * A student who *means* to sign in as a classmate still can — they need only click through a
+ * confirmation. The name is a check against error, not a secret, and this whole design is a
+ * mitigation standing in for the real fix: a per-student credential the rest of the class does
+ * not know. Until that exists the honest description of student sign-in is that it identifies a
+ * seat rather than a person.
+ */
+export interface JoinPreview {
+  confirmed: false;
+  /** Shown back to the student as "signing in as …". The only field the preview discloses. */
+  studentName: string;
+  classRoom: ClassRoom;
+  username: string;
+  /** True when confirming will sign another device out, so the warning can be shown first. */
+  activeSession: boolean;
+}
+
 export interface JoinResult {
+  confirmed: true;
   user: User;
   classRoom: ClassRoom;
   username: string;
@@ -55,7 +98,10 @@ export class StudentAccessService {
     this.audit = new AuditService(db);
   }
 
-  async join(input: JoinClassInput, ipAddress: string | null): Promise<JoinResult> {
+  async join(
+    input: JoinClassInput,
+    ipAddress: string | null,
+  ): Promise<JoinPreview | JoinResult> {
     const classCode = normalizeJoinCode(input.class_code);
     const username = input.username.trim().toLowerCase();
 
@@ -151,14 +197,43 @@ export class StudentAccessService {
       );
     }
 
-    // A join replaces the student's prior token (ratified v1.2): one active session, so a
-    // machine left signed in at the back of the lab stops being a way in the moment its owner
-    // signs in somewhere else.
-    await revokeAllTokensForUser(this.db, student.id);
+    // The credentials were right, so the failures that preceded them were typos rather than an
+    // attack. Cleared here rather than after the confirmation, so a student who stops to check the
+    // name on the next screen does not leave a charged counter behind for the next person on this
+    // IP — the whole class shares one (§38), which is the other half of what made September hurt.
+    await guard.clear();
+
+    /**
+     * **Step one: say whose account this is, and issue nothing.**
+     *
+     * No token, no revocation, and no `STUDENT_CLASS_ACCESS_SUCCESS` row — nobody has signed in
+     * yet, and a trail that recorded this as a sign-in would be the same lie the old flow told.
+     * The audit write also stays out because this path is cheap to repeat and D1's daily write
+     * quota is not (§45, audit M3).
+     *
+     * The name is the only thing disclosed, and it is disclosed to somebody who already holds the
+     * class code and a username that resolves — that is, to a classmate, who could learn the same
+     * name by confirming. It buys a student the chance to notice `1.11` was not `1.1` *before*
+     * they are looking at a stranger's assessment.
+     */
+    if (input.confirm !== true) {
+      return {
+        confirmed: false,
+        studentName: student.name,
+        classRoom,
+        username,
+        activeSession: await hasActiveToken(this.db, student.id),
+      };
+    }
+
+    // **Step two: the takeover, now that somebody has asked for it.** Still one active session per
+    // student (ratified v1.2) — a machine left signed in at the back of the lab stops being a way
+    // in the moment its owner signs in somewhere else — but the eviction is no longer silent at
+    // either end: the arriving student was warned on the confirmation screen, and the count below
+    // puts it in the audit trail for whoever has to explain it afterwards.
+    const displaced = await revokeAllTokensForUser(this.db, student.id);
 
     const { plaintext } = await issueToken(this.db, student.id, studentTokenTtlHours(this.env));
-
-    await guard.clear();
 
     await this.audit.write({
       action: 'STUDENT_CLASS_ACCESS_SUCCESS',
@@ -166,11 +241,14 @@ export class StudentAccessService {
       userId: student.id,
       targetType: 'class',
       targetId: classRoom.id,
-      newValues: { username },
+      // `displaced_session` is the field the September incident needed and did not have: a
+      // sign-in that ended somebody else's session reads as one in the trail, without a join
+      // against `api_tokens` that no longer holds the evidence by the time anyone looks.
+      newValues: { username, displaced_session: displaced > 0 },
       ipAddress,
     });
 
-    return { user: student, classRoom, username, token: plaintext };
+    return { confirmed: true, user: student, classRoom, username, token: plaintext };
   }
 
   /**

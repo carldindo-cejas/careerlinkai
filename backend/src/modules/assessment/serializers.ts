@@ -17,6 +17,7 @@ import { describeBlockers } from '@/modules/assessment/assessment-builder-servic
 import type {
   AssignmentView,
   AttemptWithContent,
+  ReportView,
   ResultView,
 } from '@/modules/assessment/assessment-attempt-service';
 
@@ -45,7 +46,9 @@ import type {
  *
  * `AssessmentPlayerPage.test.tsx` asserts this from the other side of the wire.
  */
-export function serializeQuestion(question: AssessmentQuestion & { options: QuestionOption[] }) {
+export function serializeQuestion(
+  question: AssessmentQuestion & { options: QuestionOption[] },
+) {
   return {
     id: question.id,
     question_text: question.questionText,
@@ -180,6 +183,40 @@ export function serializeResult(view: ResultView, dimensions: AssessmentDimensio
   };
 }
 
+/**
+ * The printable export: the result, plus who sat it, which version, and every item with the
+ * score its answer carried. Only ever built for a SCORED attempt — see `viewReport`.
+ */
+export function serializeReport(view: ReportView, dimensions: AssessmentDimension[]) {
+  return {
+    ...serializeResult(view, dimensions),
+    instrument: {
+      version_number: view.version.versionNumber,
+      question_count: view.questionCount,
+      /** The version's own composite weights (§23) — null for a Holland-code instrument. */
+      composite_weights: view.version.scoringConfig.composite_weights ?? null,
+    },
+    student: {
+      name: view.student.name,
+      grade_level: view.student.gradeLevel,
+      strand: view.student.strand,
+      username: view.student.username,
+    },
+    class: {
+      name: view.classRoom.name,
+      academic_year: view.classRoom.academicYear,
+    },
+    counselor: view.counselor === null ? null : { name: view.counselor.name },
+    items: view.items.map((item) => ({
+      order_number: item.orderNumber,
+      question_text: item.questionText,
+      loads_on: item.loadsOn,
+      max_score: item.maxScore,
+      answer: item.answer,
+    })),
+  };
+}
+
 // --- The taxonomy (migration 0014) ------------------------------------------------------------
 
 /**
@@ -231,7 +268,28 @@ export function serializeAssessmentRow(row: AssessmentListRow) {
     title: row.template.title,
     description: row.template.description,
     category: row.template.category,
+    /**
+     * `GLOBAL` | `COUNSELOR_PRIVATE` — **the author type.** Paired with `author` below, this is the
+     * ownership relationship the schema has carried since 0005: a GLOBAL instrument is curated
+     * administrator content, a COUNSELOR_PRIVATE one belongs to the named counselor and is visible
+     * only to them and to their own classes' students.
+     */
     ownership: row.template.ownership,
+    /** The named creator (0037 display, `creator_id` since 0005). Null if the account is gone. */
+    author: row.author,
+    /** Migration 0037 — the instrument this was copied from, or null when authored from scratch. */
+    source_template_id: row.template.sourceTemplateId,
+    /** Migration 0037 — `SEQUENTIAL` | `RANDOM`, switchable from the table even after publish. */
+    presentation_mode: row.template.presentationMode,
+    /**
+     * **What this caller may do, answered by the server** (prompt §1, §5).
+     *
+     * The table used to derive "can I author this?" from `ownership !== 'GLOBAL'`, which agreed with
+     * the server only by coincidence of what a counselor's list happens to contain. One rule, one
+     * place: these come from the same `policies/assessment.ts` functions the write endpoints call.
+     */
+    can_manage: row.canManage,
+    can_copy: row.canCopy,
     /** `ARCHIVED` | `ACTIVE` | `DRAFT` — the stored column, for the Archive/Restore action. */
     status: row.template.status,
     /**
@@ -242,9 +300,7 @@ export function serializeAssessmentRow(row: AssessmentListRow) {
     is_published: row.publishedVersion !== undefined,
     is_archived: row.template.status === 'ARCHIVED',
     type:
-      row.type === null
-        ? null
-        : { id: row.type.id, code: row.type.code, name: row.type.name },
+      row.type === null ? null : { id: row.type.id, code: row.type.code, name: row.type.name },
     scorings: row.scorings.map((scoring) => ({
       id: scoring.id,
       code: scoring.code,
@@ -279,7 +335,9 @@ export function serializeAssessmentRow(row: AssessmentListRow) {
      */
     can_delete: row.deletability.canDelete,
     delete_blockers: row.deletability.blockers,
-    delete_blocked_reason: row.deletability.canDelete ? null : describeBlockers(row.deletability),
+    delete_blocked_reason: row.deletability.canDelete
+      ? null
+      : describeBlockers(row.deletability),
     /** Quoted back in the confirmation dialog — a refusal with no number is a dead end. */
     response_count: row.deletability.attemptCount,
     active_assignment_count: row.deletability.activeAssignmentCount,
@@ -306,6 +364,18 @@ export function serializeAssessmentDates(row: AssessmentListRow) {
   };
 }
 
+/**
+ * What the signed-in caller may do with this template.
+ *
+ * Optional because two callers serialize templates and only one of them is a screen with buttons:
+ * the counselor's assign-picker list does not need it. When it is absent the keys are omitted
+ * rather than defaulted to `false`, so a client cannot mistake "not stated" for "refused".
+ */
+export interface TemplatePermissions {
+  canManage: boolean;
+  canCopy: boolean;
+}
+
 export function serializeTemplate(
   template: AssessmentTemplate,
   assignableVersion: AssessmentVersion | undefined,
@@ -314,6 +384,7 @@ export function serializeTemplate(
   /** Migration 0014 — resolved by the caller, which already batched them for the whole list. */
   type?: AssessmentType | null,
   scorings?: AssessmentScoring[],
+  permissions?: TemplatePermissions,
 ) {
   return {
     id: template.id,
@@ -321,6 +392,12 @@ export function serializeTemplate(
     title: template.title,
     description: template.description,
     ownership: template.ownership,
+    /** Migration 0037. See `serializeAssessmentRow` for what these three carry. */
+    source_template_id: template.sourceTemplateId,
+    presentation_mode: template.presentationMode,
+    ...(permissions === undefined
+      ? {}
+      : { can_manage: permissions.canManage, can_copy: permissions.canCopy }),
     status: template.status,
     assessment_type_id: template.assessmentTypeId,
     type:
@@ -550,5 +627,11 @@ export function serializeVersionSummary(version: AssessmentVersion) {
     created_at: version.createdAt,
     /** Migration 0016. NULL for a draft, and for a version archived before it ever published. */
     published_at: version.publishedAt,
+    /**
+     * Migration 0037 — the version this one's questions were copied from, by either copy path
+     * (Edit-a-copy within a template, or a counselor's copy of the whole instrument). NULL for a
+     * version drafted from nothing.
+     */
+    source_version_id: version.sourceVersionId,
   };
 }

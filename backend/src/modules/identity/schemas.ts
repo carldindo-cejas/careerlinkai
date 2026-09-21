@@ -58,6 +58,63 @@ export const resetPasswordSchema = z
   });
 
 /**
+ * Counselor self-signup, step 1 (migration 0034).
+ *
+ * The same field vocabulary as `createCounselorSchema` below, with two differences that follow
+ * from who is filling it in:
+ *
+ *   * **There is a password**, chosen by the person who will use it. The admin-created path
+ *     deliberately has none — a password two people know is a credential with no accountability —
+ *     but that reasoning inverts here: this form has exactly one party, and a generated temporary
+ *     password would mean emailing a credential *and* a code to prove the mailbox is theirs, which
+ *     is one secret more than the flow needs.
+ *   * **`.strict()` matters more.** On the admin endpoint it stops a careless client; here it is
+ *     the boundary between a public form and the account table. A body carrying `role`, `status`
+ *     or `email_verified_at` is refused rather than ignored, so those fields can never be anything
+ *     but what the service sets.
+ */
+export const counselorSignupSchema = z
+  .object({
+    email: z.email('Enter a valid email address.'),
+    password: staffPassword,
+    password_confirmation: z.string(),
+    first_name: z.string().trim().min(1, 'A first name is required.').max(100),
+    last_name: z.string().trim().min(1, 'A last name is required.').max(100),
+    phone: z.string().trim().max(30).nullable().optional(),
+    employee_number: z.string().trim().max(50).nullable().optional(),
+    specialization: z.string().trim().max(150).nullable().optional(),
+    bio: z.string().trim().max(1000).nullable().optional(),
+  })
+  .strict()
+  .refine((values) => values.password === values.password_confirmation, {
+    message: 'The passwords do not match.',
+    path: ['password_confirmation'],
+  });
+
+/**
+ * Counselor self-signup, step 2.
+ *
+ * Six digits, and the regex is the whole format rule. Unlike `joinClassSchema` — where a format
+ * check would answer, in a free 422, the question the endpoint exists not to answer — there is
+ * nothing to leak here: the caller already knows they are verifying a six-digit code, because one
+ * was just mailed to them. Rejecting `"12345"` before it reaches the hash is a kindness, not a
+ * disclosure.
+ */
+export const verifySignupCodeSchema = z
+  .object({
+    email: z.email('Enter a valid email address.'),
+    code: z
+      .string()
+      .trim()
+      .regex(/^[0-9]{6}$/, 'Enter the six-digit code from your email.'),
+  })
+  .strict();
+
+export const resendSignupCodeSchema = z
+  .object({ email: z.email('Enter a valid email address.') })
+  .strict();
+
+/**
  * Passwordless student access (§38).
  *
  * Note what is *not* here: any format rule on either field. A `regex` on `class_code` would
@@ -67,10 +124,18 @@ export const resetPasswordSchema = z
  * and gets the same 401 as a wrong one.
  *
  * There is no `password` field, and there never will be. One appearing here is a bug.
+ *
+ * `confirm` is the two-step gate added after the September 2026 incident. Without it the endpoint
+ * **resolves** the credentials and answers with the student's name and nothing else; with it, and
+ * only with it, a token is issued and any other device holding this account is signed out. It is
+ * optional in the schema and mandatory in effect: a client that never sends it can never take a
+ * session over, which is exactly the property wanted from a field whose whole job is to make the
+ * takeover a thing somebody chose rather than a thing that happened.
  */
 export const joinClassSchema = z.object({
   class_code: z.string().trim().min(1, 'A class code is required.').max(20),
   username: z.string().trim().min(1, 'A username is required.').max(50),
+  confirm: z.boolean().optional(),
 });
 
 /**
@@ -126,5 +191,50 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 export type JoinClassInput = z.infer<typeof joinClassSchema>;
+export type CounselorSignupInput = z.infer<typeof counselorSignupSchema>;
+export type VerifySignupCodeInput = z.infer<typeof verifySignupCodeSchema>;
+export type ResendSignupCodeInput = z.infer<typeof resendSignupCodeSchema>;
 export type CreateCounselorInput = z.infer<typeof createCounselorSchema>;
 export type UpdateCounselorInput = z.infer<typeof updateCounselorSchema>;
+
+/**
+ * A staff member editing **their own** account (prompt-driven, 2026-09-20 — `/counselor/profile`).
+ *
+ * Deliberately narrower than `updateCounselorSchema`: `status` is missing, because suspending
+ * yourself is not a thing anybody means to do, and neither `email` nor `password` appears here —
+ * both are credentials and each has its own endpoint that re-proves the current password first.
+ *
+ * `name` is accepted for the administrator case (an admin reaches this shell too and has no
+ * counselor profile, so first/last name have nowhere to live). For a counselor it is *derived*
+ * from `first_name`/`last_name` by the service rather than typed, so the display name and the
+ * profile can never drift apart.
+ */
+export const updateAccountSchema = z
+  .object({
+    name: z.string().trim().min(1, 'A name is required.').max(150).optional(),
+    first_name: z.string().trim().min(1, 'A first name is required.').max(100).optional(),
+    last_name: z.string().trim().min(1, 'A last name is required.').max(100).optional(),
+    phone: z.string().trim().max(30).nullable().optional(),
+    employee_number: z.string().trim().max(50).nullable().optional(),
+    specialization: z.string().trim().max(150).nullable().optional(),
+    bio: z.string().trim().max(1000).nullable().optional(),
+  })
+  .strict();
+
+/**
+ * Changing the address you sign in with.
+ *
+ * `current_password` is not ceremony. The email is the login identifier *and* the address a
+ * password reset is delivered to, so an unattended session left open on a shared staffroom
+ * machine is one form submission away from being someone else's account — re-proving the password
+ * is what makes that a thing only the account holder can do.
+ */
+export const changeEmailSchema = z
+  .object({
+    email: z.email('Enter a valid email address.'),
+    current_password: z.string().min(1, 'Your current password is required.'),
+  })
+  .strict();
+
+export type UpdateAccountInput = z.infer<typeof updateAccountSchema>;
+export type ChangeEmailInput = z.infer<typeof changeEmailSchema>;

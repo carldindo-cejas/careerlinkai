@@ -43,6 +43,7 @@ let counselor: StaffUserFixture;
 let counselorToken: string;
 let otherCounselorToken: string;
 let riasecVersionId: string;
+let scctVersionId: string;
 /**
  * The taxonomy fields (migration 0014) every create/edit body now needs, resolved once.
  *
@@ -63,6 +64,7 @@ beforeAll(async () => {
 
   const seeded = await seedInstruments(admin);
   riasecVersionId = seeded.riasecVersionId!;
+  scctVersionId = seeded.scctVersionId!;
 
   const taxonomy = await assessmentTaxonomy();
   taxonomyBody = {
@@ -597,6 +599,110 @@ describe('the builder endpoints (templates, dimensions, versions, questions)', (
     });
 
     expect(response.status).toBe(401);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+/**
+ * **Editing a published instrument — RIASEC and SCCT specifically.**
+ *
+ * The curated instruments ship as a single PUBLISHED version, which invariant 1 freezes forever.
+ * That is correct and stays: what these tests pin is that "frozen" has a way *forward* — copy the
+ * version into a draft, edit the draft, publish it as the next version — and that the copy is a
+ * faithful one. A duplicate that silently dropped SCCT's §23 composite weights, or that landed its
+ * mappings unconfirmed, would look right in the builder and score differently in production.
+ */
+describe('duplicating a version to edit a published instrument', () => {
+  it('copies RIASEC whole into an editable DRAFT, leaving the published version frozen', async () => {
+    const copy = await api('POST', `/assessment-versions/${riasecVersionId}/duplicate`, {
+      token: adminToken,
+    });
+
+    expect(copy.status).toBe(201);
+    expect(copy.body.data.status).toBe('DRAFT');
+    expect(copy.body.data.version_number).toBe(2);
+    expect(copy.body.data.published_at).toBeNull();
+
+    const draftId = copy.body.data.id as string;
+
+    const source = await api('GET', `/assessment-versions/${riasecVersionId}`, { token: adminToken });
+    const draft = await api('GET', `/assessment-versions/${draftId}`, { token: adminToken });
+
+    // Still frozen, still 60 items — the copy took nothing away from it.
+    expect(source.body.data.status).toBe('PUBLISHED');
+    expect(source.body.data.questions).toHaveLength(60);
+
+    expect(draft.body.data.questions).toHaveLength(60);
+    // In order: R's ten first, exactly as §22 requires for the Holland tie-break.
+    expect(draft.body.data.questions[0].question_text).toBe(
+      source.body.data.questions[0].question_text,
+    );
+    expect(draft.body.data.questions[59].question_text).toBe(
+      source.body.data.questions[59].question_text,
+    );
+    expect(draft.body.data.questions[0].options).toHaveLength(5);
+
+    // Every mapping came across confirmed, so the §25 gate is satisfied honestly rather than
+    // leaving the author sixty confirmations to re-click on content they did not write.
+    expect(draft.body.data.publish_readiness.total).toBe(60);
+    expect(draft.body.data.publish_readiness.remaining).toBe(0);
+  });
+
+  it('the copied questions are editable while the published originals are not', async () => {
+    const copy = await api('POST', `/assessment-versions/${riasecVersionId}/duplicate`, {
+      token: adminToken,
+    });
+
+    const draftId = copy.body.data.id as string;
+    const draft = await api('GET', `/assessment-versions/${draftId}`, { token: adminToken });
+    const source = await api('GET', `/assessment-versions/${riasecVersionId}`, { token: adminToken });
+
+    const edited = await api('PATCH', `/assessment-questions/${draft.body.data.questions[0].id}`, {
+      token: adminToken,
+      body: { question_text: 'I enjoy working with tools and equipment of every kind.' },
+    });
+
+    expect(edited.status).toBe(200);
+    expect(edited.body.data.question_text).toBe(
+      'I enjoy working with tools and equipment of every kind.',
+    );
+
+    // The published item is untouched and refuses the same edit — invariant 1 is intact.
+    const frozen = await api('PATCH', `/assessment-questions/${source.body.data.questions[0].id}`, {
+      token: adminToken,
+      body: { question_text: 'This must not be possible.' },
+    });
+
+    expect(frozen.status).toBe(422);
+  });
+
+  it("preserves SCCT's composite weights, which a fresh version would silently drop", async () => {
+    const copy = await api('POST', `/assessment-versions/${scctVersionId}/duplicate`, {
+      token: adminToken,
+    });
+
+    expect(copy.status).toBe(201);
+
+    const [draft] = await db()
+      .select()
+      .from(assessmentVersions)
+      .where(eq(assessmentVersions.id, copy.body.data.id as string))
+      .limit(1);
+
+    expect(draft?.scoringConfig).toEqual({
+      algorithm: 'WEIGHTED_COMPOSITE',
+      composite_weights: { SE: 0.4, OE: 0.3, GO: 0.3 },
+      composite_ranges: expect.any(Array),
+    });
+  });
+
+  it('a counselor cannot copy a version of a template they do not own', async () => {
+    const refused = await api('POST', `/assessment-versions/${riasecVersionId}/duplicate`, {
+      token: counselorToken,
+    });
+
+    // 404, not 403 — the standing rule: ownership failures must not confirm what exists.
+    expect(refused.status).toBe(404);
   });
 });
 

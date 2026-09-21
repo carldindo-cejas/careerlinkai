@@ -889,7 +889,7 @@ await student.goto(`${APP}/join`);
  * therefore the only message this screen ever puts *on* a field, and it is the one that has to be
  * reachable: `aria-invalid` announces "invalid" and stops there.
  */
-await student.getByRole('button', { name: 'Sign in' }).click();
+await student.getByRole('button', { name: 'Continue' }).click();
 await student.waitForTimeout(1000);
 check(
   '[a11y] join: the validation message is attached to the field, not merely printed beside it',
@@ -905,7 +905,9 @@ check(
 
 await student.locator('#class_code').fill('ZZZZ-9999');
 await student.locator('#username').fill('juan.delacruz');
-await student.getByRole('button', { name: 'Sign in' }).click();
+// 'Continue', not 'Sign in': the first call only asks the server whose account this is, and a
+// wrong class code is refused there, before any confirmation screen exists.
+await student.getByRole('button', { name: 'Continue' }).click();
 await student.waitForTimeout(3000);
 
 const badJoin = lastCall('/student-access/join');
@@ -922,7 +924,18 @@ await auditA11y(student, 'join');
 
 await student.locator('#class_code').fill(joinCode);
 await student.locator('#username').fill('juan.delacruz');
-await student.getByRole('button', { name: 'Sign in' }).click();
+await student.getByRole('button', { name: 'Continue' }).click();
+
+// The confirmation step (incident 2026-09-18): the student is shown whose account they are about
+// to claim and has to say it is theirs. Nothing is issued until this click, which is the whole
+// point — a mistyped roster number used to sign somebody in as a classmate and evict them.
+const confirmButton = student.getByRole('button', { name: "Yes, it's me" });
+await confirmButton.waitFor({ state: 'visible', timeout: NAV_TIMEOUT });
+check(
+  '[student] the join names the account before it is claimed',
+  (await student.locator('body').innerText()).includes('Juan Dela Cruz'),
+);
+await confirmButton.click();
 await student.waitForURL('**/student**', { timeout: NAV_TIMEOUT });
 await student.waitForTimeout(2500);
 check('[student] joins with only a class code and a username', true, student.url().replace(APP, ''));

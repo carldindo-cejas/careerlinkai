@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { demoInstead, useTourDemo } from '@/features/student/tour/demoMode';
 import { aiApi } from '@/services/aiApi';
 import { catalogLinksApi, chatApi, recommendationApi } from '@/services/recommendationApi';
 import type { ChatTranscript } from '@/types/recommendation';
@@ -14,10 +15,14 @@ export const recommendationKeys = {
 };
 
 export function useMyRecommendations() {
-  return useQuery({
+  const query = useQuery({
     queryKey: recommendationKeys.mine,
     queryFn: () => recommendationApi.getMine(),
   });
+
+  // The tour's example student, for a student who has none of their own — see
+  // `features/student/tour/demoMode.ts`. Only ever while the overlay is up.
+  return demoInstead(query, useTourDemo()?.recommendations);
 }
 
 /**
@@ -25,7 +30,7 @@ export function useMyRecommendations() {
  * classes, so a status code cannot be used to enumerate student ids.
  *
  * `enabled` is a parameter rather than always-on because the caller that needs this is a roster of
- * students with one expanded at a time (`ClassRecommendationsPanel`). There is no bulk endpoint
+ * students with one expanded at a time (`RosterTable`'s dropdown). There is no bulk endpoint
  * here — the admin's roster view gets its rows hydrated server-side, this one does not — so a
  * component that mounted the hook per student eagerly would fire one request per enrolled student
  * on page load, for cards nobody has opened. Same reasoning as `useCareerPrograms` below.
@@ -162,6 +167,11 @@ export function useAskChat() {
             role: 'user',
             content: message,
             ai_request_id: null,
+            // The optimistic echo of what the student just typed — a question, so nothing to cite,
+            // nothing to flag and nothing to ask the school to answer.
+            sources: [],
+            feedback: null,
+            knowledge_request: null,
             created_at: new Date().toISOString(),
           },
         ],
@@ -187,6 +197,62 @@ export function useAskChat() {
           turn.answer,
         ],
       }));
+    },
+  });
+}
+
+/**
+ * Mark one assistant answer as wrong (Phase 4).
+ *
+ * Optimistic: the thumb fills the moment it is pressed, because a student reporting a wrong answer
+ * should not be left wondering whether the report landed. There is no un-flag — the signal goes to
+ * an admin review queue, and an item that can vanish before anyone looks at it is worse than a
+ * stale one.
+ */
+export function useFlagAnswer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (messageId: string) => chatApi.flagAnswer(messageId),
+    onSuccess: (_result, messageId) => {
+      queryClient.setQueryData<ChatTranscript>(chatKeys.transcript, (current) =>
+        current === undefined
+          ? current
+          : {
+              ...current,
+              messages: current.messages.map((message) =>
+                message.id === messageId ? { ...message, feedback: 'DOWN' as const } : message,
+              ),
+            },
+      );
+    },
+  });
+}
+
+/**
+ * Ask the school to answer a question nothing covered (migration 0030).
+ *
+ * Optimistic, for the same reason the flag is: a student who presses a button and sees nothing
+ * change assumes it did nothing. The server is idempotent, so a double press is the same state.
+ */
+export function useRequestKnowledge() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (messageId: string) => chatApi.requestKnowledge(messageId),
+    onSuccess: (_result, messageId) => {
+      queryClient.setQueryData<ChatTranscript>(chatKeys.transcript, (current) =>
+        current === undefined
+          ? current
+          : {
+              ...current,
+              messages: current.messages.map((message) =>
+                message.id === messageId
+                  ? { ...message, knowledge_request: 'REQUESTED' as const }
+                  : message,
+              ),
+            },
+      );
     },
   });
 }

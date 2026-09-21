@@ -153,3 +153,58 @@ h1, h2, h3, h4, h5, h6 {
 ::selection {
   background: color-mix(in srgb, var(--primary) 30%, transparent);
 }
+
+/**
+ * Hide a scrollbar without disabling the scroll.
+ *
+ * Used by the navigation rail. The distinction matters: `overflow: hidden` would make an
+ * overflowing nav unreachable, which is a far worse failure than the track being visible. This
+ * only removes the chrome — wheel, trackpad, touch and keyboard scrolling all still work.
+ */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/**
+ * The "there is more below" chevrons (`ScrollHint`, prompt-driven 2026-09-20).
+ *
+ * Three arrows that drift down and fade, one after the other, so the group reads as a direction
+ * rather than as three separate marks. The stagger is a `animation-delay` per child rather than
+ * three keyframe sets — same motion, offset in time, which is what makes it look like one gesture.
+ *
+ * Kept faint on purpose: this is a hint about the page, not a control on it. It sits under the
+ * chat launcher's z-index and takes no pointer events, so it can never be the thing a student
+ * taps by accident.
+ */
+@keyframes scroll-hint-drift {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(-2px);
+  }
+  50% {
+    opacity: 0.9;
+    transform: translateY(2px);
+  }
+}
+
+.scroll-hint-arrow {
+  animation: scroll-hint-drift 1.6s ease-in-out infinite;
+}
+
+/*
+  Reduced motion keeps the arrows and drops the movement. Removing the hint entirely would take
+  the information away from the person who asked for less animation, not less guidance — they
+  still need to know the page continues.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .scroll-hint-arrow {
+    animation: none;
+    opacity: 0.55;
+  }
+}

@@ -39,7 +39,16 @@ async function classWithStudent() {
   return { counselor, token, classRoom, student };
 }
 
+/** The confirmed join — step two, the one that issues a token and ends other sessions. */
 function join(classCode: string, username: string, ip?: string) {
+  return api('POST', '/student-access/join', {
+    body: { class_code: classCode, username, confirm: true },
+    ...(ip ? { ip } : {}),
+  });
+}
+
+/** Step one: resolve the credentials and ask "is this you?". Issues nothing. */
+function previewJoin(classCode: string, username: string, ip?: string) {
   return api('POST', '/student-access/join', {
     body: { class_code: classCode, username },
     ...(ip ? { ip } : {}),
@@ -62,6 +71,7 @@ describe('POST /student-access/join — success', () => {
     });
     expect(response.body.data.username).toBe('juan.delacruz');
     expect(typeof response.body.data.token).toBe('string');
+    expect(response.body.data.confirmation_required).toBe(false);
   });
 
   it('never sends the join code back out in a student-facing response', async () => {
@@ -129,6 +139,90 @@ describe('POST /student-access/join — success', () => {
 
     expect(row?.userId).toBe(student.student_id);
     expect(row?.ipAddress).toBe('203.0.113.10');
+  });
+});
+
+describe('POST /student-access/join — the confirmation step (incident 2026-09-18)', () => {
+  /**
+   * The fix for the incident these tests are named after: 61 of 79 joins in one hour deleted a
+   * session somebody else was using, because a join *was* a takeover and a mistyped roster number
+   * was indistinguishable from a sign-in. Resolving credentials and taking a session over are two
+   * acts now, and these assert they stay two.
+   */
+  it('answers the first call with the student’s name and no session at all', async () => {
+    const { classRoom, student } = await classWithStudent();
+
+    const response = await previewJoin(classRoom.join_code, student.username);
+
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Confirm that this is you.');
+    expect(response.body.data).toMatchObject({
+      confirmation_required: true,
+      student_name: 'Juan Dela Cruz',
+      username: 'juan.delacruz',
+      active_session: false,
+    });
+    expect(response.body.data).not.toHaveProperty('token');
+    await expect(countTokensFor(student.student_id)).resolves.toBe(0);
+  });
+
+  it('discloses the name and nothing else about the account', async () => {
+    // The caller has proved they know a class code and a username — not that they are the person
+    // those belong to. A serialized user here would hand an unauthenticated caller the account.
+    const { classRoom, student } = await classWithStudent();
+
+    const { body } = await previewJoin(classRoom.join_code, student.username);
+
+    expect(body.data).not.toHaveProperty('user');
+    expect(JSON.stringify(body)).not.toContain(student.student_id);
+  });
+
+  it('leaves an existing session alone until the takeover is confirmed', async () => {
+    const { classRoom, student } = await classWithStudent();
+
+    const first = await join(classRoom.join_code, student.username);
+    const preview = await previewJoin(classRoom.join_code, student.username);
+
+    // This is the whole point: the student already signed in is still signed in.
+    expect(preview.body.data.active_session).toBe(true);
+    await expect(
+      api('GET', '/auth/me', { token: first.body.data.token }),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(countTokensFor(student.student_id)).resolves.toBe(1);
+  });
+
+  it('records in the audit trail that a sign-in displaced somebody', async () => {
+    // The field the incident needed and did not have — without it, "who evicted whom" is only
+    // recoverable by correlating timestamps and IPs across dozens of rows, which is how this
+    // took a database dig to explain.
+    const { classRoom, student } = await classWithStudent();
+
+    await join(classRoom.join_code, student.username);
+    await join(classRoom.join_code, student.username);
+
+    // Scoped to this class: storage is shared across the file, so every earlier test's joins are
+    // in here too.
+    const rows = (await allAuditRows()).filter(
+      (row) =>
+        row.action === 'STUDENT_CLASS_ACCESS_SUCCESS' && row.targetId === classRoom.id,
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.newValues).toMatchObject({ displaced_session: false });
+    expect(rows[1]!.newValues).toMatchObject({ displaced_session: true });
+  });
+
+  it('refuses an unknown username identically whether or not confirm is sent', async () => {
+    // The generic 401 is the control (§38). A confirmation step that answered differently would
+    // turn the first call into the oracle the second one is not.
+    const { classRoom } = await classWithStudent();
+
+    const preview = await previewJoin(classRoom.join_code, 'not.a.student');
+    const confirmed = await join(classRoom.join_code, 'not.a.student');
+
+    expect(preview.status).toBe(401);
+    expect(preview.body).toEqual(GENERIC_FAILURE);
+    expect(confirmed.body).toEqual(preview.body);
   });
 });
 

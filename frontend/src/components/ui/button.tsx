@@ -1,6 +1,6 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Loader2 } from 'lucide-react';
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 
 import { Corners } from '@/components/ui/blueprint';
 import { cn } from '@/components/ui/cn';
@@ -22,9 +22,21 @@ const buttonVariants = cva(
         // one that carries it out.
         danger: 'bg-destructive text-destructive-foreground hover:bg-[#9a322c]',
       },
+      /**
+       * **Every size is at least 44px tall on a phone, and the designed height from `sm` up.**
+       *
+       * WCAG 2.2 AA (Target Size, Minimum) puts the floor at 44×44 CSS px, and `h-8`/`h-10` are 32
+       * and 40 — comfortably clickable with a mouse and genuinely hard to hit with a thumb, which is
+       * how most students reach this product. `scripts/responsive-audit.mjs` measured sixty-odd of
+       * these across the counselor and student interfaces at 320–430px.
+       *
+       * Raised only below `sm`, deliberately: a desktop toolbar of 44px buttons is a toolbar that
+       * has lost its density for the benefit of a pointer nobody is using there. One rule, applied
+       * where the pointer is actually a finger.
+       */
       size: {
-        sm: 'h-8 px-3',
-        md: 'h-10 px-4',
+        sm: 'h-11 px-3 sm:h-8',
+        md: 'h-11 px-4 sm:h-10',
         lg: 'h-11 px-6 text-base',
       },
     },
@@ -40,6 +52,15 @@ export interface ButtonProps
     VariantProps<typeof buttonVariants> {
   loading?: boolean;
   children: ReactNode;
+  /**
+   * A handle on the underlying `<button>`.
+   *
+   * React 19 passes `ref` to a function component as an ordinary prop, but `ButtonHTMLAttributes`
+   * does not declare it, so it has to be named here to be typed. Added for the tour overlay, which
+   * moves focus to each step's primary action — a dialog that opens without moving focus leaves a
+   * keyboard user's focus behind the dim layer, invisible and still operable.
+   */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 export function Button({
@@ -49,6 +70,7 @@ export function Button({
   loading = false,
   disabled,
   children,
+  ref,
   ...props
 }: ButtonProps) {
   // The primary button is the system's one solid object, so it also wears the registration marks
@@ -57,6 +79,7 @@ export function Button({
 
   return (
     <button
+      ref={ref}
       className={cn(buttonVariants({ variant, size }), className)}
       disabled={disabled ?? loading}
       {...props}

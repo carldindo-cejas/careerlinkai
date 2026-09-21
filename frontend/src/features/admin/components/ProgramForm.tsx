@@ -1,17 +1,25 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Combobox } from '@/components/ui/combobox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { useCreateProgram, useUpdateProgram } from '@/features/admin/hooks/useCatalog';
+import {
+  CANONICAL_OPTION_LIMIT,
+  useCanonicalProgramOptions,
+  useCreateProgram,
+  useUpdateProgram,
+} from '@/features/admin/hooks/useCatalog';
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { ApiRequestError } from '@/types/api';
-import { STRANDS, type Program, type Strand } from '@/types/catalog';
+import { STRANDS, type CanonicalProgram, type Program, type Strand } from '@/types/catalog';
 
 /**
  * Add or edit a program under a college (FULLPLAN §57, Phase 2).
@@ -20,6 +28,22 @@ import { STRANDS, type Program, type Strand } from '@/types/catalog';
  * (the id comes from the route) and can never be moved to another one — doing so would
  * silently rewrite the college that §27 derives for every recommendation already pointing
  * at this program. The server refuses it too; this form simply never offers it.
+ *
+ * ## Start from a program that already exists
+ *
+ * A program in this system is two things: the **canonical** entry — "BS Computer Science" as a
+ * thing in the world (migration 0018) — and this college's offering of it. Until now the form only
+ * ever collected the second, and the server inferred the first from the code: an unmatched code
+ * *mints a new canonical entry*. That is a reasonable default and a poor only-option, because the
+ * codes people type vary ("BSIT", "BS-IT", "BS Info Tech") in ways the normaliser deliberately
+ * refuses to guess at, and every near-miss is a duplicate canonical row that has to be found and
+ * merged later on a screen the admin has no reason to visit.
+ *
+ * So the form now opens with the picker: choose the entry that already exists, and its code and
+ * name fill in and travel as `program_catalog_id`. The two fields stay editable underneath —
+ * `code` is the *college's* code for the offering and is genuinely allowed to differ — and typing
+ * a code for something nobody has recorded yet still works exactly as it did. The picker is an
+ * offer, not a gate.
  */
 
 const NO_STRAND = '__none__';
@@ -52,9 +76,34 @@ export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFo
   const updateProgram = useUpdateProgram(collegeId);
   const mutation = isEditing ? updateProgram : createProgram;
 
+  /**
+   * The canonical entry this offering *is*.
+   *
+   * Seeded from the program on an edit, so the picker opens showing what the offering is already
+   * matched to rather than looking unset — and `null` there is a real state ("nobody has decided
+   * what this is") that the empty picker states rather than hides.
+   */
+  const [canonical, setCanonical] = useState<CanonicalProgram | null>(program?.canonical ?? null);
+  /** Seeded from the same field, so "unchanged" is measured against what the picker actually showed. */
+  const initialCanonicalId = program?.canonical?.id ?? null;
+  const [search, setSearch] = useState('');
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
+
+  /*
+   * Server-searched and server-capped at 20, and `isPickerOpen` keeps it from firing until the
+   * dropdown is actually opened — the same two rules the careers picker follows for the same
+   * reason (audit F3): a client cannot correctly filter a list it does not have, and a form that
+   * fetches a catalog nobody opened pays for it on every render.
+   */
+  const options = useCanonicalProgramOptions(debouncedSearch, isPickerOpen);
+  const candidates = options.data ?? [];
+
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors },
   } = useForm<ProgramValues>({
     resolver: zodResolver(programSchema),
@@ -72,6 +121,23 @@ export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFo
   const generalError =
     serverError && Object.keys(serverError.errors).length === 0 ? serverError.message : null;
 
+  const canonicalId = canonical?.id ?? null;
+
+  /**
+   * Choosing an entry fills the two fields it identifies.
+   *
+   * `shouldDirty` so react-hook-form treats them as touched, and the inputs stay editable after —
+   * the picker says *which program this is*, not what this college calls it.
+   */
+  function pickCanonical(entry: CanonicalProgram | null) {
+    setCanonical(entry);
+
+    if (entry === null) return;
+
+    setValue('code', entry.code, { shouldDirty: true, shouldValidate: true });
+    setValue('name', entry.name, { shouldDirty: true, shouldValidate: true });
+  }
+
   const onSubmit = handleSubmit((values) => {
     const payload = {
       code: values.code,
@@ -83,6 +149,22 @@ export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFo
       recommended_strand:
         values.recommended_strand === NO_STRAND ? null : (values.recommended_strand as Strand),
       status: values.status,
+      /*
+        Three states, and they are genuinely three (see `CreateProgramPayload`):
+
+          an id      the admin picked an existing entry — use it, do not mint anything;
+          null       the admin *cleared* a link that was there — "we have not decided what this
+                     is", a real state, and not the same as "leave it alone";
+          omitted    the picker was not touched. On a create that is the pre-existing behaviour and
+                     still the right default — the server matches the code and mints the canonical
+                     entry if it is new. On an edit it leaves the link exactly as it was.
+
+        The key is sent **only when the value changed**, measured against the same field the state
+        was seeded from. That is what makes the omitted case safe: an endpoint that did not load
+        `canonical` shows an empty picker, and an empty picker the admin never touched must not be
+        read as a request to unlink the offering.
+      */
+      ...(canonicalId !== initialCanonicalId ? { program_catalog_id: canonicalId } : {}),
     };
 
     if (program) {
@@ -105,6 +187,49 @@ export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFo
       <CardContent>
         <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
           {generalError ? <Alert>{generalError}</Alert> : null}
+
+          {/*
+            The picker, above the two fields it fills, because choosing is the first thing to do
+            and retyping a program the catalog already knows about is the thing this is here to
+            stop. Clearable: "not yet decided" is a legitimate answer, and on an edit it is the way
+            to unlink an offering that was matched to the wrong entry.
+          */}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="program-canonical">Program</Label>
+            <Combobox
+              id="program-canonical"
+              value={canonical?.id ?? null}
+              selectedLabel={canonical ? `${canonical.code} · ${canonical.name}` : null}
+              onChange={(id) => pickCanonical(candidates.find((entry) => entry.id === id) ?? null)}
+              options={candidates.map((entry) => ({
+                id: entry.id,
+                name: `${entry.code} · ${entry.name}`,
+              }))}
+              query={search}
+              onQueryChange={setSearch}
+              onOpenChange={setIsPickerOpen}
+              loading={options.isFetching}
+              clearable
+              placeholder="Choose a program already in the catalog…"
+              searchPlaceholder="Search by name or code…"
+              emptyText={
+                search.trim() === ''
+                  ? 'No programs in the catalog yet — type the code and name below instead.'
+                  : `Nothing matches “${search.trim()}”. Type the code and name below and it will be added.`
+              }
+              footer={
+                candidates.length >= CANONICAL_OPTION_LIMIT
+                  ? `Showing the first ${CANONICAL_OPTION_LIMIT} matches — refine your search to narrow this down.`
+                  : null
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              {canonical
+                ? 'This offering is matched to the shared catalog, so “which colleges offer this?” finds it.'
+                : 'Optional. Pick an existing program to avoid a near-duplicate entry, or leave this and a new one is created from the code below.'}
+            </p>
+            <FieldError message={serverError?.fieldError('program_catalog_id')} />
+          </div>
 
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="flex flex-col gap-1.5">

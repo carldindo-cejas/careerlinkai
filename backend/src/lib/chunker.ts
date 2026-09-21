@@ -13,10 +13,18 @@
  * characters each — the standard heuristic for English text, and precision does not matter
  * here: the bounds exist to keep a chunk small enough to embed well and large enough to
  * carry context, not to bill anyone.
+ *
+ * **The ceiling is 420, not §33's 800** (AiNormalisation D1, 2026-09-04). The embedding model
+ * `@cf/baai/bge-base-en-v1.5` accepts a **512-token maximum input** and silently truncates
+ * anything past it — no error, no log line, a well-formed vector returned either way. At 800 the
+ * stored chunk text was complete but its vector encoded only the first two thirds of it, so a
+ * fact in the tail of a chunk was unreachable by search. 420 tokens is ~1,680 characters; the
+ * estimator over-counts on prose rather than under-counting, which leaves real headroom under
+ * 512 even when a chunk is dense with punctuation.
  */
 export const CHARS_PER_TOKEN = 4;
 export const MIN_CHUNK_TOKENS = 300;
-export const MAX_CHUNK_TOKENS = 800;
+export const MAX_CHUNK_TOKENS = 420;
 export const OVERLAP_TOKENS = 75;
 
 const MAX_CHUNK_CHARS = MAX_CHUNK_TOKENS * CHARS_PER_TOKEN;

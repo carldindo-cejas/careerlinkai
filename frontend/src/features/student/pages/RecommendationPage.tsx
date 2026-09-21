@@ -1,4 +1,5 @@
 import {
+  Briefcase,
   ChevronDown,
   ChevronUp,
   GraduationCap,
@@ -7,15 +8,15 @@ import {
   RefreshCw,
   School,
 } from 'lucide-react';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/components/ui/cn';
 import { Select } from '@/components/ui/select';
-import { RecommendationChatPanel } from '@/features/student/components/RecommendationChatPanel';
 import {
   useCareerPrograms,
   useExplainRecommendation,
@@ -54,6 +55,12 @@ import type {
  * are one click away, and the sort control below re-orders **the same five** rather than reaching
  * further into the list — which matters, because a sort that changed the membership of the set
  * would be a second ranking the engine never made.
+ *
+ * ## One list at a time, one line per match
+ *
+ * A Careers | Programs switch shows one ranking at a time — they are separate rankings anyway, so
+ * nothing is lost by not scrolling through both. Each match is a one-line peek (title, code, one
+ * fact, the score) that opens into its reason, the explanation and the college links on click.
  */
 export function RecommendationPage() {
   const { data: set, isLoading, isError, error } = useMyRecommendations();
@@ -61,6 +68,7 @@ export function RecommendationPage() {
   const regenerate = useRegenerateMyRecommendations();
 
   const [careerSort, setCareerSort] = useState<CareerSort>('match');
+  const [view, setView] = useState<RecommendationView>('careers');
 
   /**
    * Rebuild, and say plainly which of the two outcomes happened (audit C4).
@@ -174,40 +182,189 @@ export function RecommendationPage() {
             </CardContent>
           </Card>
         ) : (
-          <>
-            <CollapsibleSection
-              title="Careers"
-              description="Matched against your interest profile and your confidence scores."
-              items={set.careers}
-              sort={
-                <CareerSortControl value={careerSort} onChange={setCareerSort} />
-              }
-              order={careerSort}
-              render={(recommendation) => (
-                <CareerCard key={recommendation.id} recommendation={recommendation} />
-              )}
+          // A wrapper rather than the fragment that was here, so the tour has something to point
+          // at. `gap-6` matches the column it replaced a fragment inside, so nothing moves.
+          <div data-tour="recommendation-lists" className="flex flex-col gap-6">
+            <ViewSwitch
+              value={view}
+              onChange={setView}
+              counts={{
+                careers: Math.min(set.careers.length, EXPANDED_VISIBLE),
+                programs: Math.min(set.programs.length, EXPANDED_VISIBLE),
+              }}
             />
 
-            <CollapsibleSection
-              title="Programs"
-              description="These also weigh your strand and your subject grades — which is why a program can rank differently from the careers it leads to."
-              items={set.programs}
-              render={(recommendation) => (
-                <ProgramCard key={recommendation.id} recommendation={recommendation} />
-              )}
-            />
-          </>
+            {view === 'careers' ? (
+              <CollapsibleSection
+                key="careers"
+                title="Careers"
+                description="Matched against your interest profile and your confidence scores."
+                items={set.careers}
+                sort={<CareerSortControl value={careerSort} onChange={setCareerSort} />}
+                order={careerSort}
+                render={(recommendation) => (
+                  <CareerCard key={recommendation.id} recommendation={recommendation} />
+                )}
+              />
+            ) : (
+              <CollapsibleSection
+                key="programs"
+                title="Programs"
+                description="These also weigh your strand and your subject grades — which is why a program can rank differently from the careers it leads to."
+                items={set.programs}
+                render={(recommendation) => (
+                  <ProgramCard key={recommendation.id} recommendation={recommendation} />
+                )}
+              />
+            )}
+          </div>
         )}
       </div>
 
-      <RecommendationChatPanel hasRecommendations={Boolean(set)} />
+      <Suspense fallback={null}>
+        <RecommendationChatPanel hasRecommendations={Boolean(set)} />
+      </Suspense>
     </div>
   );
 }
 
+/**
+ * The assistant column arrives after the page (2026-09-13). This page is in the student route
+ * group's chunk, so a static import put the whole chat panel on every student screen's cold load —
+ * the same reason `StudentLayout` loads its launcher lazily.
+ */
+const RecommendationChatPanel = lazy(async () => ({
+  default: (await import('@/features/student/components/RecommendationChatPanel'))
+    .RecommendationChatPanel,
+}));
+
 /** Three shown, five available. See the page doc for why the ceiling is five and not ten. */
 const DEFAULT_VISIBLE = 3;
 const EXPANDED_VISIBLE = 5;
+
+type RecommendationView = 'careers' | 'programs';
+
+const VIEWS = [
+  { value: 'careers', label: 'Careers', Icon: Briefcase },
+  { value: 'programs', label: 'Programs', Icon: GraduationCap },
+] as const;
+
+/**
+ * Careers | Programs. Toggle buttons (`aria-pressed`) rather than tabs: two options, and a pressed
+ * state is all a screen reader needs to say which list is showing.
+ */
+function ViewSwitch({
+  value,
+  onChange,
+  counts,
+}: {
+  value: RecommendationView;
+  onChange: (value: RecommendationView) => void;
+  counts: Record<RecommendationView, number>;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="Show recommended careers or programs"
+      // The full width of the list column — which stops where the assistant's column begins.
+      className="flex w-full border border-border"
+    >
+      {VIEWS.map(({ value: option, label, Icon }, index) => {
+        const active = value === option;
+
+        return (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option)}
+            className={cn(
+              'inline-flex h-10 flex-1 items-center justify-center gap-2 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+              index > 0 && 'border-l border-border',
+              active ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-secondary',
+            )}
+          >
+            <Icon className="size-4" aria-hidden="true" />
+            {label}{' '}
+            <span
+              className={cn(
+                'font-mono text-xs tabular-nums',
+                active ? 'text-primary-foreground/80' : 'text-muted-foreground',
+              )}
+            >
+              {counts[option]}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * One match as a peek that opens: the heading holds the button (the WAI accordion pattern), so a
+ * screen reader lists every match by name and says whether it is open.
+ *
+ * The details stay mounted but `hidden` while closed. Nothing in them fetches on mount — the two
+ * college disclosures only load when pressed — and keeping them mounted means an "Explain more"
+ * answer survives closing and reopening the card.
+ */
+function RecommendationItem({
+  title,
+  badge,
+  peek,
+  score,
+  rank,
+  children,
+}: {
+  title: string;
+  badge: React.ReactNode;
+  peek: string;
+  score: number;
+  rank: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+
+  return (
+    <Card>
+      <h3>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((current) => !current)}
+          className="flex w-full items-center gap-4 p-5 text-left transition-colors hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-2 text-base font-semibold uppercase tracking-tight text-foreground">
+              {title} {badge}
+            </span>
+            {peek ? (
+              <span className="mt-1 block truncate text-sm font-normal normal-case tracking-normal text-muted-foreground">
+                {' '}
+                {peek}
+              </span>
+            ) : null}
+          </span>{' '}
+          <MatchScore score={score} rank={rank} />
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              'size-5 shrink-0 text-muted-foreground transition-transform',
+              open && 'rotate-180',
+            )}
+          />
+        </button>
+      </h3>
+
+      <div id={panelId} hidden={!open} className="flex flex-col gap-3 border-t border-border p-5">
+        {children}
+      </div>
+    </Card>
+  );
+}
 
 /**
  * One ranked section, collapsed to three.
@@ -380,8 +537,9 @@ function CareerSortControl({
  * the composite is not compounded).
  */
 function MatchScore({ score, rank }: { score: number; rank: number }) {
+  // Spans, not divs: this sits inside the card's toggle button, which takes phrasing content only.
   return (
-    <div className="flex flex-col items-end">
+    <span className="flex shrink-0 flex-col items-end gap-1">
       {/*
         Sighted readers get the label from the layout — a large number in the top-right corner of
         a recommendation card is unmistakably its score. Read linearly it is not: the card
@@ -401,7 +559,7 @@ function MatchScore({ score, rank }: { score: number; rank: number }) {
           </>
         )}
       </Badge>
-    </div>
+    </span>
   );
 }
 
@@ -441,6 +599,15 @@ function ExplainMore({ recommendationId }: { recommendationId: string }) {
         className="rounded-none bg-muted p-3 focus-visible:outline-none"
       >
         <p className="text-sm text-foreground/80">{explain.data.explanation.explanation_text}</p>
+        {/*
+          Naming the material this paragraph cited is the last line of the grounding contract, and
+          the one a person performs: a student who can see the source can judge the answer.
+        */}
+        {explain.data.explanation.sources.length > 0 ? (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Based on: {explain.data.explanation.sources.join(', ')}
+          </p>
+        ) : null}
         <p className="mt-1 text-xs text-muted-foreground">
           AI-generated from the school&apos;s guidance materials — the scores above are computed,
           not AI.
@@ -489,39 +656,33 @@ function CareerCard({ recommendation }: { recommendation: CareerRecommendation }
   const { career } = recommendation;
   const [showPrograms, setShowPrograms] = useState(false);
 
+  const facts = [
+    formatSalaryRange(career.salary_min, career.salary_max),
+    career.employment_outlook?.name,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
-    <Card>
-      <CardHeader className="flex-row items-start justify-between gap-4">
-        <div>
-          {/* `h3`: this card is inside the "Careers" section, whose heading is the `h2`. */}
-          <CardTitle as="h3" className="flex items-center gap-2">
-            {career.title}
-            {/*
-              The Holland code is shown, not hidden. A student who can see that this career reads as
-              "IEC" and that their own code is "IAR" can reason about *why* it ranked where it did —
-              which is the difference between an explanation and an assertion.
-            */}
-            {career.typical_riasec_code ? <Badge>{career.typical_riasec_code}</Badge> : null}
-          </CardTitle>
-          {career.description ? <CardDescription>{career.description}</CardDescription> : null}
-        </div>
+    <RecommendationItem
+      title={career.title}
+      /*
+        The Holland code is shown, not hidden. A student who can see that this career reads as
+        "IEC" and that their own code is "IAR" can reason about *why* it ranked where it did —
+        which is the difference between an explanation and an assertion.
+      */
+      badge={career.typical_riasec_code ? <Badge>{career.typical_riasec_code}</Badge> : null}
+      peek={facts || recommendation.reason}
+      score={recommendation.match_score}
+      rank={recommendation.ranking}
+    >
+        {career.description ? (
+          <p className="text-sm text-foreground/80">{career.description}</p>
+        ) : null}
 
-        <MatchScore score={recommendation.match_score} rank={recommendation.ranking} />
-      </CardHeader>
-
-      <CardContent className="flex flex-col gap-3">
         <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
 
-        {(() => {
-          const parts = [
-            formatSalaryRange(career.salary_min, career.salary_max),
-            career.employment_outlook?.name,
-          ].filter(Boolean);
-
-          return parts.length > 0 ? (
-            <p className="text-sm text-muted-foreground">{parts.join(' · ')}</p>
-          ) : null;
-        })()}
+        {facts ? <p className="text-sm text-muted-foreground">{facts}</p> : null}
 
         <ExplainMore recommendationId={recommendation.id} />
 
@@ -548,8 +709,7 @@ function CareerCard({ recommendation }: { recommendation: CareerRecommendation }
         </div>
 
         {showPrograms ? <RelatedPrograms careerId={career.id} /> : null}
-      </CardContent>
-    </Card>
+    </RecommendationItem>
   );
 }
 
@@ -621,42 +781,34 @@ function ProgramCard({ recommendation }: { recommendation: ProgramRecommendation
   const { program, college } = recommendation;
 
   return (
-    <Card>
-      <CardHeader className="flex-row items-start justify-between gap-4">
-        <div>
-          {/* `h3`, under the "Programs" section heading — see CareerCard. */}
-          <CardTitle as="h3" className="flex items-center gap-2">
-            {program.name}
-            <Badge>{program.code}</Badge>
-          </CardTitle>
-          {/*
-            §13.6: the college is a real join, not a text match — so it can be named with
-            confidence. "BS Computer Science" without an institution is not an answer to the
-            question the student is actually asking.
-          */}
-          <CardDescription>
-            {college.name}
-            {program.department_name ? ` · ${program.department_name}` : null}
-          </CardDescription>
-        </div>
+    <RecommendationItem
+      title={program.name}
+      badge={<Badge>{program.code}</Badge>}
+      /*
+        §13.6: the college is a real join, not a text match — so it can be named with confidence.
+        "BS Computer Science" without an institution is not an answer to the question the student
+        is actually asking.
+      */
+      peek={[college.name, college.town?.name].filter(Boolean).join(' · ')}
+      score={recommendation.match_score}
+      rank={recommendation.ranking}
+    >
+      {program.department_name ? (
+        <p className="text-sm text-muted-foreground">{program.department_name}</p>
+      ) : null}
 
-        <MatchScore score={recommendation.match_score} rank={recommendation.ranking} />
-      </CardHeader>
+      <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
 
-      <CardContent className="flex flex-col gap-3">
-        <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
+      {program.recommended_strand ? (
+        <p className="text-sm text-muted-foreground">
+          Typically taken by <strong>{program.recommended_strand}</strong> students.
+        </p>
+      ) : null}
 
-        {program.recommended_strand ? (
-          <p className="text-sm text-muted-foreground">
-            Typically taken by <strong>{program.recommended_strand}</strong> students.
-          </p>
-        ) : null}
+      <ExplainMore recommendationId={recommendation.id} />
 
-        <ExplainMore recommendationId={recommendation.id} />
-
-        <CollegesOfferingDisclosure programId={program.id} programName={program.name} />
-      </CardContent>
-    </Card>
+      <CollegesOfferingDisclosure programId={program.id} programName={program.name} />
+    </RecommendationItem>
   );
 }
 

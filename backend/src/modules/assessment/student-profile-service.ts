@@ -7,6 +7,7 @@ import {
   gradeLevels,
   shsStrands,
   studentProfiles,
+  users,
   type GradeLevel,
   type ShsStrand,
   type StudentProfile,
@@ -15,6 +16,22 @@ import {
 import { now } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
 import type { UpdateStudentProfileInput } from '@/modules/assessment/schemas';
+import { AuditService } from '@/modules/platform/audit-service';
+
+const MODULE = 'assessment';
+
+/**
+ * What a save changed about the student's name, or null when it changed nothing.
+ *
+ * Returned rather than acted on here, because the reaction — telling the counselors whose roster
+ * now reads differently — is a notification, and §11's rule is that a notification must never be
+ * able to fail the write it is about. The route dispatches `StudentRenamed` with this.
+ */
+export interface ProfileRename {
+  from: string;
+  to: string;
+  studentId: string;
+}
 
 /**
  * The student profile (FULLPLAN §13.1, §37) — **the input to Part VII.**
@@ -23,10 +40,29 @@ import type { UpdateStudentProfileInput } from '@/modules/assessment/schemas';
  * phase owned them (§57, v1.2). That is the whole reason this exists: it is not a settings screen,
  * it is the other half of the recommendation engine's inputs.
  *
- * `first_name` / `last_name` are **not editable here.** They belong to the counselor's roster
- * (§16) — a student renaming themselves would break the roster the counselor confirmed, and the
- * username derived from it. The Zod schema does not accept them; this is not enforced by
- * omission alone.
+ * ## The student's name is editable here, and their username is not (prompt-driven, 2026-09-20)
+ *
+ * It was not, and the reason given was the roster: a counselor confirmed those sixty names, and a
+ * student changing one would break it. But the roster is where a name is first *typed*, by
+ * somebody reading a class list — which is precisely where misspellings, maiden names and
+ * nicknames come from. The student is the authority on their own name, and it is their name that
+ * `serializeReport` prints onto an exported record which ends up in a guidance file.
+ *
+ * So a rename writes **two tables in one batch**, and both are needed:
+ *
+ *   * `users.name` — what the printable report reads (`AssessmentAttemptService.viewReport`) and
+ *     what the counselor's assigned-students list falls back to.
+ *   * `student_profiles.first_name` / `last_name` — what the class roster reads
+ *     (`ClassEnrollmentService.roster`), which is the screen a counselor actually works from.
+ *
+ * Writing one and not the other is the whole failure mode being guarded against: the roster and
+ * the exported report would disagree about who a student is, and neither would look wrong on its
+ * own. They move together or not at all, which is what `db.batch` is for.
+ *
+ * **`class_students.username` is never touched.** It is the credential the student signs in with
+ * and the one a counselor identifies them by, it is unique per class, and it was derived from the
+ * name at provisioning rather than maintained from it. Re-deriving it on a rename would sign a
+ * student out of an identity they are still holding. The notification says so in as many words.
  *
  * ## Grade level and strand are derived, not entered (migration 0017)
  *
@@ -108,8 +144,17 @@ export class StudentProfileService {
     };
   }
 
-  /** Partial. Every field is optional; an explicit `null` clears it. */
-  async update(student: User, input: UpdateStudentProfileInput): Promise<StudentProfile> {
+  /**
+   * Partial. Every field is optional; an explicit `null` clears it.
+   *
+   * Returns the saved profile and, when the name moved, what it moved from — so the caller can
+   * tell the counselors without this method having to know that notifications exist.
+   */
+  async update(
+    student: User,
+    input: UpdateStudentProfileInput,
+    context: { ipAddress?: string | null } = {},
+  ): Promise<{ profile: StudentProfile; rename: ProfileRename | null }> {
     const profile = await this.forStudent(student);
     const source = await this.derivationSourceFor(student.id);
 
@@ -162,9 +207,55 @@ export class StudentProfileService {
       patch.strand = row?.name ?? null;
     }
 
-    await this.db.update(studentProfiles).set(patch).where(eq(studentProfiles.id, profile.id));
+    // The name — the one part of this method that writes outside `student_profiles`.
+    const rename = this.renameFrom(student, profile, input);
 
-    return this.forStudent(student);
+    if (rename !== null) {
+      patch.firstName = rename.firstName;
+      patch.lastName = rename.lastName;
+    }
+
+    /*
+      One batch, so the roster's copy of the name and the report's copy cannot end up disagreeing.
+      D1 has no interactive transactions; `batch()` runs the statements in one implicit
+      transaction and rolls them back together, which is the whole of what atomicity means here.
+    */
+    const profileWrite = this.db
+      .update(studentProfiles)
+      .set(patch)
+      .where(eq(studentProfiles.id, profile.id));
+
+    if (rename === null) {
+      await profileWrite;
+    } else {
+      await this.db.batch([
+        profileWrite,
+        this.db
+          .update(users)
+          .set({ name: rename.to, updatedAt: now() })
+          .where(eq(users.id, student.id)),
+      ]);
+
+      /*
+        Audited, and this is the one field on this form worth a trail. Everything else a student
+        edits here is their own answer to a question about themselves; a name is the handle other
+        people identify them by, on a roster and on an exported record, so "who changed it, and
+        when" is a question a guidance office eventually asks. Written after the batch — a failed
+        audit row must not undo a save the student already watched succeed.
+      */
+      await new AuditService(this.db).write({
+        action: 'STUDENT_RENAMED_SELF',
+        module: MODULE,
+        userId: student.id,
+        targetType: 'user',
+        targetId: student.id,
+        oldValues: { name: rename.from },
+        newValues: { name: rename.to },
+        ipAddress: context.ipAddress ?? null,
+      });
+    }
+
+    return { profile: await this.forStudent(student), rename };
   }
 
   /**
@@ -229,6 +320,49 @@ export class StudentProfileService {
   }
 
   // --- internals -----------------------------------------------------------------------
+
+  /**
+   * The rename this payload performs, or null.
+   *
+   * Null when the payload names neither field, and also when it names them with the values they
+   * already hold — a student who opens the form, fixes a grade and saves has not renamed
+   * themselves, and firing a notification at their counselor saying otherwise is how a counselor
+   * learns to ignore the ones that mean something.
+   *
+   * An empty `last_name` becomes NULL rather than being stored, which is the normalisation roster
+   * provisioning already applies: `""` and "this person has one name" are different claims, and
+   * only one of them is true (§13.1).
+   */
+  private renameFrom(
+    student: User,
+    profile: StudentProfile,
+    input: UpdateStudentProfileInput,
+  ): (ProfileRename & { firstName: string; lastName: string | null }) | null {
+    if (input.first_name === undefined && input.last_name === undefined) {
+      return null;
+    }
+
+    const firstName = (input.first_name ?? profile.firstName).trim();
+    // `undefined` leaves it alone, `null` and `""` both clear it — the schema allows an explicit
+    // null and the form sends an empty string, and both mean "I have one name".
+    const submitted = input.last_name?.trim() ?? null;
+    const lastName =
+      input.last_name === undefined ? profile.lastName : submitted !== null && submitted.length > 0 ? submitted : null;
+
+    if (firstName === profile.firstName && lastName === profile.lastName) {
+      return null;
+    }
+
+    return {
+      studentId: student.id,
+      // The *display* name on both sides, since that is what the report prints and what a
+      // counselor would see change on their roster.
+      from: student.name,
+      to: [firstName, lastName].filter(Boolean).join(' '),
+      firstName,
+      lastName,
+    };
+  }
 
   /**
    * The class a student's grade level and strand come from: their **most recent active

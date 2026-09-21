@@ -1,5 +1,6 @@
 import type { AuditLog, Notification } from '@/db/schema';
 import { actionTypeOf, type AuditActionType } from '@/modules/platform/audit-service';
+import type { UsageSnapshot } from '@/modules/platform/usage-service';
 
 /**
  * Response shaping for the Platform module (FULLPLAN §17) — allow-lists, never a
@@ -77,5 +78,29 @@ export function serializeAuditLog(
     new_values: log.newValues,
     ip_address: log.ipAddress,
     created_at: log.createdAt,
+  };
+}
+
+/**
+ * The usage snapshot, in the wire shape every other endpoint here uses.
+ *
+ * A serializer rather than snake_case fields on the service, because the service's job is to
+ * measure and this file's job is to name — and `limit_source` travelling to the client is what
+ * lets the screen distinguish a ceiling Cloudflare owns from one this repository chose.
+ */
+export function serializePlatformUsage(snapshot: UsageSnapshot) {
+  return {
+    captured_at: snapshot.capturedAt,
+    resources: snapshot.resources.map((resource) => ({
+      key: resource.key,
+      label: resource.label,
+      unit: resource.unit,
+      used: resource.used,
+      limit: resource.limit,
+      limit_source: resource.limitSource,
+      degrade_at: resource.degradeAt ?? null,
+      detail: resource.detail,
+    })),
+    unmetered: snapshot.unmetered,
   };
 }

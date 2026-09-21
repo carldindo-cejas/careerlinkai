@@ -10,6 +10,7 @@ import {
   RECOMMENDATION_REGENERATE_WINDOW_SECONDS,
   recommendationRegenerateGuard,
 } from '@/lib/auth-guard';
+import { aiVerifierEnabled } from '@/lib/config';
 import { successEnvelope, ApiError } from '@/lib/envelope';
 import { parseBody } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
@@ -29,7 +30,9 @@ import {
   serializeProgram,
 } from '@/modules/catalog/serializers';
 import { RecommendationService } from '@/modules/recommendation/recommendation-service';
+import { serializeBrief } from '@/modules/recommendation/brief-serializer';
 import { serializeRecommendationSet } from '@/modules/recommendation/serializers';
+import { StudentBriefService } from '@/modules/recommendation/student-brief-service';
 import { authorizeStudentRecommendations } from '@/policies/recommendation';
 
 /**
@@ -77,7 +80,16 @@ studentRecommendationRoutes.use('*', ensureRole('student'));
 async function chatServiceForAsync(db: Database, c: Context<AppEnv>): Promise<ChatService> {
   const policy = await new AiPolicyService(db).activeGlobal();
 
-  return new ChatService(db, aiGatewayFrom(db, c.env), retrievalFrom(db, c.env), policy);
+  return new ChatService(
+    db,
+    aiGatewayFrom(db, c.env),
+    retrievalFrom(db, c.env),
+    policy,
+    aiVerifierEnabled(c.env),
+    // The catalog-index cache for Gate 2 (AI-COVERAGE-PLAN.md Phase 2). Optional: absent in the
+    // suite, where every turn builds the index from D1.
+    c.env.KV,
+  );
 }
 
 /**
@@ -324,6 +336,18 @@ studentRecommendationRoutes.get('/programs/:id/colleges', async (c) => {
 // rest of this router — there is no student id in any URL, so none of these can be made to mean
 // somebody else's conversation by editing a parameter.
 
+/**
+ * `GET /student/brief` — what the assistant knows about this student, and questions to start with
+ * (AI-COVERAGE-PLAN.md Phase 4). Scoped by the bearer token; never by a URL id.
+ */
+studentRecommendationRoutes.get('/brief', async (c) => {
+  const brief = await new StudentBriefService(createDatabase(c.env.DB)).briefFor(
+    requireUser(c).id,
+  );
+
+  return c.json(successEnvelope(serializeBrief(brief), 'Student brief retrieved.'));
+});
+
 /** `GET /student/chat` — the transcript, or an empty one. Never a 404: "no messages" is a state. */
 studentRecommendationRoutes.get('/chat', async (c) => {
   const user = requireUser(c);
@@ -382,11 +406,81 @@ studentRecommendationRoutes.post('/chat', async (c) => {
         answer: serializeChatMessage(turn.answer),
         failure: turn.failure,
       },
+      /**
+       * `failure` says which gate answered, not that the service broke, and the envelope message
+       * used to report every one of them as *"The assistant is unavailable right now — your
+       * computed results are shown instead."* Two claims, both usually false: nothing was
+       * unavailable when Gate 0 declined an off-domain question or Gate 2 refused for want of
+       * coverage, and neither reply is built from the student's computed results. The answer body
+       * already explains itself in each case; the message says only which kind of answer it is.
+       *
+       * `null` covers both a grounded generation and a Gate 1 verbatim answer, which is correct —
+       * an admin's own words are an answer, not a degraded one.
+       */
       turn.failure === null
         ? 'Answer generated.'
-        : 'The assistant is unavailable right now — your computed results are shown instead.',
+        : turn.failure.startsWith('OUT_OF_SCOPE_')
+          ? 'That question is outside what this assistant covers.'
+          : turn.failure === 'NO_GROUNDING'
+            ? 'Nothing in the school’s guidance materials covers that question.'
+            : 'The assistant could not answer that — a standard reply was sent instead.',
     ),
     201,
+  );
+});
+
+/**
+ * `POST /student/chat/messages/:id/feedback` — *this answer was wrong* (Phase 4).
+ *
+ * The one signal in this system that leads straight to a fix. The answer's retrieved chunk ids are
+ * already on its `ai_requests` row, so an admin can follow a flag to the passage that produced it
+ * and correct or archive that entry — both one click away since Phase 1 made every entry editable.
+ *
+ * 404 for a message that is not this student's assistant message: an id alone is not authority,
+ * and the same answer for "not yours" and "does not exist" is the same answer this module gives
+ * everywhere else.
+ */
+studentRecommendationRoutes.post('/chat/messages/:id/feedback', async (c) => {
+  const service = await chatServiceForAsync(createDatabase(c.env.DB), c);
+  const flagged = await service.flagAnswer(requireUser(c).id, c.req.param('id'));
+
+  if (!flagged) {
+    throw ApiError.notFound('Message not found.');
+  }
+
+  return c.json(
+    successEnvelope(
+      { message_id: c.req.param('id'), feedback: 'DOWN' },
+      'Thanks — a counselor will review this answer.',
+    ),
+  );
+});
+
+/**
+ * `POST /student/chat/messages/:id/knowledge-request` — *please add this to the knowledge base*
+ * (migration 0030).
+ *
+ * The other half of the honest refusal. When nothing covers a question the student is told so and
+ * pointed at their counselor, and the question is logged as a gap — but until now that logging was
+ * invisible to the person who asked, who had no way to say "yes, this one matters to me".
+ *
+ * Offered only on an answer the service marked `OFFERED`, which is only ever a no-coverage refusal.
+ * 404 for anything else, for the same reason every other message route here does: an id alone is
+ * not authority, and "not yours", "not real" and "not a refusal" get one answer.
+ */
+studentRecommendationRoutes.post('/chat/messages/:id/knowledge-request', async (c) => {
+  const service = await chatServiceForAsync(createDatabase(c.env.DB), c);
+  const requested = await service.requestKnowledge(requireUser(c).id, c.req.param('id'));
+
+  if (!requested) {
+    throw ApiError.notFound('Message not found.');
+  }
+
+  return c.json(
+    successEnvelope(
+      { message_id: c.req.param('id'), knowledge_request: 'REQUESTED' },
+      'Thanks — your school has been asked to answer this.',
+    ),
   );
 });
 

@@ -1,14 +1,18 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/components/ui/cn';
+import { Pagination } from '@/components/ui/pagination';
 import {
   useAssignments,
   useProfile,
   useStartAttempt,
 } from '@/features/student/hooks/useAssessment';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import { paths, playerPath, resultPath, type ResultPageState } from '@/routes/paths';
 import type { AssessmentAssignment } from '@/types/assessment';
 
@@ -17,13 +21,47 @@ import type { AssessmentAssignment } from '@/types/assessment';
  * counselor-assigned custom assessments together"*).
  *
  * One list, not three. A student does not think in instrument categories; they think "what do I
- * have to do".
+ * have to do". The All / Assigned / Done switch narrows that one list by the student's own
+ * progress, and it is paged five at a time.
  */
+
+const PER_PAGE = 5;
+
+type AssignmentFilter = 'all' | 'assigned' | 'done';
+
+const FILTERS: { value: AssignmentFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'assigned', label: 'Assigned' },
+  { value: 'done', label: 'Done' },
+];
+
+function isDone(assignment: AssessmentAssignment): boolean {
+  return assignment.my_attempt?.status === 'SCORED';
+}
+
+/** "Assigned" is what is still to do — not started, or started and not finished. */
+function matches(assignment: AssessmentAssignment, filter: AssignmentFilter): boolean {
+  if (filter === 'all') return true;
+
+  return filter === 'done' ? isDone(assignment) : !isDone(assignment);
+}
+
 export function AssessmentListPage() {
   const { data: assignments, isLoading, isError, error } = useAssignments();
   const { data: profile } = useProfile();
   const start = useStartAttempt();
   const navigate = useNavigate();
+  const [filter, setFilter] = useState<AssignmentFilter>('all');
+
+  const all = assignments ?? [];
+  const shown = all.filter((assignment) => matches(assignment, filter));
+  const counts: Record<AssignmentFilter, number> = {
+    all: all.length,
+    assigned: all.filter((assignment) => !isDone(assignment)).length,
+    done: all.filter(isDone).length,
+  };
+
+  const { pageItems, pagination, setPage } = useClientPagination(shown, PER_PAGE);
 
   if (isLoading) {
     return (
@@ -65,7 +103,7 @@ export function AssessmentListPage() {
           .{' '}
           <button
             type="button"
-            className="font-medium underline"
+            className="inline-flex min-h-11 items-center font-medium underline sm:min-h-0"
             onClick={() => navigate(paths.studentProfile)}
           >
             Complete your profile
@@ -97,8 +135,29 @@ export function AssessmentListPage() {
         </Card>
       ) : null}
 
-      <div className="flex flex-col gap-4">
-        {(assignments ?? []).map((assignment) => (
+      {all.length > 0 ? (
+        <FilterSwitch
+          value={filter}
+          counts={counts}
+          onChange={(next) => {
+            setFilter(next);
+            setPage(1);
+          }}
+        />
+      ) : null}
+
+      {all.length > 0 && shown.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {filter === 'done'
+            ? 'You have not finished any assessments yet.'
+            : 'You are all caught up — nothing left to answer.'}
+        </p>
+      ) : null}
+
+      {/* The tour points here. With nothing assigned this div has no height, the overlay reads it
+          as absent, and the card falls back to saying so — which is the truth of the screen. */}
+      <div data-tour="assessment-list" className="flex flex-col gap-4">
+        {pageItems.map((assignment) => (
           <AssignmentCard
             key={assignment.id}
             assignment={assignment}
@@ -120,6 +179,57 @@ export function AssessmentListPage() {
           />
         ))}
       </div>
+
+      <Pagination pagination={pagination} onPageChange={setPage} noun="assessments" />
+    </div>
+  );
+}
+
+/** All | Assigned | Done — toggle buttons, as on the recommendations page's Careers | Programs. */
+function FilterSwitch({
+  value,
+  counts,
+  onChange,
+}: {
+  value: AssignmentFilter;
+  counts: Record<AssignmentFilter, number>;
+  onChange: (value: AssignmentFilter) => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="Filter assessments"
+      className="inline-flex w-fit border border-border"
+    >
+      {FILTERS.map(({ value: option, label }, index) => {
+        const active = value === option;
+
+        return (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option)}
+            className={cn(
+              // 40px is under the 44px touch floor, and these three are the first thing a student
+              // taps on this screen. Raised below `sm` only, like the Button primitive.
+              'inline-flex h-11 items-center gap-2 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:h-10',
+              index > 0 && 'border-l border-border',
+              active ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-secondary',
+            )}
+          >
+            {label}{' '}
+            <span
+              className={cn(
+                'font-mono text-xs tabular-nums',
+                active ? 'text-primary-foreground/80' : 'text-muted-foreground',
+              )}
+            >
+              {counts[option]}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

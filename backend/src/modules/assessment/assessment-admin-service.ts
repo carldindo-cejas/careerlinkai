@@ -22,6 +22,7 @@ import {
   assessmentTemplates,
   assessmentTypes,
   assessmentVersions,
+  users,
   type AssessmentScoring,
   type AssessmentTemplate,
   type AssessmentType,
@@ -35,6 +36,7 @@ import {
 } from '@/modules/assessment/assessment-builder-service';
 import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
 import type { ListAssessmentsQuery } from '@/modules/assessment/schemas';
+import { canCopyTemplate, canManageTemplate } from '@/policies/assessment';
 
 /**
  * The administrator's assessment list (prompt-driven, v1.5) — one searchable, sortable, filterable,
@@ -61,6 +63,21 @@ export interface AssignmentSummary {
   classCount: number;
 }
 
+/**
+ * Who authored an instrument, resolved for display (prompt §1).
+ *
+ * `ownership` + `creator_id` is the author relationship this schema has always carried; this is the
+ * creator's *name*, which the table needs so an administrator looking at six copies of RIASEC can
+ * see whose each one is. Nullable only because `creator_id` could name a user row that has since
+ * been removed — the template survives a deleted account, and a row with no author is more honest
+ * than a row claiming one.
+ */
+export interface AssessmentAuthor {
+  id: string;
+  name: string;
+  role: string;
+}
+
 export interface AssessmentListRow {
   template: AssessmentTemplate;
   type: AssessmentType | null;
@@ -78,6 +95,18 @@ export interface AssessmentListRow {
    * that asked the server about itself would be one request per row.
    */
   deletability: Deletability;
+  /** The creator, for the Owner column. See `AssessmentAuthor`. */
+  author: AssessmentAuthor | null;
+  /**
+   * **What this caller may do with this row**, decided on the server (prompt §1, §5).
+   *
+   * These used to be inferred client-side from `ownership !== 'GLOBAL'`, which happened to agree
+   * with the server only because a counselor's list contains nothing else. It is the same rule
+   * written in two places, and the copy that cannot be enforced is the one that drifts — so the
+   * server answers it, from the same policy functions the write endpoints call.
+   */
+  canManage: boolean;
+  canCopy: boolean;
 }
 
 /**
@@ -146,13 +175,19 @@ export class AssessmentAdminService {
     const templateIds = page.map((row) => row.template.id);
 
     // The grouped lookups. Each is one query for the whole page, whatever the page size.
-    const [versionsByTemplate, scoringsByTemplate, assignmentByTemplate, deletabilityByTemplate] =
-      await Promise.all([
-        this.versionsFor(templateIds),
-        this.taxonomy.scoringsForTemplates(templateIds),
-        this.assignmentSummaryFor(templateIds),
-        this.builder.deletabilityFor(templateIds),
-      ]);
+    const [
+      versionsByTemplate,
+      scoringsByTemplate,
+      assignmentByTemplate,
+      deletabilityByTemplate,
+      authorById,
+    ] = await Promise.all([
+      this.versionsFor(templateIds),
+      this.taxonomy.scoringsForTemplates(templateIds),
+      this.assignmentSummaryFor(templateIds),
+      this.builder.deletabilityFor(templateIds),
+      this.authorsFor(page.map((row) => row.template.creatorId)),
+    ]);
 
     const publishedVersionIds = templateIds
       .map((id) => newestPublished(versionsByTemplate.get(id) ?? []))
@@ -182,6 +217,9 @@ export class AssessmentAdminService {
           attemptCount: 0,
           activeAssignmentCount: 0,
         },
+        author: authorById.get(row.template.creatorId) ?? null,
+        canManage: canManageTemplate(user, row.template),
+        canCopy: canCopyTemplate(user, row.template),
       };
     });
 
@@ -192,7 +230,7 @@ export class AssessmentAdminService {
    * One assessment's list row — the same shape the table renders, so the edit dialog and the
    * post-save refresh read one contract rather than two.
    */
-  async row(template: AssessmentTemplate): Promise<AssessmentListRow> {
+  async row(user: User, template: AssessmentTemplate): Promise<AssessmentListRow> {
     const versions = (await this.versionsFor([template.id])).get(template.id) ?? [];
     const publishedVersion = newestPublished(versions);
     const type =
@@ -215,7 +253,31 @@ export class AssessmentAdminService {
         classCount: 0,
       },
       deletability: await this.builder.deletability(template.id),
+      author: (await this.authorsFor([template.creatorId])).get(template.creatorId) ?? null,
+      canManage: canManageTemplate(user, template),
+      canCopy: canCopyTemplate(user, template),
     };
+  }
+
+  /** Every creator on the page, in one query. Ids repeat across rows, so they are deduped first. */
+  private async authorsFor(creatorIds: string[]): Promise<Map<string, AssessmentAuthor>> {
+    const byId = new Map<string, AssessmentAuthor>();
+    const unique = [...new Set(creatorIds)];
+
+    if (unique.length === 0) {
+      return byId;
+    }
+
+    const rows = await this.db
+      .select({ id: users.id, name: users.name, role: users.role })
+      .from(users)
+      .where(inArray(users.id, unique));
+
+    for (const row of rows) {
+      byId.set(row.id, { id: row.id, name: row.name, role: row.role });
+    }
+
+    return byId;
   }
 
   // --- Filters, sorting ------------------------------------------------------------------------

@@ -175,7 +175,9 @@ describe('answering', () => {
       body: { question_id: question.id, selected_option_id: question.options[4].id },
     });
 
-    const reloaded = await api('GET', `/student/attempts/${attempt.id}`, { token: studentToken });
+    const reloaded = await api('GET', `/student/attempts/${attempt.id}`, {
+      token: studentToken,
+    });
 
     const answers = reloaded.body.data.answers.filter(
       (a: any) => a.question_id === question.id,
@@ -303,7 +305,7 @@ describe('submitting', () => {
     const investigative = result.dimensions.find((d: any) => d.code === 'I');
 
     expect(investigative.normalized_score).toBe('100.00');
-    expect(investigative.interpretation).toBe('High Interest');
+    expect(investigative.interpretation).toBe('Very High Interest');
     expect(investigative.name).toBe('Investigative');
   });
 
@@ -316,7 +318,9 @@ describe('submitting', () => {
     });
 
     await answerAll(studentToken, started.body.data, () => 4);
-    await api('POST', `/student/attempts/${started.body.data.id}/submit`, { token: studentToken });
+    await api('POST', `/student/attempts/${started.body.data.id}/submit`, {
+      token: studentToken,
+    });
 
     const second = await api('POST', `/student/attempts/${started.body.data.id}/submit`, {
       token: studentToken,
@@ -343,8 +347,44 @@ describe('submitting', () => {
     const result = response.body.data.result;
 
     expect(result.result_code).toBeNull();
-    expect(result.overall_summary).toBe('High Career Confidence.');
+    expect(result.overall_summary).toBe('Very High Career Confidence.');
     expect(result.overall_summary).not.toMatch(/\d/);
+  });
+
+  /**
+   * §55, on the screen a student actually reads. SCCT's three dimensions were seeded with the
+   * RIASEC interest bands, so the live site told a student *"Self-Efficacy 78 · High Interest"*
+   * directly under the words "Moderately High Career Confidence." Interest is what the other
+   * instrument measures; there is no such thing as a high or low interest in your own
+   * self-efficacy.
+   *
+   * Asserted on the *labels* rather than only on the cut points, because the cut points were never
+   * the bug — the two instruments were reading off scales that happened to share numbers, and the
+   * only visible difference was the noun.
+   */
+  it('bands each SCCT dimension as confidence — never as an interest (§55)', async () => {
+    const { classRoom, studentToken } = await classWithStudent(counselorToken);
+    const assignment = await assignVersion(counselorToken, classRoom.id, scctVersionId);
+
+    const started = await api('POST', `/student/assignments/${assignment.id}/start`, {
+      token: studentToken,
+    });
+
+    await answerAll(studentToken, started.body.data, () => 4); // Every item "Strongly Agree".
+
+    const response = await api('POST', `/student/attempts/${started.body.data.id}/submit`, {
+      token: studentToken,
+    });
+
+    const dimensions = response.body.data.dimensions;
+
+    expect(dimensions.map((d: any) => d.code).sort()).toEqual(['GO', 'OE', 'SE']);
+
+    for (const dimension of dimensions) {
+      expect(dimension.normalized_score).toBe('100.00');
+      expect(dimension.interpretation).toBe('Very High Confidence');
+      expect(dimension.interpretation).not.toMatch(/Interest/);
+    }
   });
 });
 

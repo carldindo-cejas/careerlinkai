@@ -491,8 +491,9 @@ describe('the remaining §44 listeners', () => {
     await database.insert(knowledgeDocuments).values({
       id: documentId,
       uploadedBy: admin.id,
+      title: 'career-guide.pdf',
       fileName: 'career-guide.pdf',
-      fileType: 'pdf',
+      sourceType: 'pdf',
       storagePath: `knowledge/${documentId}/career-guide.pdf`,
       processingStatus: 'UPLOADED',
       visibility: 'GLOBAL',
@@ -540,5 +541,95 @@ describe('the remaining §44 listeners', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.category).toBe('ACCOUNT');
     expect(rows[0]!.message).toBe('career-guide.pdf is now available to the AI assistant.');
+  });
+});
+
+/**
+ * A student renaming themselves on their own profile (prompt-driven, 2026-09-20).
+ *
+ * Driven through the **HTTP endpoint** rather than by calling the listener directly, because the
+ * thing worth pinning is the whole path: a PATCH that changes a name has to reach a counselor's
+ * bell, and a PATCH that changes a grade has to not. Calling `notifyStudentRenamed` by hand would
+ * test the message and skip the decision.
+ */
+describe('a student changes their own name', () => {
+  it("reaches the counselor's bell, naming both names and the unchanged username", async () => {
+    const counselor = await createStaffUser({ role: 'counselor' });
+    const token = await login(counselor);
+    const { classRoom, student, studentToken } = await classWithStudent(token, 'Juan Dela Cruz');
+
+    const response = await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Juana', last_name: 'Dela Cruz-Santos' },
+    });
+
+    expect(response.status).toBe(200);
+
+    const rows = await notificationsFor(counselor.id);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.category).toBe('CLASS');
+    expect(rows[0]!.title).toBe('A student changed their name');
+    // The old name first — it is the handle the counselor has been using all term, and without
+    // it they cannot find the row that changed.
+    expect(rows[0]!.message).toContain('Juan Dela Cruz is now Juana Dela Cruz-Santos');
+    expect(rows[0]!.message).toContain(classRoom.name);
+    // The sentence that stops a support request.
+    expect(rows[0]!.message).toContain(`Their username (${student.username}) has not changed`);
+  });
+
+  it('says nothing when the save did not move the name', async () => {
+    const counselor = await createStaffUser({ role: 'counselor' });
+    const token = await login(counselor);
+    const { studentToken } = await classWithStudent(token, 'Juan Dela Cruz');
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Juan', last_name: 'Dela Cruz', math_grade: 91 },
+    });
+
+    expect(await notificationsFor(counselor.id)).toHaveLength(0);
+  });
+
+  /** The student is the one who did it — they do not need telling, and their bell is not a log. */
+  it('does not notify the student about their own edit', async () => {
+    const counselor = await createStaffUser({ role: 'counselor' });
+    const token = await login(counselor);
+    const { student, studentToken } = await classWithStudent(token, 'Juan Dela Cruz');
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Juana' },
+    });
+
+    expect(await notificationsFor(student.student_id)).toHaveLength(0);
+  });
+
+  /**
+   * One counselor, one notification, however many of their classes the student is on. The bell is
+   * the one surface where noise costs the next real message its attention.
+   */
+  it('tells a counselor once even when they teach the student twice', async () => {
+    const counselor = await createStaffUser({ role: 'counselor' });
+    const token = await login(counselor);
+    const { student, studentToken } = await classWithStudent(token, 'Juan Dela Cruz');
+
+    // A second class of the same counselor's, holding the same student.
+    const second = await createClass(token);
+    await api('POST', `/counselor/classes/${second.id}/students/confirm`, {
+      token,
+      body: {
+        students: [
+          { first_name: 'Juan', last_name: 'Dela Cruz', username: `${student.username}.b` },
+        ],
+      },
+    });
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Juana' },
+    });
+
+    expect(await notificationsFor(counselor.id)).toHaveLength(1);
   });
 });

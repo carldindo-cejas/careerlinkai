@@ -48,6 +48,17 @@ FRONTEND_URL = "http://localhost:5173"
 EMAIL_FROM = "no-reply@careerlinkai.online"
 WORKERS_AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"
 WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+WORKERS_AI_RERANK_MODEL = "@cf/baai/bge-reranker-base"
+# AiNormalisation D2: the retrieval similarity floor. BGE-base scores a genuinely relevant
+# short-query/long-passage pair at 0.55-0.72, so the previous 0.75 rejected correct matches
+# routinely and NO_GROUNDING was the normal outcome. A var, not a constant, because it is the one
+# retrieval number that can only be set correctly by measuring against a live corpus - and the
+# corpus changes without a deploy. The reranker is what makes a floor this low safe.
+RETRIEVAL_SIMILARITY_THRESHOLD = "0.55"
+AI_VERIFIER_ENABLED = "false"
+# Empty until an AI Gateway is created in the Cloudflare dashboard. Naming one that does not
+# exist would fail every model call, so the default is off rather than aspirational.
+AI_GATEWAY_ID = ""
 STUDENT_JOIN_CODE_TTL_DAYS = "90"
 STUDENT_TOKEN_TTL_HOURS = "12"
 STAFF_TOKEN_TTL_HOURS = "168"

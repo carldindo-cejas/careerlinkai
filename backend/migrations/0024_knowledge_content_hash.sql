@@ -1,0 +1,21 @@
+-- Migration 0024 — Make "has this entry changed?" free (AiNormalisation Phase 1 defect, 2026-09-04)
+--
+-- The catalog sync decided whether an entry needed rewriting by **reading its text back from R2**
+-- and comparing. That is one R2 get per career and per program, on every run, and every binding
+-- call is a subrequest against the Free plan's ceiling of 50 per invocation (§45) — the same
+-- ceiling the §33 embedding batcher exists to respect.
+--
+-- Seed 0004 alone puts 68 careers in the catalog. So the first press of "Sync catalog knowledge"
+-- would have spent 68 subrequests before writing anything, and the nightly cron would have
+-- breached the limit every night *even when nothing had changed* — the case that is supposed to
+-- cost nothing at all.
+--
+-- A hash of the composed text, stored on the row, moves that comparison into the single D1 query
+-- that lists the entries. Unchanged entries then cost **zero** subrequests, which is what makes a
+-- nightly full-catalog sync affordable, and R2 is touched only for an entry that genuinely needs
+-- rewriting.
+--
+-- Nullable, and NULL means "unknown": an entry written before this column existed compares unequal
+-- to any hash and is rewritten once, which is the correct conservative answer.
+
+ALTER TABLE knowledge_documents ADD COLUMN content_hash TEXT;

@@ -5,6 +5,7 @@ import type {
   AssessmentFormPayload,
   AssessmentListQuery,
   AssignPayload,
+  PresentationMode,
 } from '@/types/assessmentAdmin';
 
 /**
@@ -122,6 +123,45 @@ export function useDeleteAssessment() {
 
   return useMutation({
     mutationFn: (id: string) => assessmentAdminApi.remove(id),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * **Copy an instrument into one you own** (backend 0037).
+ *
+ * The new template appears in the list, so the whole branch is invalidated like any create. The
+ * caller navigates to the copy's builder page on success — a copy nobody can find is a copy nobody
+ * made.
+ */
+export function useCopyAssessment() {
+  const invalidate = useInvalidateList();
+
+  return useMutation({
+    mutationFn: (id: string) => assessmentAdminApi.copy(id),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Sequential ↔ random, from the table row.
+ *
+ * **No optimistic update.** The select reflects the server's answer once it lands, which is a
+ * fraction of a second later and is the honest thing to show for a setting that decides what
+ * students see: an optimistic flip that then failed would leave the row claiming a mode the server
+ * does not hold, and nothing on screen would say so. The row dims via `isFetching` meanwhile.
+ */
+export interface SetPresentationModeArgs {
+  id: string;
+  mode: PresentationMode;
+}
+
+export function useSetPresentationMode() {
+  const invalidate = useInvalidateList();
+
+  return useMutation({
+    mutationFn: ({ id, mode }: SetPresentationModeArgs) =>
+      assessmentAdminApi.setPresentationMode(id, mode),
     onSuccess: invalidate,
   });
 }

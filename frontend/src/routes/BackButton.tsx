@@ -51,7 +51,11 @@ export function BackButton({ className, tone = 'default' }: BackButtonProps) {
       <Link
         to={target.to}
         className={cn(
-          'inline-flex w-fit items-center gap-1.5 rounded-none text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+          // `min-h-11` below `sm`: this is a 20px-tall text link, and it is the way back out of
+          // every detail page in the product — the one control a phone user reaches for most and
+          // the one hardest to hit. The negative margin keeps the extra height from pushing the
+          // page down; the target grows, the layout does not move.
+          'inline-flex min-h-11 w-fit items-center gap-1.5 rounded-none text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:min-h-0',
           tone === 'inverted'
             ? 'text-sidebar-muted hover:text-sidebar-active-foreground'
             : 'text-muted-foreground hover:text-foreground',

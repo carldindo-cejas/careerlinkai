@@ -33,6 +33,9 @@ function enrolled(username: string): RosterEntry {
     removed_at: null,
     first_name: 'Juan',
     last_name: 'Dela Cruz',
+    assessments_assigned: 0,
+    assessments_completed: 0,
+    assessments_in_progress: 0,
   };
 }
 

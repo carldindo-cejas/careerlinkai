@@ -13,4 +13,5 @@ export { AssessmentListPage } from '@/features/student/pages/AssessmentListPage'
 export { AssessmentPlayerPage } from '@/features/student/pages/AssessmentPlayerPage';
 export { ResultListPage } from '@/features/student/pages/ResultListPage';
 export { ResultPage } from '@/features/student/pages/ResultPage';
+// ResultReportPage is `groups/reports` — the print sheet is not part of every student screen.
 export { RecommendationPage } from '@/features/student/pages/RecommendationPage';

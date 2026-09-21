@@ -58,6 +58,16 @@ export interface RosterEntry {
   first_name: string | null;
   /** Null for a mononym — a student with one name (§13.1, v1.2). */
   last_name: string | null;
+  /**
+   * The class's assessment count — the same number for every row, since an assignment is made to
+   * the class, not to a student. It grows the moment another assessment is assigned, which is why
+   * the roster cache is invalidated by the assign and close mutations.
+   */
+  assessments_assigned: number;
+  /** Submitted or scored. A reset attempt stops counting (§21). */
+  assessments_completed: number;
+  /** Started, not finished — the difference between "untouched" and "part-way through". */
+  assessments_in_progress: number;
 }
 
 /**

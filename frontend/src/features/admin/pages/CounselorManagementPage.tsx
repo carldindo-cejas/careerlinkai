@@ -8,11 +8,13 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Pagination } from '@/components/ui/pagination';
 import {
+  useAppSettings,
   useCounselors,
   useCreateCounselor,
-  useDeleteCounselor,
   useResetCounselorPassword,
+  useUpdateAppSettings,
   useUpdateCounselor,
 } from '@/features/admin/hooks/usePlatformAdmin';
 import { counselorDetailPath } from '@/routes/paths';
@@ -54,6 +56,8 @@ export function CounselorManagementPage() {
           {showCreate ? 'Close' : 'Add a counselor'}
         </Button>
       </div>
+
+      <SelfSignupCard />
 
       {issued ? (
         <Alert tone="warning">
@@ -152,33 +156,75 @@ export function CounselorManagementPage() {
         />
       ))}
 
-      {data && data.pagination.last_page > 1 ? (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Page {data.pagination.current_page} of {data.pagination.last_page} ·{' '}
-            {data.pagination.total} counselors
-          </p>
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={page <= 1 || isFetching}
-              onClick={() => setPage((value) => value - 1)}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={page >= data.pagination.last_page || isFetching}
-              onClick={() => setPage((value) => value + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+      {data ? (
+        <Pagination
+          pagination={data.pagination}
+          onPageChange={setPage}
+          noun="counselors"
+          isFetching={isFetching}
+        />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The counselor self-signup switch (migration 0034).
+ *
+ * It sits at the top of this page rather than on a settings screen of its own because this is the
+ * page somebody is already looking at when the question arises — "how do counselors get accounts?"
+ * — and a control filed one navigation away from its subject is a control nobody finds in a hurry.
+ *
+ * Stated in terms of what turning it off **does**, not what the flag is called. The one thing an
+ * administrator needs to know at the moment they reach for this is that it is instant and that
+ * existing counselors are unaffected; a label reading "counselor_signup_enabled" answers neither.
+ */
+function SelfSignupCard() {
+  const settings = useAppSettings();
+  const update = useUpdateAppSettings();
+
+  const open = settings.data?.counselor_signup_enabled ?? false;
+
+  return (
+    <Card>
+      <CardContent className="flex flex-wrap items-start justify-between gap-4 p-5">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-foreground">Counselor self-sign-up</p>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {open
+              ? 'Counselors can register themselves at /signup and verify their email with a code. They become active as soon as they verify.'
+              : 'Registration is closed. Only you can create counselor accounts, using the button above.'}
+          </p>
+          {/*
+            The reason this switch exists, said once where the decision is made. It is the honest
+            trade: an open form is a lever anybody on the internet can pull against a mail allowance
+            and an account type that reads student results.
+          */}
+          <p className="mt-1 text-xs text-muted-foreground">
+            Turning it off takes effect immediately, including for anyone part-way through signing
+            up. Existing counselors are unaffected.
+          </p>
+          {update.isError ? (
+            <p className="mt-2 text-sm text-destructive">
+              {update.error?.message ?? 'The setting could not be changed.'}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-3">
+          <Badge tone={open ? 'success' : 'neutral'}>{open ? 'Open' : 'Closed'}</Badge>
+          <Button
+            variant={open ? 'secondary' : 'primary'}
+            size="sm"
+            loading={update.isPending}
+            disabled={settings.isLoading}
+            onClick={() => update.mutate({ counselor_signup_enabled: !open })}
+          >
+            {open ? 'Close sign-up' : 'Open sign-up'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -316,19 +362,10 @@ function CounselorRow({
   onIssued: (email: string, temporaryPassword: string) => void;
 }) {
   const update = useUpdateCounselor();
-  const remove = useDeleteCounselor();
   const resetPassword = useResetCounselorPassword();
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
 
   const suspended = counselor.status === 'suspended';
-
-  /**
-   * The F5 refusal, distinguished from every other failure because it is the only one with
-   * something for the admin to *do*. The server keys it under `classes` and includes the count.
-   */
-  const blockedByClasses =
-    remove.error instanceof ApiRequestError ? remove.error.fieldError('classes') : undefined;
 
   /**
    * Reset this counselor's password (audit C2).
@@ -357,7 +394,7 @@ function CounselorRow({
         {/*
           The row is clickable: it opens the counselor detail page — their assigned students, each
           with a Holland Code and top recommendations. The action buttons sit outside this link, so
-          "Suspend"/"Remove" never also navigate.
+          "Suspend" and "Reset password" never also navigate.
         */}
         <Link
           to={counselorDetailPath(counselor.id)}
@@ -442,45 +479,19 @@ function CounselorRow({
             </Button>
           )}
 
-          {confirmingDelete ? (
-            <>
-              <Button
-                variant="danger"
-                size="sm"
-                loading={remove.isPending}
-                onClick={() => remove.mutate(counselor.id)}
-              >
-                Confirm removal
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(false)}>
-                Keep
-              </Button>
-            </>
-          ) : (
-            <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(true)}>
-              Remove
-            </Button>
-          )}
+          {/*
+            **There is no Remove here, deliberately.** `DELETE /admin/counselors/{id}` still exists
+            and still refuses a counselor who holds classes (audit F5), but deleting a staff account
+            is not an act this list should offer: Suspend already covers every real case — it ends
+            every session and refuses every login — while leaving the account's audit history
+            attached to a row that still resolves to a name. A one-click removal from a dense list
+            is how that history gets orphaned.
+          */}
         </div>
 
-        {/*
-          **Removal is refused while the counselor still holds classes** (audit F5, plan P3-6), and
-          a refusal has to carry its remedy or it is just a dead end with better wording. The
-          server's field error names the count; the link goes to the one screen that can move them.
-        */}
-        {blockedByClasses ? (
-          <div className="w-full text-sm text-destructive">
-            <p>{blockedByClasses}</p>
-            <Link
-              to={counselorDetailPath(counselor.id)}
-              className="mt-1 inline-block font-medium underline"
-            >
-              Reassign their classes
-            </Link>
-          </div>
-        ) : update.isError || remove.isError ? (
+        {update.isError ? (
           <p className="w-full text-sm text-destructive">
-            {(update.error ?? remove.error)?.message ?? 'The change failed.'}
+            {update.error?.message ?? 'The change failed.'}
           </p>
         ) : null}
       </CardContent>

@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { cn } from '@/components/ui/cn';
 import { classApi } from '@/services/classApi';
+import { useAuthStore } from '@/stores/authStore';
 import { toast } from '@/stores/toastStore';
 import { ApiRequestError } from '@/types/api';
 import type { AssessmentRow, AssignPayload, AssignResult } from '@/types/assessmentAdmin';
@@ -26,6 +27,15 @@ import type { AssessmentRow, AssignPayload, AssignResult } from '@/types/assessm
  * It is safe to run twice: the server skips a class that already holds this version, so re-assigning
  * globally after new classes are created is a top-up rather than a pile of duplicates. The result
  * message reports both numbers.
+ *
+ * **Global is offered to administrators only** (prompt §2). The reason is not seniority: a GLOBAL
+ * assignment is a *standing instruction*, replayed onto every class created or reactivated
+ * afterwards — including classes belonging to counselors who do not exist yet — so a counselor
+ * writing one would be handing their own private instrument to strangers' future classes,
+ * permanently. The server refuses it with a 403 (`canAssignGlobally`); this is why the control is
+ * not here to press. Removing the choice rather than disabling it is deliberate: a disabled radio
+ * with a tooltip invites the reading "ask an admin to turn this on for me", and there is nothing to
+ * turn on.
  */
 
 interface AssessmentAssignDialogProps {
@@ -42,7 +52,13 @@ export function AssessmentAssignDialog({
   onAssign,
   isAssigning,
 }: AssessmentAssignDialogProps) {
-  const [scope, setScope] = useState<'GLOBAL' | 'CLASS'>('GLOBAL');
+  /**
+   * A counselor has exactly one scope available, so the picker starts — and stays — on it. An admin
+   * keeps `GLOBAL` as the default, which is what the single Assign button on a table row means when
+   * an administrator presses it.
+   */
+  const canAssignGlobally = useAuthStore((state) => state.user?.role) === 'admin';
+  const [scope, setScope] = useState<'GLOBAL' | 'CLASS'>(canAssignGlobally ? 'GLOBAL' : 'CLASS');
   const [selected, setSelected] = useState<string[]>([]);
   const [versionId, setVersionId] = useState<string>('');
   const [deadline, setDeadline] = useState('');
@@ -64,14 +80,14 @@ export function AssessmentAssignDialog({
   useEffect(() => {
     if (row === null) return;
 
-    setScope('GLOBAL');
+    setScope(canAssignGlobally ? 'GLOBAL' : 'CLASS');
     setSelected([]);
     setDeadline('');
     setSearch('');
     setProblem(null);
     // Defaults to the newest published version, which is what the server would have chosen anyway.
     setVersionId(row.published_version?.id ?? '');
-  }, [row]);
+  }, [row, canAssignGlobally]);
 
   /** Only `active` classes can be assigned to — a draft accepts no joins, an archived one is done. */
   const assignable = useMemo(
@@ -163,7 +179,7 @@ export function AssessmentAssignDialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
         <DialogPrimitive.Content
-          className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-y-auto border border-border bg-background p-6 text-foreground shadow-lg outline-none"
+          className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-y-auto border border-border bg-background p-4 text-foreground shadow-lg outline-none sm:p-6"
           aria-describedby={undefined}
         >
           <DialogPrimitive.Title className="text-lg font-semibold">
@@ -175,24 +191,39 @@ export function AssessmentAssignDialog({
           </p>
 
           <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4" noValidate>
-            <fieldset className="flex flex-col gap-2">
-              <legend className="mb-2 text-sm font-medium">Who gets it</legend>
+            {/*
+              A counselor has one scope, so there is no choice to present — and a fieldset with one
+              radio in it is a worse way of saying that than a sentence. The classes below are
+              already only the ones they may manage (the server filters, and refuses the rest).
+            */}
+            {canAssignGlobally ? (
+              <fieldset className="flex flex-col gap-2">
+                <legend className="mb-2 text-sm font-medium">Who gets it</legend>
 
-              <ScopeChoice
-                checked={scope === 'GLOBAL'}
-                onSelect={() => setScope('GLOBAL')}
-                icon={<Globe className="size-4" aria-hidden="true" />}
-                title="Globally"
-                description={`Every active class — ${assignable.length} right now. Classes created later can be topped up by assigning again.`}
-              />
-              <ScopeChoice
-                checked={scope === 'CLASS'}
-                onSelect={() => setScope('CLASS')}
-                icon={<Users className="size-4" aria-hidden="true" />}
-                title="Specific classes"
-                description="Only the classes you pick below."
-              />
-            </fieldset>
+                <ScopeChoice
+                  checked={scope === 'GLOBAL'}
+                  onSelect={() => setScope('GLOBAL')}
+                  icon={<Globe className="size-4" aria-hidden="true" />}
+                  title="Globally"
+                  description={`Every active class — ${assignable.length} right now. Classes created later can be topped up by assigning again.`}
+                />
+                <ScopeChoice
+                  checked={scope === 'CLASS'}
+                  onSelect={() => setScope('CLASS')}
+                  icon={<Users className="size-4" aria-hidden="true" />}
+                  title="Specific classes"
+                  description="Only the classes you pick below."
+                />
+              </fieldset>
+            ) : (
+              <p className="flex items-start gap-2 border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                <Users className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                <span>
+                  You can assign this to your own classes. Assigning to every class in the school is
+                  an administrator action.
+                </span>
+              </p>
+            )}
 
             {scope === 'CLASS' ? (
               <div className="flex flex-col gap-2">
@@ -298,12 +329,19 @@ export function AssessmentAssignDialog({
 
             {problem ? <Alert>{problem}</Alert> : null}
 
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={onClose} disabled={isAssigning}>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="secondary"
+                className="min-h-11 w-full sm:w-auto"
+                onClick={onClose}
+                disabled={isAssigning}
+              >
                 Cancel
               </Button>
               <Button
                 type="submit"
+                className="min-h-11 w-full sm:w-auto"
                 loading={isAssigning}
                 disabled={row?.published_version === null}
               >

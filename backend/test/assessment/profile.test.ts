@@ -1,11 +1,13 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  allAuditRows,
   api,
   classWithStudent,
   createClass,
   createStaffUser,
   enrolStudents,
+  findUser,
   joinClass,
   login,
   profileLookups,
@@ -25,6 +27,9 @@ import {
  *   * **Grade level and strand are lookups derived from the class** (migration 0017). They are
  *     sent as ids, and a student whose class supplies one is refused — with a 422, never a silent
  *     no-op — when they try to change it.
+ *
+ * And one more on 2026-09-20: **the student may now change their own name**, which moves two
+ * tables and tells their counselors. The username is deliberately not one of those tables.
  */
 
 let counselorToken: string;
@@ -166,16 +171,93 @@ describe('PATCH /student/profile', () => {
   });
 
   /**
-   * Names belong to the counselor's roster (§16). A student renaming themselves would break the
-   * roster that was confirmed for them — and the username derived from it. The schema is
-   * `.strict()`, so the attempt is *refused* rather than silently ignored.
+   * **A student owns their name** (prompt-driven, 2026-09-20), and the roster is not the
+   * authority on it — the roster is where somebody else first typed it off a class list, which
+   * is exactly where misspellings and maiden names come from.
+   *
+   * The rename has to land in two places at once, and the tests below check both separately
+   * because writing one without the other is the failure this is guarding against: the roster
+   * and the exported report would disagree about who a student is, and neither would look wrong
+   * on its own.
    */
-  it('refuses to let a student rename themselves', async () => {
+  it('lets a student correct their own name', async () => {
     const { studentToken } = await classWithStudent(counselorToken, 'Juan Dela Cruz');
 
     const response = await api('PATCH', '/student/profile', {
       token: studentToken,
-      body: { first_name: 'Somebody', last_name: 'Else' },
+      body: { first_name: 'Juana', last_name: 'Dela Cruz-Santos' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.first_name).toBe('Juana');
+    expect(response.body.data.last_name).toBe('Dela Cruz-Santos');
+
+    const profile = await api('GET', '/student/profile', { token: studentToken });
+
+    expect(profile.body.data.first_name).toBe('Juana');
+  });
+
+  /** `users.name` is what `serializeReport` prints onto the record a student exports. */
+  it('moves the account name too, which is what an exported record carries', async () => {
+    const { student, studentToken } = await classWithStudent(counselorToken, 'Juan Dela Cruz');
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Juana', last_name: 'Dela Cruz-Santos' },
+    });
+
+    const row = await findUser(student.student_id);
+
+    expect(row?.name).toBe('Juana Dela Cruz-Santos');
+  });
+
+  /** And the roster, which reads `student_profiles` — the screen a counselor works from. */
+  it("shows the new name on the counselor's roster straight away", async () => {
+    const { classRoom, student, studentToken } = await classWithStudent(
+      counselorToken,
+      'Juan Dela Cruz',
+    );
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Juana', last_name: 'Dela Cruz-Santos' },
+    });
+
+    const roster = await api('GET', `/counselor/classes/${classRoom.id}/students`, {
+      token: counselorToken,
+    });
+    const entry = roster.body.data.find((row: any) => row.student_id === student.student_id);
+
+    expect(entry.first_name).toBe('Juana');
+    expect(entry.last_name).toBe('Dela Cruz-Santos');
+    // The credential is untouched: it is what the whole class signs in with, and it was derived
+    // from the name at provisioning rather than maintained from it.
+    expect(entry.username).toBe(student.username);
+  });
+
+  /** A mononym is a legitimate name (§13.1) — `""` clears the column rather than being stored. */
+  it('accepts a student who has one name', async () => {
+    const { student, studentToken } = await classWithStudent(counselorToken, 'Juan Dela Cruz');
+
+    const response = await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Madonna', last_name: '' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.last_name).toBeNull();
+
+    const row = await findUser(student.student_id);
+
+    expect(row?.name).toBe('Madonna');
+  });
+
+  it('refuses an empty first name — the column is NOT NULL and a nameless person is not a state', async () => {
+    const { studentToken } = await classWithStudent(counselorToken, 'Juan Dela Cruz');
+
+    const response = await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: '   ' },
     });
 
     expect(response.status).toBe(422);
@@ -183,6 +265,45 @@ describe('PATCH /student/profile', () => {
     const profile = await api('GET', '/student/profile', { token: studentToken });
 
     expect(profile.body.data.first_name).toBe('Juan');
+  });
+
+  /**
+   * The audit row. This is the one field on the form that gets one — the rest is a student's own
+   * answer about themselves, while a name is the handle a roster and an exported record identify
+   * them by, and "who changed it" is a question a guidance office eventually asks.
+   */
+  it('records the rename in the audit log, with both names on the row', async () => {
+    const { student, studentToken } = await classWithStudent(counselorToken, 'Juan Dela Cruz');
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Juana' },
+    });
+
+    const rows = (await allAuditRows()).filter(
+      (row: any) => row.action === 'STUDENT_RENAMED_SELF' && row.userId === student.student_id,
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.oldValues).toMatchObject({ name: 'Juan Dela Cruz' });
+    expect(rows[0]?.newValues).toMatchObject({ name: 'Juana Dela Cruz' });
+  });
+
+  /** A grade edit is not a rename, and must not be logged or notified as one. */
+  it('does not record a rename when the name was not what changed', async () => {
+    const { student, studentToken } = await classWithStudent(counselorToken, 'Juan Dela Cruz');
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      // The name is *sent*, unchanged, exactly as the form sends every field it renders.
+      body: { first_name: 'Juan', last_name: 'Dela Cruz', math_grade: 88 },
+    });
+
+    const rows = (await allAuditRows()).filter(
+      (row: any) => row.action === 'STUDENT_RENAMED_SELF' && row.userId === student.student_id,
+    );
+
+    expect(rows).toHaveLength(0);
   });
 
   it('is partial — an unmentioned field is left alone', async () => {

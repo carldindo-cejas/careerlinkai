@@ -43,6 +43,13 @@ export type AuditAction =
   | 'STAFF_LOGIN_FAILED'
   | 'STAFF_LOGOUT'
   | 'STAFF_PASSWORD_CHANGED'
+  // Staff editing their own account on /counselor/profile (prompt-driven, 2026-09-20). Two
+  // actions, not one, because they are not the same risk: a name is a label, while the email is
+  // the login identifier *and* where a password reset is delivered — so "when did this account
+  // start answering to a different address" has to be answerable by filtering on the action
+  // rather than by reading every profile edit's diff. Both rows carry the old and new values.
+  | 'STAFF_PROFILE_UPDATED'
+  | 'STAFF_EMAIL_CHANGED'
   | 'STAFF_PASSWORD_RESET_REQUESTED'
   | 'STAFF_PASSWORD_RESET_COMPLETED'
   | 'STUDENT_CLASS_ACCESS_SUCCESS'
@@ -59,6 +66,13 @@ export type AuditAction =
   | 'CLASS_REASSIGNED'
   | 'ROSTER_STUDENTS_ENROLLED'
   | 'ROSTER_STUDENT_REMOVED'
+  // A student editing their own name on their profile (prompt-driven, 2026-09-20). Its own action
+  // rather than a nameless profile update, and the only field on that form that gets one: the rest
+  // of the profile is a student's own answer about themselves, while a name is the handle a roster
+  // and an exported report identify them by. "Who changed this, and when" is a question a guidance
+  // office asks about a record that has already left the system, and the old and new names are on
+  // the row so the answer does not depend on reconstructing it.
+  | 'STUDENT_RENAMED_SELF'
   | 'COLLEGE_CREATED'
   | 'COLLEGE_UPDATED'
   | 'COLLEGE_DELETED'
@@ -121,6 +135,24 @@ export type AuditAction =
   // refused outright once a student has answered it, which makes the rows that *do* exist here the
   // record of an assessment that was removed before anybody sat it.
   | 'ASSESSMENT_TEMPLATE_DELETED'
+  // Migration 0037. A counselor taking their own copy of a curated instrument — the act that
+  // creates a *second owner* for content that until then had one. The row names both ends
+  // (source template and version, new template and its ownership), because the question this
+  // log will be asked is "where did this counselor's RIASEC come from, and is it still the one
+  // the administrator published?"
+  | 'ASSESSMENT_TEMPLATE_COPIED'
+  // Retiring one *edition* of an instrument (prompt §4). Distinct from archiving the
+  // template, which retires all of them: this is what an author does to v1 after publishing
+  // v2. Recorded because it changes what students are offered while changing nothing about
+  // the results already produced against that version — and "why did this stop appearing"
+  // should have an answer with a name and a date.
+  | 'ASSESSMENT_VERSION_ARCHIVED'
+  | 'ASSESSMENT_VERSION_RESTORED'
+  // Migration 0037. Switching an instrument between SEQUENTIAL and RANDOM delivery. Recorded
+  // even though it changes no result, because it changes what every student sees from that
+  // moment on and is reachable in one click from a table row — the two properties that make an
+  // act worth being able to attribute afterwards.
+  | 'ASSESSMENT_PRESENTATION_MODE_CHANGED'
   // The §25 act itself (Phase 5b): a human confirming what a question measures. Recorded
   // per mapping because the gate's promise is that *someone looked at each one* — this row
   // is who, and when.
@@ -130,6 +162,11 @@ export type AuditAction =
   // mutator in the builder that left no trace of itself. The row carries the text that was removed,
   // because "what was question 12 before you deleted it" is otherwise unanswerable.
   | 'ASSESSMENT_QUESTION_DELETED'
+  // Copying a version into a fresh DRAFT — how a *published* instrument is edited, RIASEC and SCCT
+  // included (§12: fix a mistake by publishing the next version). Recorded because the copy is the
+  // moment the curated content forks: the row names who started the edit and which version they
+  // started it from, which is what makes "who changed RIASEC, and from what" answerable at all.
+  | 'ASSESSMENT_VERSION_DUPLICATED'
   | 'ASSESSMENT_PUBLISHED'
   | 'ASSESSMENT_ASSIGNED'
   | 'ASSESSMENT_ASSIGNMENT_CLOSED'
@@ -147,8 +184,21 @@ export type AuditAction =
   // say to students (the retrieval corpus); a policy edit changes what it is *allowed* to
   // say. Both are exactly the class of action §13.8 exists for.
   | 'KNOWLEDGE_DOCUMENT_UPLOADED'
+  | 'KNOWLEDGE_DOCUMENT_UPDATED'
   | 'KNOWLEDGE_DOCUMENT_ARCHIVED'
+  // Prompt-driven: the entry was destroyed, not retired. Its own action rather than an ARCHIVED
+  // with a flag, because this is the one act in the knowledge module that cannot be undone — and
+  // the audit row is the only surviving record that the entry ever existed.
+  | 'KNOWLEDGE_DOCUMENT_DELETED'
   | 'KNOWLEDGE_DOCUMENT_REPROCESSED'
+  // Migration 0031 — taking a question off the unanswered backlog. Recorded because these are
+  // decisions *about what the platform will not be asked to improve*: an answered question stops
+  // being reported, and a dismissed one stops being reported permanently. "Who decided this was
+  // handled, and when" is the question a term-end review actually asks, and the resolution row
+  // itself cannot answer it after a reopen deletes it.
+  | 'KNOWLEDGE_QUESTION_ANSWERED'
+  | 'KNOWLEDGE_QUESTION_DISMISSED'
+  | 'KNOWLEDGE_QUESTION_REOPENED'
   | 'AI_POLICY_UPDATED'
   // Counselor management (§20, Phase 6). Recorded because these are the account-lifecycle
   // acts on the role that can read every student's results: who was given that access, who
@@ -159,7 +209,17 @@ export type AuditAction =
   // COUNSELOR_UPDATED, because "who reset whose credential, and when" is the question an incident
   // review actually asks, and it must be filterable without reading every update's diff.
   | 'COUNSELOR_PASSWORD_RESET'
-  | 'COUNSELOR_DELETED';
+  | 'COUNSELOR_DELETED'
+  // Counselor self-signup (migration 0034). Two actions rather than one, because the gap between
+  // them is the interesting part: a REQUESTED with no COMPLETED is somebody who never received or
+  // never entered their code, and a run of REQUESTED rows from one address is what abuse of the
+  // open form looks like. `userId` is NULL on REQUESTED — there is no account yet, by design.
+  | 'COUNSELOR_SIGNUP_REQUESTED'
+  | 'COUNSELOR_SIGNUP_COMPLETED'
+  // An operator flag changed (migration 0034). Recorded because the only flag today decides whether
+  // strangers may create accounts that read student results — "who opened registration, and when"
+  // is not a question the current value of a row can answer.
+  | 'APP_SETTING_UPDATED';
 
 /**
  * Why a join attempt failed. Never sent to the client — the API answers every failure
@@ -226,6 +286,8 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   STUDENT_CLASS_ACCESS_THROTTLED: 'LOGIN',
   // Credential lifecycle — changes to an account, not sign-ins.
   STAFF_PASSWORD_CHANGED: 'UPDATE',
+  STAFF_PROFILE_UPDATED: 'UPDATE',
+  STAFF_EMAIL_CHANGED: 'UPDATE',
   STAFF_PASSWORD_RESET_REQUESTED: 'UPDATE',
   STAFF_PASSWORD_RESET_COMPLETED: 'UPDATE',
   // Classes and roster.
@@ -237,6 +299,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   CLASS_REASSIGNED: 'UPDATE',
   ROSTER_STUDENTS_ENROLLED: 'CREATE',
   ROSTER_STUDENT_REMOVED: 'DELETE',
+  STUDENT_RENAMED_SELF: 'UPDATE',
   // Catalog.
   COLLEGE_CREATED: 'CREATE',
   COLLEGE_UPDATED: 'UPDATE',
@@ -271,8 +334,14 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   ASSESSMENT_TEMPLATE_ARCHIVED: 'ARCHIVE',
   ASSESSMENT_TEMPLATE_RESTORED: 'RESTORE',
   ASSESSMENT_TEMPLATE_DELETED: 'DELETE',
+  /** A copy is a new instrument, not an edit of the one it came from. */
+  ASSESSMENT_TEMPLATE_COPIED: 'CREATE',
+  ASSESSMENT_VERSION_ARCHIVED: 'ARCHIVE',
+  ASSESSMENT_VERSION_RESTORED: 'RESTORE',
+  ASSESSMENT_PRESENTATION_MODE_CHANGED: 'UPDATE',
   QUESTION_DIMENSION_CONFIRMED: 'UPDATE',
   ASSESSMENT_QUESTION_DELETED: 'DELETE',
+  ASSESSMENT_VERSION_DUPLICATED: 'CREATE',
   ASSESSMENT_PUBLISHED: 'PUBLISH',
   ASSESSMENT_ASSIGNED: 'ASSIGN',
   /** Closing an assignment retires it without deleting it — the same shape as archiving. */
@@ -283,8 +352,16 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   // Recommendation + AI.
   RECOMMENDATIONS_GENERATED: 'CREATE',
   KNOWLEDGE_DOCUMENT_UPLOADED: 'CREATE',
+  KNOWLEDGE_DOCUMENT_UPDATED: 'UPDATE',
   KNOWLEDGE_DOCUMENT_ARCHIVED: 'ARCHIVE',
+  KNOWLEDGE_DOCUMENT_DELETED: 'DELETE',
   KNOWLEDGE_DOCUMENT_REPROCESSED: 'UPDATE',
+  /** A resolution row comes into existence, and a backlog item stops being reported. */
+  KNOWLEDGE_QUESTION_ANSWERED: 'CREATE',
+  /** Retiring something without destroying it — the same shape as archiving an entry. */
+  KNOWLEDGE_QUESTION_DISMISSED: 'ARCHIVE',
+  /** The undo: the question goes back on the backlog, exactly as RESTORE reads elsewhere. */
+  KNOWLEDGE_QUESTION_REOPENED: 'RESTORE',
   AI_POLICY_UPDATED: 'UPDATE',
   // Counselor management.
   COUNSELOR_CREATED: 'CREATE',
@@ -294,6 +371,13 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   // same kind of act the same way.
   COUNSELOR_PASSWORD_RESET: 'UPDATE',
   COUNSELOR_DELETED: 'DELETE',
+  // Self-signup. The request creates nothing — there is no account until the code is verified — so
+  // it is OTHER rather than CREATE; filing it under CREATE would put rows in the "what was created"
+  // list for accounts that may never exist. The completion is the CREATE, and it sits beside
+  // COUNSELOR_CREATED because the two produce exactly the same thing by different routes.
+  COUNSELOR_SIGNUP_REQUESTED: 'OTHER',
+  COUNSELOR_SIGNUP_COMPLETED: 'CREATE',
+  APP_SETTING_UPDATED: 'UPDATE',
 };
 
 /** Every action in one group — what the filter turns into, resolved once per module load. */

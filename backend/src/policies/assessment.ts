@@ -21,11 +21,14 @@ import { ApiError } from '@/lib/envelope';
  * | start attempt          | ✅ (enrolled + open) | ❌ | ❌ | ❌ | ❌ |
  * | reset attempt          | ❌ | ❌ | ✅ | ❌ | ✅ |
  * | assign / close         | ❌ | ❌ | ✅ | ❌ | ✅ |
+ * | **assign globally**    | ❌ | ❌ | **❌** | ❌ | ✅ |
+ * | view template          | ❌ | ❌ | ✅ (global + own) | ❌ | ✅ |
+ * | copy template          | ❌ | ❌ | ✅ (global + own) | ❌ | ✅ |
  * | AI-generate RIASEC/SCCT| ❌ | ❌ | ❌ | ❌ | **❌ always** |
  *
- * **The two bolded cells are the entire point of this file.** Everything else is ordinary
- * role-plus-ownership and could be reconstructed from §39 by anyone; those two cannot, and both
- * are the kind of rule a well-meaning "admins can do anything" refactor removes without noticing.
+ * **The three bolded cells are the entire point of this file.** Everything else is ordinary
+ * role-plus-ownership and could be reconstructed from §39 by anyone; those three cannot, and each
+ * is the kind of rule a well-meaning "admins can do anything" refactor removes without noticing.
  */
 
 /**
@@ -145,6 +148,121 @@ export function authorizeAnswerAttempt(user: User, attempt: AssessmentAttempt): 
  */
 export function canManageTemplate(user: User, template: AssessmentTemplate): boolean {
   return user.role === 'admin' || (user.role === 'counselor' && template.creatorId === user.id);
+}
+
+/**
+ * **Assigning is authorized against the class, not the template** — and this is the distinction the
+ * assignment route had wrong.
+ *
+ * A counselor's whole job is handing their class the *curated* instruments: RIASEC and SCCT are
+ * `GLOBAL` and admin-owned, so `canManageTemplate` refuses them, and the assignment endpoint gating
+ * on it meant a counselor pressing Assign on RIASEC got "Assessment template not found." §39's
+ * table has always said `assign → counselor (owns class) ✅`; the real check is
+ * `canManageAssignment(user, classRoom)`, which `assignToClasses` already applies per class.
+ *
+ * What is left for this function to decide is only **visibility**: may the caller see this
+ * instrument at all? That is the same rule as the list — an admin sees everything, a counselor sees
+ * the global instruments plus their own — so a counselor still cannot assign another counselor's
+ * private template, and still cannot reach a class that is not theirs.
+ */
+export function canAssignTemplate(user: User, template: AssessmentTemplate): boolean {
+  return (
+    user.role === 'admin' || template.ownership === 'GLOBAL' || template.creatorId === user.id
+  );
+}
+
+/**
+ * **May the caller assign globally?** (prompt §2 — the permission this removes.)
+ *
+ * A GLOBAL assignment is administrator-only, and the reason is structural rather than a matter of
+ * seniority. `scope = 'GLOBAL'` is not merely "assigned to a lot of classes at once": it is a
+ * standing instruction that `applyGlobalAssignmentsToClass` replays onto **every class created or
+ * reactivated afterwards**, whoever creates it. So a counselor who could write a GLOBAL row would
+ * be handing their own private instrument to other counselors' future classes — permanently, and
+ * without any of them being able to see where it came from. The per-class filter that
+ * `assignToClasses` applies protects the classes that exist *at the time of the act* and cannot
+ * protect the ones that do not exist yet.
+ *
+ * This is checked in the Service, before any row is written, and it is checked again in the
+ * top-up path itself (`applyGlobalAssignmentsToClass` reads only GLOBAL-owned templates), because a
+ * rule this consequential should not have exactly one enforcement point.
+ */
+export function canAssignGlobally(user: User): boolean {
+  return user.role === 'admin';
+}
+
+/**
+ * Seeing an instrument, as opposed to authoring it.
+ *
+ * The same line the lists already draw — admin: everything; anyone else: the GLOBAL instruments
+ * plus their own — lifted into a policy so the **detail** routes draw it too. Until now the builder
+ * page was gated on `canManageTemplate`, so a counselor clicking RIASEC in their own list got
+ * "Assessment template not found." for a row sitting on screen in front of them. A counselor is
+ * entitled to read the curated instruments: they assign them, they answer students' questions about
+ * them, and (prompt §1) they may now take their own copy — which hands them the full contents
+ * anyway. What they may not do is *write* to one, and that is `canManageTemplate`'s job.
+ *
+ * Another counselor's private template is invisible under both, which is the rule that matters.
+ */
+export function canViewTemplate(user: User, template: AssessmentTemplate): boolean {
+  return (
+    user.role === 'admin' ||
+    template.ownership === 'GLOBAL' ||
+    (user.role === 'counselor' && template.creatorId === user.id)
+  );
+}
+
+/**
+ * **404, not 403** — the standing rule. A counselor probing template ids must not be able to tell
+ * "another counselor's private instrument" apart from "no such id".
+ */
+export function authorizeViewTemplate(
+  user: User,
+  template: AssessmentTemplate | undefined,
+): asserts template is AssessmentTemplate {
+  if (template === undefined || !canViewTemplate(user, template)) {
+    throw ApiError.notFound('Assessment template not found.');
+  }
+}
+
+/**
+ * Copying an instrument into one the caller owns (prompt §1).
+ *
+ * Deliberately the **view** rule rather than the manage rule: copying reads the source and writes a
+ * new template owned by the copier, so what it needs is permission to read. Gating it on
+ * `canManageTemplate` would refuse a counselor the copy of RIASEC that the whole feature is for.
+ *
+ * There is no category check here, and that is the same distinction `duplicateVersion` draws: §5's
+ * permanent rule bars *AI* from generating or editing RIASEC/SCCT, and it lives in
+ * `canGenerateWithAi`. A human copying curated content by hand and editing it is §12's prescribed
+ * workflow — and the copy keeps `category = 'RIASEC'`, so the AI rule follows it.
+ */
+export function canCopyTemplate(user: User, template: AssessmentTemplate): boolean {
+  return (
+    (user.role === 'admin' || user.role === 'counselor') && canViewTemplate(user, template)
+  );
+}
+
+export function authorizeCopyTemplate(
+  user: User,
+  template: AssessmentTemplate | undefined,
+): asserts template is AssessmentTemplate {
+  if (template === undefined || !canCopyTemplate(user, template)) {
+    throw ApiError.notFound('Assessment template not found.');
+  }
+}
+
+/**
+ * **404, not 403**, for the ownership failure — the standing rule: a counselor probing another
+ * counselor's private template ids must not learn which ids exist.
+ */
+export function authorizeAssignTemplate(
+  user: User,
+  template: AssessmentTemplate | undefined,
+): asserts template is AssessmentTemplate {
+  if (template === undefined || !canAssignTemplate(user, template)) {
+    throw ApiError.notFound('Assessment template not found.');
+  }
 }
 
 /**

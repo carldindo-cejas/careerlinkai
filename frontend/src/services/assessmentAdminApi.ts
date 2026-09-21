@@ -9,6 +9,8 @@ import type {
   AssessmentType,
   AssignPayload,
   AssignResult,
+  CopyResult,
+  PresentationMode,
   SeedInstrumentsResult,
 } from '@/types/assessmentAdmin';
 import type { Paginated } from '@/types/class';
@@ -125,6 +127,37 @@ export const assessmentAdminApi = {
     return unwrap(
       httpClient.get<ApiSuccess<AssessmentDeletability>>(
         `/assessment-templates/${id}/deletability`,
+      ),
+    );
+  },
+
+  /**
+   * **Take your own copy of an instrument** (backend 0037).
+   *
+   * For a counselor this is how RIASEC and SCCT become editable: the server creates a *new template
+   * they own*, private to them, carrying the category, dimensions, taxonomy and the whole of the
+   * source's newest published version as a DRAFT v1. It does not publish it — that stays a decision
+   * the counselor makes, with the §25 gate behind it.
+   */
+  copy(id: string): Promise<CopyResult> {
+    return unwrap(
+      httpClient.post<ApiSuccess<CopyResult>>(`/assessment-templates/${id}/copy`),
+    );
+  },
+
+  /**
+   * Switch an instrument between sequential and random delivery, in one request.
+   *
+   * Its own endpoint rather than a field on `update`, because `update` is the edit *form*'s contract
+   * and requires title, type and scoring on every call — a one-click toggle in a table row that had
+   * to send the whole form back could silently overwrite a field somebody else just changed. This is
+   * also permitted on a published instrument, which `update` is not the place to express.
+   */
+  setPresentationMode(id: string, mode: PresentationMode): Promise<AssessmentRow> {
+    return unwrap(
+      httpClient.patch<ApiSuccess<AssessmentRow>>(
+        `/assessment-templates/${id}/presentation-mode`,
+        { presentation_mode: mode },
       ),
     );
   },

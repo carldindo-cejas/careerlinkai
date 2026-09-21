@@ -1,0 +1,31 @@
+-- Migration 0038 — the assistant is allowed to point at the screen
+--
+-- Prompt-driven (2026-09-18). Students kept asking the assistant questions that are not about
+-- careers at all — *"where do I download my results"*, *"paano ko makita ang recommendations ko"*,
+-- *"how do I change my strand"*. Every one of them was a navigation question, and the assistant
+-- answered them in prose: a correct paragraph describing a menu the student was already looking at
+-- and could not find. Prose is the wrong medium for "it is over there".
+--
+-- So a navigation gate now recognises those questions and answers them the way a person would:
+-- it names the screen, says what is on it, and **asks** whether the student wants to be taken
+-- there. This column is what makes the offer real. It holds the id of a *destination* — `results`,
+-- `report-download`, `profile-strand`, `tour` — which the client resolves to a route and a specific
+-- element on it, and highlights.
+--
+-- ## Why an id and not a URL
+--
+-- A URL in the database is a promise about the frontend's routing table that the server cannot
+-- keep. Ids are the stable half: `student-destinations.ts` owns the list and the wording, the
+-- client's `tour/stops.ts` owns where each id actually is on screen, and a route that moves breaks
+-- neither. An id the client does not know renders as an ordinary answer with no button, which is
+-- the right failure — the sentence still told the student where to go.
+--
+-- ## Why no CHECK constraint
+--
+-- Unlike 0029's `answer_kind`, this vocabulary is expected to grow every time a screen is added.
+-- 0030 put a CHECK on `knowledge_request` and 0033 then had to route around it, because SQLite
+-- cannot alter a CHECK without rebuilding the table. One lesson is enough.
+--
+-- NULL on every existing row and on every user message, which is correct: nothing was offered.
+
+ALTER TABLE chat_messages ADD COLUMN nav_target TEXT;
