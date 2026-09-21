@@ -6,6 +6,7 @@ import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Pagination } from '@/components/ui/pagination';
 import { CreateClassForm } from '@/features/counselor/components/CreateClassForm';
 import { useClasses } from '@/features/counselor/hooks/useClasses';
 import { classDetailPath } from '@/routes/paths';
@@ -13,12 +14,23 @@ import type { ClassRoom, ClassStatus } from '@/types/class';
 
 /**
  * The counselor's classes (FULLPLAN §57, Phase 1A).
+ *
+ * **Six cards a page, at every width** (prompt-driven, 2026-09-20). The grid is one column on a
+ * phone, two from `sm` and three from `lg`, so six is a whole number of rows at all three — six,
+ * three and two — and the pager never lands under a half-finished row. It is a fixed number
+ * rather than a responsive one on purpose: the page number is in this component's state, so a
+ * size that changed with the viewport would silently re-slice the list under a counselor who
+ * rotated their phone, and "page 3" would stop meaning the same six classes it meant a second
+ * ago.
  */
+const PAGE_SIZE = 6;
+
 export function ClassListPage() {
   const [isCreating, setIsCreating] = useState(false);
+  const [page, setPage] = useState(1);
   const navigate = useNavigate();
 
-  const { data, isPending, isError, error } = useClasses();
+  const { data, isPending, isFetching, isError, error } = useClasses(page, PAGE_SIZE);
 
   return (
     <div className="flex flex-col gap-6">
@@ -45,6 +57,9 @@ export function ClassListPage() {
           // the next thing the counselor actually does (§57).
           onCreated={(created) => {
             setIsCreating(false);
+            // Back to the first page behind the navigation: the new class sorts to the top, and
+            // returning here from its detail screen on page 3 would not show the class just made.
+            setPage(1);
             void navigate(classDetailPath(created.id));
           }}
         />
@@ -71,13 +86,22 @@ export function ClassListPage() {
       ) : null}
 
       {data && data.items.length > 0 ? (
-        <ul className="grid gap-4 sm:grid-cols-2">
-          {data.items.map((classRoom) => (
-            <li key={classRoom.id}>
-              <ClassCard classRoom={classRoom} />
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {data.items.map((classRoom) => (
+              <li key={classRoom.id}>
+                <ClassCard classRoom={classRoom} />
+              </li>
+            ))}
+          </ul>
+
+          <Pagination
+            pagination={data.pagination}
+            onPageChange={setPage}
+            noun="classes"
+            isFetching={isFetching}
+          />
+        </>
       ) : null}
     </div>
   );

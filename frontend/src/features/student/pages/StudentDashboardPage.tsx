@@ -7,9 +7,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-import { BarList } from '@/components/charts/BarList';
 import { chartColors } from '@/components/charts/colors';
-import { ColumnChart } from '@/components/charts/ColumnChart';
 import { DonutChart } from '@/components/charts/DonutChart';
 import { Meter } from '@/components/charts/Meter';
 import { StatCard } from '@/components/dashboard/StatCard';
@@ -18,18 +16,24 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAssignments, useResults } from '@/features/student/hooks/useAssessment';
 import { useStudentDashboard } from '@/features/student/hooks/useDashboard';
-import { useMyRecommendations } from '@/features/student/hooks/useRecommendations';
 import { paths } from '@/routes/paths';
 import { useAuthStore } from '@/stores/authStore';
 import { useStudentClassStore } from '@/stores/studentClassStore';
+import { useTourStore } from '@/stores/tourStore';
 import type { AssessmentResult } from '@/types/assessment';
 
 /**
- * The student's landing page (FULLPLAN §37) — analytics pass over the idea1 reference:
- * a KPI row, then chart cards (progress donut, RIASEC profile, recommendation
- * confidence) around the one question the page still answers first: *what should I do
- * next?* Every chart renders real data when it exists and says plainly what is missing
- * when it does not — never a zero pretending to be a measurement.
+ * The student's landing page (FULLPLAN §37): a KPI row, then the two cards that answer the one
+ * question this screen exists to answer first — *what should I do next?* Every number is real
+ * when it exists and says plainly what is missing when it does not, never a zero pretending to
+ * be a measurement.
+ *
+ * **"Your RIASEC profile" and "Match confidence" were removed on 2026-09-20** (prompt-driven).
+ * Both were duplicates wearing a chart: the interest bars are the whole subject of "My results",
+ * which renders them from the same data with the bands and the Holland code that make them
+ * readable, and the confidence histogram restated a distribution the recommendations page already
+ * shows per row and in order. A dashboard that repeats the next screen's content is a dashboard a
+ * student learns to scroll past — and on a phone those two cards were most of the page.
  */
 export function StudentDashboardPage() {
   const user = useAuthStore((state) => state.user);
@@ -40,8 +44,8 @@ export function StudentDashboardPage() {
   // Phase 6: the aggregate view — used for the one fact the other queries cannot answer,
   // "do I have recommendations waiting?" (§27 needs both RIASEC and SCCT before any exist).
   const { data: dashboard } = useStudentDashboard();
-  const { data: recommendations } = useMyRecommendations();
   const navigate = useNavigate();
+  const startTour = useTourStore((state) => state.startTour);
 
   const all = assignments ?? [];
   const scored = all.filter((a) => a.my_attempt?.status === 'SCORED');
@@ -51,30 +55,54 @@ export function StudentDashboardPage() {
   const done = results ?? [];
 
   const completionPercent = all.length > 0 ? (scored.length / all.length) * 100 : null;
-  const riasec = latestRiasecResult(done);
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold text-foreground">Welcome, {user?.name ?? 'student'}</h1>
-        {classRoom ? (
-          <p className="text-sm text-muted-foreground">
-            {classRoom.name} · {classRoom.academic_year}
-            {classRoom.grade_level ? ` · ${classRoom.grade_level}` : null}
-          </p>
-        ) : null}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-foreground">
+            Welcome, {user?.name ?? 'student'}
+          </h1>
+          {classRoom ? (
+            <p className="text-sm text-muted-foreground">
+              {classRoom.name} · {classRoom.academic_year}
+              {classRoom.grade_level ? ` · ${classRoom.grade_level}` : null}
+            </p>
+          ) : null}
+        </div>
+
+        {/*
+          The way back into the tour, and the reason skipping it is safe to offer so plainly.
+
+          The tour runs unprompted exactly once, and both finishing and skipping record that. Without
+          somewhere to start it again, "Skip" would be a decision a student makes in their first ten
+          seconds and cannot revisit — so the control is here, on the screen they land on, rather
+          than buried in a profile page nobody opens. The assistant answers "show me around" with
+          the same thing, for the student who asks instead of looking.
+        */}
+        <Button variant="ghost" size="sm" onClick={startTour}>
+          <Compass className="size-4" aria-hidden="true" />
+          Take the tour
+        </Button>
       </div>
 
       {/*
-        The profiling warning used to live here. It moved to `ProfilingBanner` in the shell (v1.6),
-        which renders it above the content column on **every** student route — because the thing it
-        warns about, recommendations being unavailable, is reachable from all of them, and a student
-        who lands on Assessments and never opens the dashboard would never have seen this one.
-        Rendering it in both places would show the same warning twice on this page.
+        The profiling warning used to live here, then moved to a banner in the shell, and is now
+        `ProfileGate` — a modal over every student route (2026-09-20). Nothing about an incomplete
+        profile renders on this page any more, because a student with one cannot reach this page.
       */}
 
-      {/* KPI row — real counts, no teasers. */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {/*
+        KPI row — real counts, no teasers.
+
+        **Two across on a phone, not one** (prompt-driven, 2026-09-20). Stacked full-width, four
+        tiles were four scrolls of a single number each and pushed "You have work to do" — the
+        only thing on this page a student can act on — entirely below the fold on a 360px screen.
+        Paired, the whole row is two rows deep and the call to action is visible on arrival.
+        `grid-cols-2` from 0px up: a stat tile is a label, a number and one short line, which fits
+        in 160px, and the tiles carry no touch target of their own beyond the whole card.
+      */}
+      <div data-tour="dashboard-stats" className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard
           icon={<BookOpenCheck className="size-4" aria-hidden="true" />}
           label="Assessments"
@@ -190,51 +218,6 @@ export function StudentDashboardPage() {
               ) : null}
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Your RIASEC profile</CardTitle>
-              <CardDescription>
-                {riasec
-                  ? riasec.result?.result_code
-                    ? `Holland code ${riasec.result.result_code} — how strongly each interest area showed up.`
-                    : 'How strongly each interest area showed up.'
-                  : 'Take the RIASEC assessment to see your interest profile here.'}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {riasec ? (
-                <BarList
-                  max={100}
-                  items={riasec.dimensions.map((dimension) => ({
-                    label: dimension.name,
-                    value: Number.parseFloat(dimension.normalized_score),
-                    display: Number.parseFloat(dimension.normalized_score).toFixed(0),
-                  }))}
-                />
-              ) : (
-                <ChartPlaceholder />
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Match confidence</CardTitle>
-              <CardDescription>
-                {recommendations
-                  ? 'How your career and program match scores are distributed.'
-                  : 'Your match-score spread appears once recommendations exist.'}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {recommendations ? (
-                <ColumnChart items={confidenceBuckets(recommendations)} />
-              ) : (
-                <ChartPlaceholder />
-              )}
-            </CardContent>
-          </Card>
         </div>
       )}
 
@@ -282,47 +265,6 @@ export function StudentDashboardPage() {
   );
 }
 
-/** The newest RIASEC result that actually carries dimension scores. */
-function latestRiasecResult(results: AssessmentResult[]): AssessmentResult | null {
-  return (
-    [...results]
-      .filter((r) => r.assessment?.category === 'RIASEC' && r.dimensions.length > 0)
-      .sort(bySubmittedAtDesc)[0] ?? null
-  );
-}
-
 function bySubmittedAtDesc(a: AssessmentResult, b: AssessmentResult): number {
   return (b.submitted_at ?? '').localeCompare(a.submitted_at ?? '');
-}
-
-/**
- * Match scores bucketed for the distribution chart. Careers and programs are pooled:
- * the question the widget answers is "how confident are my matches overall", not a
- * cross-type ranking (§27 forbids comparing a career's score with a program's).
- */
-function confidenceBuckets(set: {
-  careers: { match_score: number }[];
-  programs: { match_score: number }[];
-}): { label: string; value: number }[] {
-  const scores = [...set.careers, ...set.programs].map((r) => r.match_score);
-  const buckets = [
-    { label: '<50', min: 0, max: 50 },
-    { label: '50–64', min: 50, max: 65 },
-    { label: '65–79', min: 65, max: 80 },
-    { label: '80+', min: 80, max: 101 },
-  ];
-
-  return buckets.map((bucket) => ({
-    label: bucket.label,
-    value: scores.filter((score) => score >= bucket.min && score < bucket.max).length,
-  }));
-}
-
-/** The graceful no-data state: an honest sentence-sized gap, not fake bars. */
-function ChartPlaceholder() {
-  return (
-    <div className="flex h-24 items-center justify-center rounded-none border border-dashed border-border text-sm text-muted-foreground">
-      No data yet
-    </div>
-  );
 }

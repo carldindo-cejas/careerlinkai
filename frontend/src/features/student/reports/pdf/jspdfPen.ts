@@ -103,7 +103,8 @@ interface EmbeddedFont {
   metadata?: { cmap?: { unicode?: { codeMap?: Record<string, number> } } };
 }
 
-export function createPen(doc: jsPDF, assets: PdfAssets): Pen {
+/** `format` is the page box in points — every page after the first is added at that size too. */
+export function createPen(doc: jsPDF, assets: PdfAssets, format: [number, number]): Pen {
   const coverage = new Map<Face, Set<number>>();
 
   for (const face of FACE_NAMES) {
@@ -204,7 +205,7 @@ export function createPen(doc: jsPDF, assets: PdfAssets): Pen {
     },
 
     addPage() {
-      doc.addPage('a4', 'portrait');
+      doc.addPage(format, 'portrait');
     },
   };
 }

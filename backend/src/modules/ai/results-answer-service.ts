@@ -1198,6 +1198,10 @@ function capabilities(brief: StudentBrief | null): ResultsAnswer {
     '• The college catalog — where a college is, what it offers, which colleges offer a program, and which careers a program leads to.',
     '• Careers — typical monthly salary, job outlook, and what the work involves.',
     '• Guidance — how your scores are built, strands, program families, and how to choose.',
+    // Migration 0038. It is listed because a student has no way to guess that an assistant which
+    // talks about careers will also walk them to a screen — and "where is…" is the question they
+    // were already asking, in the dark, before the gate existed.
+    '• Finding your way around — ask me where something is (“where do I download my results?”) and I can take you straight to it.',
     'I can’t see tuition fees, admission dates or entrance requirements unless your school has added them. Your guidance counselor can help with those.',
   ];
 
@@ -1380,7 +1384,7 @@ function weightProse(components: Record<string, number> | null, kind: Kind): str
 
   return kind === 'CAREER'
     ? `Its components: ${parts}. Career matches weigh RIASEC fit ${CAREER_WEIGHTS.riasecCompatibility * 100}% and career confidence ${CAREER_WEIGHTS.careerConfidence * 100}%.`
-    : `Its components: ${parts}. Program matches weigh RIASEC fit ${PROGRAM_WEIGHTS.riasecCompatibility * 100}%, academic fit ${PROGRAM_WEIGHTS.academicFit * 100}%, career confidence ${PROGRAM_WEIGHTS.careerConfidence * 100}%, strand alignment ${PROGRAM_WEIGHTS.strandAlignment * 100}% and eligibility ${PROGRAM_WEIGHTS.programEligibility * 100}%.`;
+    : `Its components: ${parts}. Program matches weigh RIASEC fit ${PROGRAM_WEIGHTS.riasecCompatibility * 100}%, career alignment with your recommended careers ${PROGRAM_WEIGHTS.careerAlignment * 100}%, career confidence ${PROGRAM_WEIGHTS.careerConfidence * 100}%, academic fit ${PROGRAM_WEIGHTS.academicFit * 100}% and strand alignment ${PROGRAM_WEIGHTS.strandAlignment * 100}%.`;
 }
 
 /** The stored §27 reason, with the rank, score and components it came from. Never a new opinion. */
@@ -1427,7 +1431,7 @@ function whyAnswer(target: Target, set: RecommendationSet | null): ResultsAnswer
       `${program.name} at ${college.name} is your #${recommendation.ranking} program match at ${formatScore(recommendation.matchScore)}%.`,
       recommendation.reason,
       weightProse(recommendation.components ?? null, 'PROGRAM') ??
-        'Program matches weigh RIASEC fit 35%, academic fit from your subject grades 20%, SCCT confidence 15%, strand alignment 15%, and eligibility 10%.',
+        'Program matches weigh RIASEC fit 35%, career alignment with your recommended careers 25%, SCCT confidence 20%, academic fit from your subject grades 10%, and strand alignment 10%.',
     ].join(' '),
     sources: RESULTS,
   };

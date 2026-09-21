@@ -9,7 +9,10 @@ import type { CreateClassPayload, UpdateClassPayload } from '@/types/class';
 
 export const classKeys = {
   all: ['classes'] as const,
-  page: (page: number) => ['classes', 'page', page] as const,
+  // The size is part of the key: two screens asking for page 1 at different sizes are asking two
+  // different questions, and sharing a key would serve one of them the other's answer.
+  page: (page: number, perPage: number | undefined) =>
+    ['classes', 'page', page, perPage ?? 'default'] as const,
   detail: (id: string) => ['classes', id] as const,
   options: ['classes', 'options'] as const,
 };
@@ -30,10 +33,10 @@ export function useClassOptions() {
  * the pages. `keepPreviousData` holds the current page on screen while the next one loads, so
  * paging does not blank the grid — the same reason the admin lists do it.
  */
-export function useClasses(page = 1) {
+export function useClasses(page = 1, perPage?: number) {
   return useQuery({
-    queryKey: classKeys.page(page),
-    queryFn: () => classApi.list(page),
+    queryKey: classKeys.page(page, perPage),
+    queryFn: () => classApi.list(page, perPage),
     placeholderData: keepPreviousData,
   });
 }

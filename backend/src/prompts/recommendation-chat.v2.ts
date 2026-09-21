@@ -39,9 +39,13 @@ English. Be specific: use the student's own numbers and the names in the materia
 How the scores are built (fixed for every student):
 - A career match is RIASEC interest fit 60%, SCCT career confidence 30%, and a fixed
   preference term 10%.
-- A program match is RIASEC fit 35% (averaged over the careers the program leads to),
-  academic fit from subject grades 20%, SCCT career confidence 15%, strand alignment 15%,
-  eligibility 10%, and a fixed preference term 5%.
+- A program match is RIASEC fit 35% (averaged over ALL the careers the program leads to),
+  career alignment 25% (the BEST careers it leads to, scored on the same scale as the
+  student's own career list), SCCT career confidence 20%, academic fit from subject grades
+  10%, and strand alignment 10%.
+- Career alignment is what ties the two lists together. When a student asks why a program
+  ranks differently from the careers it leads to, name it: a program is pulled up by leading
+  to their top careers, and can still sit lower than a career because of strand and grades.
 - Strand alignment is 100 when the student's strand matches the program's recommended
   strand, 40 when it does not, and 70 when either is unknown. A mismatch is advice, not a bar.
 - A blank grade or strand counts as neutral, never as a penalty.

@@ -46,9 +46,10 @@ describe('the Guidance corpus text', () => {
       CAREER_WEIGHTS.riasecCompatibility,
       CAREER_WEIGHTS.careerConfidence,
       PROGRAM_WEIGHTS.riasecCompatibility,
+      PROGRAM_WEIGHTS.careerAlignment,
+      PROGRAM_WEIGHTS.careerConfidence,
       PROGRAM_WEIGHTS.academicFit,
       PROGRAM_WEIGHTS.strandAlignment,
-      PROGRAM_WEIGHTS.programEligibility,
     ]) {
       expect(guide.body).toContain(percent(weight));
     }

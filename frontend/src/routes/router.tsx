@@ -70,6 +70,7 @@ const PlatformUsagePage = admin('PlatformUsagePage');
 
 const CounselorLayout = counselor('CounselorLayout');
 const CounselorDashboardPage = counselor('CounselorDashboardPage');
+const CounselorProfilePage = counselor('CounselorProfilePage');
 const ClassListPage = counselor('ClassListPage');
 const ClassDetailPage = counselor('ClassDetailPage');
 
@@ -190,6 +191,8 @@ export function AppRoutes() {
         <Route element={<ProtectedRoute allow={['counselor', 'admin']} />}>
           <Route element={<CounselorLayout />}>
             <Route path={paths.counselorDashboard} element={<CounselorDashboardPage />} />
+            {/* The counselor's own account — reached from the identity chrome, not the nav. */}
+            <Route path={paths.counselorProfile} element={<CounselorProfilePage />} />
             <Route path={paths.counselorClasses} element={<ClassListPage />} />
             <Route path={paths.counselorClassDetail} element={<ClassDetailPage />} />
             {/* Phase 5b + v1.5: the same assessment table and builder — ownership is server-side. */}

@@ -124,10 +124,18 @@ export const resendSignupCodeSchema = z
  * and gets the same 401 as a wrong one.
  *
  * There is no `password` field, and there never will be. One appearing here is a bug.
+ *
+ * `confirm` is the two-step gate added after the September 2026 incident. Without it the endpoint
+ * **resolves** the credentials and answers with the student's name and nothing else; with it, and
+ * only with it, a token is issued and any other device holding this account is signed out. It is
+ * optional in the schema and mandatory in effect: a client that never sends it can never take a
+ * session over, which is exactly the property wanted from a field whose whole job is to make the
+ * takeover a thing somebody chose rather than a thing that happened.
  */
 export const joinClassSchema = z.object({
   class_code: z.string().trim().min(1, 'A class code is required.').max(20),
   username: z.string().trim().min(1, 'A username is required.').max(50),
+  confirm: z.boolean().optional(),
 });
 
 /**
@@ -188,3 +196,45 @@ export type VerifySignupCodeInput = z.infer<typeof verifySignupCodeSchema>;
 export type ResendSignupCodeInput = z.infer<typeof resendSignupCodeSchema>;
 export type CreateCounselorInput = z.infer<typeof createCounselorSchema>;
 export type UpdateCounselorInput = z.infer<typeof updateCounselorSchema>;
+
+/**
+ * A staff member editing **their own** account (prompt-driven, 2026-09-20 — `/counselor/profile`).
+ *
+ * Deliberately narrower than `updateCounselorSchema`: `status` is missing, because suspending
+ * yourself is not a thing anybody means to do, and neither `email` nor `password` appears here —
+ * both are credentials and each has its own endpoint that re-proves the current password first.
+ *
+ * `name` is accepted for the administrator case (an admin reaches this shell too and has no
+ * counselor profile, so first/last name have nowhere to live). For a counselor it is *derived*
+ * from `first_name`/`last_name` by the service rather than typed, so the display name and the
+ * profile can never drift apart.
+ */
+export const updateAccountSchema = z
+  .object({
+    name: z.string().trim().min(1, 'A name is required.').max(150).optional(),
+    first_name: z.string().trim().min(1, 'A first name is required.').max(100).optional(),
+    last_name: z.string().trim().min(1, 'A last name is required.').max(100).optional(),
+    phone: z.string().trim().max(30).nullable().optional(),
+    employee_number: z.string().trim().max(50).nullable().optional(),
+    specialization: z.string().trim().max(150).nullable().optional(),
+    bio: z.string().trim().max(1000).nullable().optional(),
+  })
+  .strict();
+
+/**
+ * Changing the address you sign in with.
+ *
+ * `current_password` is not ceremony. The email is the login identifier *and* the address a
+ * password reset is delivered to, so an unattended session left open on a shared staffroom
+ * machine is one form submission away from being someone else's account — re-proving the password
+ * is what makes that a thing only the account holder can do.
+ */
+export const changeEmailSchema = z
+  .object({
+    email: z.email('Enter a valid email address.'),
+    current_password: z.string().min(1, 'Your current password is required.'),
+  })
+  .strict();
+
+export type UpdateAccountInput = z.infer<typeof updateAccountSchema>;
+export type ChangeEmailInput = z.infer<typeof changeEmailSchema>;

@@ -25,6 +25,14 @@ export const CURRENT_USER_QUERY_KEY = ['auth', 'me'] as const;
  * /auth/me is the source of truth: the token is persisted across reloads but the user
  * object is not, so the session is always re-verified against the server rather than
  * trusted from local storage.
+ *
+ * **This query decides whether a student is in the app**, which is why it no longer sets
+ * `retry: false`. It inherits the global policy instead (see `createQueryClient`): a 4xx is
+ * final — a 401 has already cleared the token by the time it gets here — while a 5xx, a 429 or a
+ * connection that dropped on school wifi is retried with backoff. Under the old setting one
+ * failed request was indistinguishable from a rejected token, and `ProtectedRoute` turned it into
+ * a sign-out; during the 18 September 2026 incident that is what made a transient failure look
+ * like being thrown out of the system.
  */
 export function useCurrentUser() {
   const token = useAuthStore((state) => state.token);
@@ -33,7 +41,7 @@ export function useCurrentUser() {
     queryKey: CURRENT_USER_QUERY_KEY,
     queryFn: () => authApi.me(),
     enabled: token !== null,
-    retry: false,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
     staleTime: 5 * 60 * 1000,
   });
 }

@@ -22,17 +22,32 @@ const grade = z
 /**
  * The student-editable half of the profile.
  *
- * ## Three fields are conspicuously absent
+ * ## The student owns their name (prompt-driven, 2026-09-20)
  *
- * `first_name` / `last_name` belong to the counselor's roster (§16) — a student renaming
- * themselves would break the roster the counselor confirmed and the username derived from it.
+ * `first_name` / `last_name` were refused here until now, on the grounds that they belong to the
+ * counselor's roster (§16). That was half right and the wrong half was the conclusion. The roster
+ * is where a name is *first* entered — a counselor typing sixty of them off a class list — and a
+ * name typed by somebody else off a list is exactly the kind of data that is wrong: a misspelling,
+ * a maiden name, a nickname where the legal name belongs. The student is the authority on what
+ * they are called, and the printed report carries that name to a guidance office.
+ *
+ * What the old rule was actually protecting is the **username**, which is derived from the name at
+ * provisioning and is the credential the whole class signs in with. That is protected by not being
+ * in this schema, and by `StudentProfileService.update` never touching `class_students.username` —
+ * renaming changes what a student is *called*, never how they *sign in*. The counselor is told
+ * either way: a rename fires `StudentRenamed`, and every counselor whose active class holds the
+ * student gets a notification naming the old name, the new one and the unchanged username.
+ *
+ * `first_name` is not nullable — the column is `NOT NULL` and a person with no name at all is not
+ * a state this system can render. `last_name` is, because a mononym is a legitimate name (§13.1)
+ * and `""` is normalised to NULL by the service rather than stored as an empty string.
  *
  * `gwa` is gone entirely (prompt-driven, 2026-07-27). §27's academic components now read the mean
  * of the three subject grades below.
  *
  * `.strict()` is what turns "we do not read that field" into "that field is **rejected**", so an
- * attempt to send any of them is a 422 rather than a silent no-op. That matters most for the two
- * fields below.
+ * attempt to send something this does not name is a 422 rather than a silent no-op. That matters
+ * most for the two fields below.
  *
  * ## Grade level and strand are ids, and only when nothing else supplies them
  *
@@ -48,6 +63,12 @@ const grade = z
  */
 export const updateStudentProfileSchema = z
   .object({
+    first_name: z
+      .string()
+      .trim()
+      .min(1, 'Enter your first name.')
+      .max(100, 'That first name is too long.'),
+    last_name: z.string().trim().max(100, 'That last name is too long.').nullable(),
     birthdate: z.string().date().nullable(),
     gender: z.string().max(30).nullable(),
     grade_level_id: z.string().uuid().nullable(),

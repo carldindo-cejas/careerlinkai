@@ -92,7 +92,10 @@ describe('GET /admin/dashboard', () => {
     const before = await api('GET', '/admin/dashboard', { token: await login(admin) });
 
     const join = await api('POST', '/student-access/join', {
-      body: { class_code: classRoom.join_code, username: roster[0].username },
+      // `confirm: true` — a join is two calls now, and only the confirmed one is a sign-in
+      // (see `StudentAccessService`). The unconfirmed call resolves a name and nothing else,
+      // which is deliberately *not* what this dashboard counts.
+      body: { class_code: classRoom.join_code, username: roster[0].username, confirm: true },
     });
     expect(join.status).toBe(200);
 
@@ -168,7 +171,10 @@ describe('GET /student/dashboard', () => {
     const roster = await enrolStudents(counselorToken, classRoom.id, ['Juan Dela Cruz']);
 
     const join = await api('POST', '/student-access/join', {
-      body: { class_code: classRoom.join_code, username: roster[0].username },
+      // `confirm: true` — a join is two calls now, and only the confirmed one is a sign-in
+      // (see `StudentAccessService`). The unconfirmed call resolves a name and nothing else,
+      // which is deliberately *not* what this dashboard counts.
+      body: { class_code: classRoom.join_code, username: roster[0].username, confirm: true },
     });
     const studentToken = join.body.data.token as string;
 

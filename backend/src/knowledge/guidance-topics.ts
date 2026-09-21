@@ -14,9 +14,10 @@ export const RESULTS_GUIDANCE: GuidanceEntry[] = [
     title: 'Guide: How your match score is built',
     body: `How CareerLinkAI builds a match score. Every score on your recommendations page is arithmetic, not an AI opinion, and the same answers always give the same score.
 A career match adds up three parts: how well your RIASEC interests fit the career's typical interest code (60%), your SCCT career confidence (30%), and a fixed preference term (10%) that is the same for everyone.
-A program match adds up six parts: RIASEC fit averaged over the careers the program leads to (35%), academic fit from your Math, Science and English grades (20%), SCCT career confidence (15%), strand alignment (15%), eligibility from your subject average (10%), and a fixed preference term (5%).
-That is why a program can rank above a career you are more interested in: good grades and a matching strand add points that interests alone do not. It is also why two programs with the same name rank the same at different colleges.
-A blank field is never a penalty. With no grades, academic fit counts as a neutral 60 and eligibility as 70. With no strand, strand alignment counts as 70. Filling in your profile makes the program scores more precise.`,
+A program match adds up five parts: RIASEC fit averaged over all the careers the program leads to (35%), career alignment with your own recommended careers (25%), SCCT career confidence (20%), academic fit from your Math, Science and English grades (10%), and strand alignment (10%).
+Career alignment is the part that ties the two lists together: it scores the best careers a program leads to on exactly the same scale as your career list, so a program that leads to your top careers is pulled up even when its strand or its other careers do not suit you.
+That is why a program can still rank differently from the careers it leads to: your grades and your strand add points that interests alone do not. It is also why two programs with the same name rank the same at different colleges.
+A blank field is never a penalty. With no grades, academic fit counts as a neutral 60. With no strand, strand alignment counts as 70. Filling in your profile makes the program scores more precise.`,
   },
   {
     slug: 'riasec-overview',
@@ -78,7 +79,7 @@ Programs that lead there include BS Accountancy, BS Accounting Information Syste
     slug: 'scct-overview',
     title: 'Guide: What SCCT career confidence means',
     body: `SCCT is Social Cognitive Career Theory. The SCCT assessment measures three beliefs that research links to career choices: Self-Efficacy (believing you can succeed at the tasks a career needs), Outcome Expectations (believing that effort will lead to good results), and Goal Orientation (intending to pursue a career goal).
-Each is scored from 0 to 100, and together they make your career confidence index, banded from Very Low to Very High. The index counts for 30% of every career match and 15% of every program match.
+Each is scored from 0 to 100, and together they make your career confidence index, banded from Very Low to Very High. The index counts for 30% of every career match and 20% of every program match.
 A low score is not a verdict on your ability. Confidence grows from experience: trying a subject or activity and succeeding at small steps, watching someone like you succeed, encouragement from teachers and family, and learning to manage worry. Joining a club, a short course, job shadowing or talking with someone who works in the field are practical ways to build it.
 If your interests are high but your confidence is low for a field, that is worth discussing with your guidance counselor.`,
   },
@@ -86,7 +87,7 @@ If your interests are high but your confidence is low for a field, that is worth
     slug: 'strands-and-programs',
     title: 'Guide: Senior high school strands and college programs',
     body: `CareerLinkAI records your senior high school strand as Academic or Technical-Professional, matching the two tracks of the strengthened senior high school curriculum. Some college programs list a recommended strand.
-How it affects a program score: strand alignment is 100 when your strand matches the program's recommended strand, 40 when it does not, and 70 when your strand or the program's is unknown. A program with no recommended strand counts as aligned. Strand alignment is 15% of a program score.
+How it affects a program score: strand alignment is 100 when your strand matches the program's recommended strand, 40 when it does not, and 70 when your strand or the program's is unknown. A program with no recommended strand counts as aligned. Strand alignment is 10% of a program score.
 A mismatch is advice, not a bar. Colleges generally admit students from any senior high school track, although some may ask for bridging subjects or look closely at your grades in Math and Science for technical programs.
 If a program you want does not match your strand, ask your guidance counselor and the college's admissions office what they require. Update your strand on your profile if it is wrong, then rebuild your recommendations.`,
   },

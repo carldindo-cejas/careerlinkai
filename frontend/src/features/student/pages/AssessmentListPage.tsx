@@ -154,7 +154,9 @@ export function AssessmentListPage() {
         </p>
       ) : null}
 
-      <div className="flex flex-col gap-4">
+      {/* The tour points here. With nothing assigned this div has no height, the overlay reads it
+          as absent, and the card falls back to saying so — which is the truth of the screen. */}
+      <div data-tour="assessment-list" className="flex flex-col gap-4">
         {pageItems.map((assignment) => (
           <AssignmentCard
             key={assignment.id}

@@ -71,6 +71,11 @@ function transportMessage(error: AxiosError<ApiError>): string | null {
 /**
  * Normalise every failure into an ApiRequestError, and sign the user out on a 401 so
  * a revoked or expired token cannot leave the app in a half-authenticated state.
+ *
+ * **Only a 401 ends the session.** A 429, a 500 or a dropped connection means the request failed,
+ * not that the token did, and treating those alike is half of why the 18 September 2026 incident
+ * looked like a capacity problem: every transient failure presented to the student as being
+ * thrown out. The route guards make the same distinction — see `ProtectedRoute`.
  */
 httpClient.interceptors.response.use(
   (response) => response,
@@ -79,7 +84,9 @@ httpClient.interceptors.response.use(
     const body = error.response?.data;
 
     if (status === 401) {
-      useAuthStore.getState().clear();
+      // `endSession`, not `clear`: the server rejected this token, so the sign-in screen has
+      // something to explain when the student lands back on it.
+      useAuthStore.getState().endSession();
     }
 
     // No response at all: the failure is the connection, not anything the server said.

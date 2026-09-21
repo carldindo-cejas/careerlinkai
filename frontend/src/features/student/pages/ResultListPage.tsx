@@ -8,9 +8,16 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Pagination } from '@/components/ui/pagination';
+import { Select } from '@/components/ui/select';
 import { useReports, useResults } from '@/features/student/hooks/useAssessment';
 import { useMyRecommendations } from '@/features/student/hooks/useRecommendations';
 import { bandFor, itemMean } from '@/features/student/reports/likertBands';
+import {
+  DEFAULT_PAPER,
+  paperSizeFrom,
+  PAPER_SIZES,
+  type PaperSize,
+} from '@/features/student/reports/paperSize';
 import { compositeIndex, formatDate } from '@/features/student/reports/reportMath';
 import { useReportDownload } from '@/features/student/reports/useReportDownload';
 import { useClientPagination } from '@/hooks/useClientPagination';
@@ -81,25 +88,24 @@ export function ResultListPage() {
     );
   }
 
-  const kicker =
-    headline.length === 2
-      ? 'Both assessments complete'
-      : headline.length === 1
-        ? '1 of 2 assessments complete'
-        : 'No assessments complete yet';
-
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-end justify-between gap-4">
+          {/*
+            The "BOTH ASSESSMENTS COMPLETE" kicker that sat over this heading was removed on
+            2026-09-20 (prompt-driven). It counted the two standing instruments and nothing else,
+            so it was a progress bar in words — and the two cards directly below it already say
+            which of them exist, in more detail and without a number a student has to interpret.
+          */}
           <div className="min-w-0">
-            {isError ? null : <p className={KICKER}>{kicker}</p>}
             <h1 className="text-3xl font-semibold text-foreground">My results</h1>
           </div>
 
           {!isError && riasec && scct ? (
             <Button
               variant="secondary"
+              data-tour="results-print"
               onClick={() =>
                 navigate(reportsPath([riasec.attempt_id, scct.attempt_id], { print: true }))
               }
@@ -122,7 +128,7 @@ export function ResultListPage() {
         <Alert>{error.message}</Alert>
       ) : (
         <>
-          <div className="grid gap-5 xl:grid-cols-2">
+          <div data-tour="result-cards" className="grid gap-5 xl:grid-cols-2">
             {riasec ? (
               <RiasecCard
                 result={riasec}
@@ -200,6 +206,7 @@ export function ResultListPage() {
             recommendations: recommendations.data ?? null,
             showAppendix: options.appendix,
             showRecommendations: options.matches,
+            paper: options.paper,
           });
 
           if (saved) setExportOpen(false);
@@ -453,6 +460,8 @@ type ExportChoice = 'both' | 'riasec' | 'scct';
 interface ExportOptions {
   appendix: boolean;
   matches: boolean;
+  /** A4, short (Letter) or long (Folio) — the print sheet and the PDF are laid out for it alike. */
+  paper: PaperSize;
 }
 
 /**
@@ -488,6 +497,7 @@ function ExportDialog({
   const [requested, setRequested] = useState<ExportChoice>(initialChoice);
   const [appendix, setAppendix] = useState(true);
   const [matches, setMatches] = useState(true);
+  const [paper, setPaper] = useState<PaperSize>(DEFAULT_PAPER);
   const groupName = useId();
 
   const choices: { value: ExportChoice; label: string; detail: string; ids: string[] }[] = [];
@@ -571,7 +581,16 @@ function ExportDialog({
               Include top matches
             </label>
           ) : null}
-          <p className="text-xs text-muted-foreground">Paper: A4</p>
+          <label className="mt-2 flex flex-col gap-1">
+            <span className="text-sm text-foreground">Paper size</span>
+            <Select value={paper} onChange={(event) => setPaper(paperSizeFrom(event.target.value))}>
+              {PAPER_SIZES.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label} — {option.detail}
+                </option>
+              ))}
+            </Select>
+          </label>
         </div>
 
         {downloadFailed ? (
@@ -589,7 +608,7 @@ function ExportDialog({
             variant="secondary"
             disabled={selected === undefined}
             onClick={() => {
-              if (selected) onPrint(selected.ids, { appendix, matches });
+              if (selected) onPrint(selected.ids, { appendix, matches, paper });
             }}
           >
             <Printer className="size-4" aria-hidden="true" />
@@ -599,7 +618,7 @@ function ExportDialog({
             loading={downloading}
             disabled={selected === undefined || downloading || !canDownload(selected.ids)}
             onClick={() => {
-              if (selected) onDownload(selected.ids, { appendix, matches });
+              if (selected) onDownload(selected.ids, { appendix, matches, paper });
             }}
           >
             {downloading ? null : <Download className="size-4" aria-hidden="true" />}

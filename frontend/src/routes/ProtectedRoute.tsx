@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 
+import { Alert } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { useCurrentUser } from '@/features/auth/hooks/useAuth';
 import { homePathForRole, loginPathForRole, paths } from '@/routes/paths';
 import { RouteFallback } from '@/routes/RouteFallback';
@@ -25,7 +27,7 @@ export function ProtectedRoute({ allow }: ProtectedRouteProps) {
   const setUser = useAuthStore((state) => state.setUser);
   const lastRole = useAuthStore((state) => state.lastRole);
 
-  const { data: user, isPending, isError } = useCurrentUser();
+  const { data: user, isPending, isError, refetch, isFetching } = useCurrentUser();
 
   useEffect(() => {
     if (user) {
@@ -61,9 +63,43 @@ export function ProtectedRoute({ allow }: ProtectedRouteProps) {
     return <RouteFallback />;
   }
 
-  // The token was rejected (revoked, expired, or the account is no longer active). The
-  // http client has already cleared it.
-  if (isError || !user) {
+  /**
+   * **Reaching here with an error means the token was not the problem.**
+   *
+   * A 401 — revoked, expired, or an account no longer active — clears the token in the http
+   * client, which re-renders this component into the `!token` branch above and sends the student
+   * to their sign-in door. So the only failures that arrive here are the ones that left the
+   * session intact: a 429, a 500, a request that never made it off a phone on school wifi.
+   *
+   * Those used to land in the same `Navigate` as a real rejection, which meant a single dropped
+   * request presented to a student as being thrown out of the system — and, because the join
+   * screen was where they landed, they signed in again, ended somebody else's session, and fed
+   * the eviction loop of the 18 September 2026 incident. `useCurrentUser` now retries these
+   * before giving up; this is what the student sees if the retries also fail, and the session is
+   * still there behind it.
+   */
+  if (isError) {
+    return (
+      <div
+        className="flex min-h-screen items-center justify-center p-4"
+        role="alert"
+      >
+        <div className="flex w-full max-w-md flex-col gap-4">
+          <Alert tone="warning">
+            We could not reach the server. You are still signed in — check your connection and try
+            again.
+          </Alert>
+          <Button onClick={() => void refetch()} loading={isFetching}>
+            {isFetching ? 'Trying again…' : 'Try again'}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Pending is handled above, so no user here means the query resolved to nothing — a shape the
+  // API cannot produce, and not something to guess at.
+  if (!user) {
     return <Navigate to={signInPath} replace />;
   }
 

@@ -1,3 +1,4 @@
+import { DEFAULT_PAPER, type PaperSize } from '@/features/student/reports/paperSize';
 import type { UserRole } from '@/types/user';
 
 export const paths = {
@@ -56,6 +57,16 @@ export const paths = {
   adminAssessmentTemplate: '/admin/assessment-templates/:templateId',
 
   counselorDashboard: '/counselor',
+  /**
+   * The counselor's own account (2026-09-20) — their name, the address they sign in with, and
+   * their password, in that order of how often it is touched.
+   *
+   * Not a nav row, for the same reason `studentProfile` is not one: the navigation is the things
+   * a person came here to do, and an account is where they go when something about *them* is
+   * wrong. It is reached from the name in the top bar and from the identity block above "Sign
+   * out", which is where every other product in this shape puts it.
+   */
+  counselorProfile: '/counselor/profile',
   counselorClasses: '/counselor/classes',
   counselorClassDetail: '/counselor/classes/:classId',
   /**
@@ -143,6 +154,8 @@ export interface ReportsOptions {
   appendix?: boolean;
   /** Defaults on; `false` pre-clears the "Top matches" toggle. */
   matches?: boolean;
+  /** The paper to lay the sheet out for; A4 unless another size is named. */
+  paper?: PaperSize;
   /** Open the browser's print dialog once every report has loaded. */
   print?: boolean;
 }
@@ -152,6 +165,9 @@ export function reportsPath(attemptIds: string[], options: ReportsOptions = {}):
 
   if (options.appendix === false) params.set('appendix', '0');
   if (options.matches === false) params.set('matches', '0');
+  if (options.paper !== undefined && options.paper !== DEFAULT_PAPER) {
+    params.set('paper', options.paper);
+  }
   if (options.print) params.set('print', '1');
 
   return `${paths.studentReports}?${params.toString()}`;

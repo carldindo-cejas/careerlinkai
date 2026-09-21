@@ -117,6 +117,28 @@ describe('ScctReport', () => {
     expect(screen.getByText('Very High Career Confidence.')).toBeInTheDocument();
   });
 
+  /**
+   * The distribution is an axis of the scale, so every point on it is named — including the two
+   * nobody in this fixture chose, which used to print as a bare "1" and "2".
+   */
+  it('names all five points of the scale, chosen or not', () => {
+    render(<ScctReport report={report()} />);
+
+    const tally = screen.getByText(/Likert response distribution/).parentElement!;
+    const rows = within(tally)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => within(row).getAllByRole('cell').map((cell) => cell.textContent));
+
+    expect(rows).toEqual([
+      ['Strongly Disagree', '1', '0', '0.0%', ''],
+      ['Disagree', '2', '0', '0.0%', ''],
+      ['Neutral', '3', '5', '16.7%', ''],
+      ['Agree', '4', '19', '63.3%', ''],
+      ['Strongly Agree', '5', '6', '20.0%', ''],
+    ]);
+  });
+
   it('has no matches section and hides the appendix on request', () => {
     const { rerender } = render(<ScctReport report={report()} />);
 

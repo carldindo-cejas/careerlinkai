@@ -1,9 +1,9 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, gt, isNull, or } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
 import { apiTokens } from '@/db/schema';
 import { generateToken, hashToken, uuid } from '@/lib/crypto';
-import { hoursFromNow, now } from '@/lib/datetime';
+import { hoursFromNow, isExpired, now } from '@/lib/datetime';
 
 /**
  * The first-party token service (FULLPLAN §38) — the replacement for Sanctum, with the
@@ -53,14 +53,47 @@ export async function revokeToken(db: Database, tokenId: string): Promise<void> 
 }
 
 /**
- * Revoke every token a user holds.
+ * Does this user have a session that is still good right now?
+ *
+ * Read-only, and it exists for one caller: `/student-access/join`'s confirmation step, which has
+ * to warn a student that continuing will sign another device out **before** it does it. Expired
+ * rows are excluded rather than trusted — `authenticate()` deletes those on presentation and the
+ * nightly sweep collects the rest, so a row can outlive its own expiry by up to a day and must
+ * not be reported as a live session on the strength of merely existing.
+ */
+export async function hasActiveToken(db: Database, userId: string): Promise<boolean> {
+  const live = await db.query.apiTokens.findFirst({
+    columns: { id: true },
+    where: and(
+      eq(apiTokens.userId, userId),
+      // A NULL expiry means "never expires" (see `isExpired`), so it counts as live.
+      or(isNull(apiTokens.expiresAt), gt(apiTokens.expiresAt, now())),
+    ),
+  });
+
+  return live !== undefined;
+}
+
+/**
+ * Revoke every token a user holds, and report **how many of them were still live**.
  *
  * Used by: a password change (§38 — a rotated credential must not leave old sessions
  * alive), a password reset, a student re-joining a class (one active session, ratified
  * v1.2), and removal from a class (Phase 3.5 Step 2 — audit F-H3).
+ *
+ * The count comes back from the `DELETE` itself rather than from a second query, and exists so
+ * the join path can record in the audit trail that a sign-in **displaced somebody** — the fact
+ * that made the September 2026 "students keep getting logged out" incident take a database dig
+ * to explain, because the trail recorded the arrival and not the eviction. Every other caller
+ * ignores it.
  */
-export async function revokeAllTokensForUser(db: Database, userId: string): Promise<void> {
-  await db.delete(apiTokens).where(eq(apiTokens.userId, userId));
+export async function revokeAllTokensForUser(db: Database, userId: string): Promise<number> {
+  const revoked = await db
+    .delete(apiTokens)
+    .where(eq(apiTokens.userId, userId))
+    .returning({ expiresAt: apiTokens.expiresAt });
+
+  return revoked.filter((token) => !isExpired(token.expiresAt)).length;
 }
 
 // H2 (removed): `touchToken` stamped `api_tokens.last_used_at` on every authenticated request —

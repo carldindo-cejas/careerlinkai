@@ -215,8 +215,9 @@ export const studentProfiles = sqliteTable(
     /**
      * **`gwa` is gone** (prompt-driven, 2026-07-27). The column still exists in D1 — dropping it
      * would destroy data for no gain — but nothing in this codebase reads or writes it, and it is
-     * absent here so that nothing can. §27's `academicFit` and `programEligibility` now read the
-     * average of whichever subject grades below are present.
+     * absent here so that nothing can. §27's `academicFit` now reads the average of whichever
+     * subject grades below are present (`programEligibility`, which read the same average on
+     * coarser tiers, left the program composite on 2026-09-18).
      */
     mathGrade: real('math_grade'),
     scienceGrade: real('science_grade'),
@@ -1544,6 +1545,15 @@ export const chatMessages = sqliteTable(
      * statement that claims them sets it, so nobody is told twice.
      */
     knowledgeAnsweredAt: text('knowledge_answered_at'),
+    /**
+     * Where this answer offered to take the student (migration 0038) — a destination id from
+     * `knowledge/student-destinations.ts`, which the client resolves to a route and an element on
+     * it. NULL on every user message and on every answer that was not a navigation question, which
+     * is nearly all of them.
+     *
+     * An id rather than a URL, and no CHECK constraint: see the migration for both.
+     */
+    navTarget: text('nav_target'),
     createdAt: createdAt(),
   },
   (table) => [

@@ -33,16 +33,41 @@ import { RIASEC_DIMENSIONS } from '@/db/enums';
  * been removed from the student profile, so both now read the **average of whichever of Math,
  * Science and English the student filled in**.
  *
- * Nothing else moved. The weights are untouched (`academicFit` 0.20, `programEligibility` 0.10),
- * the anchors are untouched (75 floor, 95 ceiling), and the neutral values for "no signal" are
- * untouched — a student who filled in none of the three lands on exactly the 60/70 that a NULL GWA
- * used to produce. The change is *which number* is fed in, not what is done with it, which is why
- * §28's worked example still computes: it names an academic input of 88, and 88 is now the mean of
- * the subject grades rather than a GWA column.
+ * The anchors are untouched (75 floor, 95 ceiling) and the neutral values for "no signal" are
+ * untouched — a student who filled in none of the three lands on exactly the 60 that a NULL GWA
+ * used to produce. The change is *which number* is fed in, not what is done with it.
  *
  * The average is over **present** fields only, not over three with blanks read as zero. A student
  * who knows their Math grade and not their Science grade has given one real signal, and averaging
  * it against a zero would turn that into a punishment for honesty.
+ *
+ * ## The program composite now follows the careers (prompt-driven, 2026-09-18)
+ *
+ * A student whose #1 career was Clinical Psychologist was shown BS Psychology at #7, below four
+ * programs that lead nowhere near it. Nothing was broken: the old composite spent 30% of a
+ * program's score on `academicFit` + `programEligibility` — two readings of the *same* subject
+ * average, which is identical for every program a given student is scored against and therefore
+ * discriminates between none of them — and the only term that looked at the careers a program
+ * leads to was an **average** over all of them, which punishes a degree with one perfect
+ * destination and several ordinary ones.
+ *
+ * So the program composite was re-weighted around the thing a student is actually asking about:
+ *
+ * | Component | Was | Now | Why |
+ * |---|---|---|---|
+ * | `riasecCompatibility` | 0.35 | 0.35 | Unchanged. The breadth signal: *all* the careers. |
+ * | `careerAlignment` | — | **0.25** | New. The depth signal: the **best** careers, scored exactly as the student's own career list scores them. |
+ * | `careerConfidence` | 0.15 | 0.20 | SCCT is a real, per-student signal and was outweighed by two readings of one grade average. |
+ * | `academicFit` | 0.20 | 0.10 | Still counts — but it cannot be a fifth of a score it cannot vary. |
+ * | `strandAlignment` | 0.15 | 0.10 | A 60-point mismatch penalty at 0.15 was, on its own, enough to sink a program that led to the student's #1 career. |
+ * | `programEligibility` | 0.10 | **gone** | The *second* reading of the subject average, on coarser tiers. `academicFit` already says it, continuously. |
+ * | `studentPreference` | 0.05 | **gone** | A constant 70 for every match in v1 — see below. |
+ *
+ * **Why `studentPreference` went with it.** The five weights above sum to 1.00 only without it,
+ * and of everything in the composite it is the one term that can be dropped without losing a
+ * signal: it is the same number for every program, so it changed no ranking, ever. `CAREER_WEIGHTS`
+ * keeps it, so §63's preference input still has a home the day it ships — it just no longer takes
+ * a share of the program score away from the terms that discriminate.
  */
 
 // --- The §27 constants ---------------------------------------------------------------------
@@ -65,24 +90,49 @@ export const CAREER_WEIGHTS = {
   studentPreference: 0.1,
 } as const;
 
-/** §27 program composite. Sums to 1.00. */
+/**
+ * The program composite. Sums to 1.00 — see the file header for what moved on 2026-09-18 and why.
+ *
+ * Read it as two halves. `riasecCompatibility` + `careerAlignment` = 0.60 is **the careers this
+ * program leads to**, seen twice: once in breadth (the average over all of them) and once in depth
+ * (the best few, on the student's own career scale). The remaining 0.40 is the student: how
+ * confident they are (0.20), how their grades sit against the academic band (0.10), and whether
+ * the track they are on is the one the program expects (0.10).
+ */
 export const PROGRAM_WEIGHTS = {
   riasecCompatibility: 0.35,
-  careerConfidence: 0.15,
-  academicFit: 0.2,
-  strandAlignment: 0.15,
-  programEligibility: 0.1,
-  studentPreference: 0.05,
+  careerAlignment: 0.25,
+  careerConfidence: 0.2,
+  academicFit: 0.1,
+  strandAlignment: 0.1,
 } as const;
 
 /**
- * §27's student-preference component, fixed at 70 for every match in v1.
+ * How many of a program's linked careers vote on `careerAlignment`, and how loudly.
+ *
+ * **Three, not all of them** — the whole point of this component is to be the opposite of the
+ * average `riasecCompatibility` already takes. A degree is judged by the best destinations it
+ * opens, not by its weakest ones: BS Psychology leads to Clinical Psychologist *and* to a handful
+ * of ordinary-fit roles, and averaging those together is exactly what buried it.
+ *
+ * **Three, not one.** A single `max()` would hand a whole program's 25% to one catalog row, so one
+ * optimistic program→career mapping typed by an admin could carry a degree to the top of a
+ * student's list on its own. Three with a decaying weight needs a *pattern*, not a row.
+ *
+ * Renormalized when fewer than three careers are linked, exactly as `POSITION_WEIGHTS` is, so a
+ * program with one linked career is scored on that career rather than capped at 60% of the range.
+ */
+export const CAREER_ALIGNMENT_DEPTH = [0.6, 0.25, 0.15] as const;
+
+/**
+ * §27's student-preference component, fixed at 70 for every match in v1. **Career matches only**
+ * since 2026-09-18 — the program composite dropped it (see `PROGRAM_WEIGHTS`).
  *
  * There is no preference-capture mechanism in v1 — no "preferred program" input, no table. The
- * component stays in the formula rather than being dropped so that the weight redistribution is
- * trivial the day a real preference input ships (§63). Being a constant, it shifts every score
- * by the same amount and therefore **changes no ranking**; it is there to keep the composite on
- * a 0–100 scale, not to discriminate between options.
+ * component stays in the career formula rather than being dropped so that the weight
+ * redistribution is trivial the day a real preference input ships (§63). Being a constant, it
+ * shifts every career score by the same amount and therefore **changes no ranking**; it is there
+ * to keep the composite on a 0–100 scale, not to discriminate between options.
  */
 export const STUDENT_PREFERENCE = 70;
 
@@ -100,7 +150,6 @@ const NEUTRAL_RIASEC = 50;
 
 /** §27: an unknown academic average is "neutral-leaning-positive", not a failure. */
 const NEUTRAL_UNKNOWN_ACADEMIC_FIT = 60;
-const NEUTRAL_UNKNOWN_ACADEMIC_ELIGIBILITY = 70;
 
 /** SILENCE: an unfilled strand is unknown, not mismatched. See the file header. */
 const NEUTRAL_UNKNOWN_STRAND = 70;
@@ -168,6 +217,19 @@ export interface ProgramTarget {
   recommendedStrand: Strand | null;
 }
 
+/**
+ * One career a program leads to, as the program composite needs it.
+ *
+ * The title travels with the code because `careerAlignment` made the question *which* career a
+ * program aligns with worth answering out loud. Before it, a program's careers were an anonymous
+ * bag of Holland codes to average; now the best of them is 25% of the score, and a reason that
+ * would not name it is withholding the one fact that explains the number.
+ */
+export interface LinkedCareer {
+  title: string;
+  typicalRiasecCode: string | null;
+}
+
 // --- Component formulas (§27), all on a 0–100 scale -----------------------------------------
 
 /**
@@ -227,6 +289,63 @@ export function programRiasecCompatibility(
 }
 
 /**
+ * One career's composite, **unrounded** — the single definition of "what this career scores for
+ * this student".
+ *
+ * `scoreCareer` rounds it for display; `careerAlignment` blends several of them and lets the
+ * program composite do the rounding. Neither re-derives the formula, which is the point: the
+ * number a program's career alignment is built from is the *same* number the student reads on
+ * their career list, not a parallel opinion that can drift from it.
+ */
+export function careerMatchScore(student: StudentSignals, targetCode: string | null): number {
+  return (
+    riasecCompatibility(student.riasec, targetCode) * CAREER_WEIGHTS.riasecCompatibility +
+    student.careerConfidenceIndex * CAREER_WEIGHTS.careerConfidence +
+    STUDENT_PREFERENCE * CAREER_WEIGHTS.studentPreference
+  );
+}
+
+/**
+ * How strongly a program leads to the careers this student was actually recommended
+ * (2026-09-18) — the component that makes the two lists answer to each other.
+ *
+ * It scores the program's linked careers with `careerMatchScore` and keeps the best few under
+ * `CAREER_ALIGNMENT_DEPTH`. Because those are the same scores that rank the student's career list,
+ * "this program's alignment is high" and "this program leads to careers near the top of your list"
+ * are the same statement — which is what a student means when they ask why their #1 career and
+ * their #1 program point in different directions.
+ *
+ * A program with no linked careers is scored as though it linked to one career with no Holland
+ * code: the neutral 50 compatibility, carried through the career formula. That keeps an unmapped
+ * program on the **same scale** as a mapped one — a flat 50 here would be a different unit from
+ * every other value this function returns, and would read as a middling career rather than as no
+ * information.
+ */
+export function careerAlignment(
+  student: StudentSignals,
+  linkedCareerCodes: (string | null)[],
+): number {
+  const codes = linkedCareerCodes.length === 0 ? [null] : linkedCareerCodes;
+  const best = codes
+    .map((code) => careerMatchScore(student, code))
+    .sort((a, b) => b - a)
+    .slice(0, CAREER_ALIGNMENT_DEPTH.length);
+  const weightSum = CAREER_ALIGNMENT_DEPTH.slice(0, best.length).reduce(
+    (sum, weight) => sum + weight,
+    0,
+  );
+
+  // Renormalized for fewer than three careers, for the same reason `riasecCompatibility` does it:
+  // otherwise a program with one linked career could never score above 60% of the range, and
+  // breadth of mapping would outrank fit.
+  return best.reduce((score, value, index) => {
+    const weight = CAREER_ALIGNMENT_DEPTH[index] ?? 0; // Unreachable: `best` is sliced to 3.
+
+    return score + value * (weight / weightSum);
+  }, 0);
+}
+
+/**
  * The student's academic signal: the mean of whichever subject grades are present, or NULL.
  *
  * **Present fields only.** A blank is not a zero — a student who knows their Math grade and not
@@ -280,26 +399,6 @@ export function strandAlignment(
   return studentStrand === programStrand ? STRAND_ALIGNED : STRAND_MISMATCH;
 }
 
-/**
- * §27 — the deterministic eligibility tier. An unknown academic average leans positive, never
- * punitive.
- */
-export function programEligibility(average: number | null): number {
-  if (average === null) {
-    return NEUTRAL_UNKNOWN_ACADEMIC_ELIGIBILITY;
-  }
-
-  if (average >= 80) {
-    return 100;
-  }
-
-  if (average >= ACADEMIC_FLOOR) {
-    return 70;
-  }
-
-  return 40;
-}
-
 // --- Composites (§27) ----------------------------------------------------------------------
 
 /** The per-component breakdown behind a score — what makes a match auditable rather than magic. */
@@ -311,11 +410,10 @@ export interface CareerMatchComponents {
 
 export interface ProgramMatchComponents {
   riasecCompatibility: number;
+  careerAlignment: number;
   careerConfidenceIndex: number;
   academicFit: number;
   strandAlignment: number;
-  programEligibility: number;
-  studentPreference: number;
 }
 
 export interface CareerMatch {
@@ -346,11 +444,7 @@ export function scoreCareer(student: StudentSignals, career: CareerTarget): Care
     studentPreference: STUDENT_PREFERENCE,
   };
 
-  const matchScore = roundToTenth(
-    components.riasecCompatibility * CAREER_WEIGHTS.riasecCompatibility +
-      components.careerConfidenceIndex * CAREER_WEIGHTS.careerConfidence +
-      components.studentPreference * CAREER_WEIGHTS.studentPreference,
-  );
+  const matchScore = roundToTenth(careerMatchScore(student, career.typicalRiasecCode));
 
   return {
     careerId: career.id,
@@ -369,32 +463,56 @@ export function scoreCareer(student: StudentSignals, career: CareerTarget): Care
 export function scoreProgram(
   student: StudentSignals,
   program: ProgramTarget,
-  linkedCareerCodes: (string | null)[],
+  linkedCareers: LinkedCareer[],
 ): ProgramMatch {
+  const linkedCareerCodes = linkedCareers.map((career) => career.typicalRiasecCode);
   const components: ProgramMatchComponents = {
     riasecCompatibility: programRiasecCompatibility(student.riasec, linkedCareerCodes),
+    careerAlignment: careerAlignment(student, linkedCareerCodes),
     careerConfidenceIndex: student.careerConfidenceIndex,
     academicFit: academicFit(student.academicAverage),
     strandAlignment: strandAlignment(student.strand, program.recommendedStrand),
-    programEligibility: programEligibility(student.academicAverage),
-    studentPreference: STUDENT_PREFERENCE,
   };
 
   const matchScore = roundToTenth(
     components.riasecCompatibility * PROGRAM_WEIGHTS.riasecCompatibility +
+      components.careerAlignment * PROGRAM_WEIGHTS.careerAlignment +
       components.careerConfidenceIndex * PROGRAM_WEIGHTS.careerConfidence +
       components.academicFit * PROGRAM_WEIGHTS.academicFit +
-      components.strandAlignment * PROGRAM_WEIGHTS.strandAlignment +
-      components.programEligibility * PROGRAM_WEIGHTS.programEligibility +
-      components.studentPreference * PROGRAM_WEIGHTS.studentPreference,
+      components.strandAlignment * PROGRAM_WEIGHTS.strandAlignment,
   );
 
   return {
     programId: program.id,
     matchScore,
-    reason: buildReason(student, 'PROGRAM', program.name, null, program.recommendedStrand),
+    reason: buildReason(
+      student,
+      'PROGRAM',
+      program.name,
+      null,
+      program.recommendedStrand,
+      bestLinkedCareer(student, linkedCareers),
+    ),
     components,
   };
+}
+
+/**
+ * The linked career this student scores highest on — the one `careerAlignment` leans on hardest,
+ * and the one the reason string names.
+ *
+ * Tie-broken by title for the same reason the rankings are (§26): two careers on an identical
+ * score would otherwise be named in whatever order the catalog query returned that day, and the
+ * reason is persisted text a student can screenshot.
+ */
+function bestLinkedCareer(student: StudentSignals, linked: LinkedCareer[]): string | null {
+  const ranked = [...linked].sort(
+    (a, b) =>
+      careerMatchScore(student, b.typicalRiasecCode) -
+        careerMatchScore(student, a.typicalRiasecCode) || a.title.localeCompare(b.title),
+  );
+
+  return ranked[0]?.title ?? null;
 }
 
 // --- Ranking (§27) -------------------------------------------------------------------------
@@ -487,6 +605,7 @@ function buildReason(
   target: string,
   targetCode: string | null,
   programStrand: Strand | null,
+  bestCareer: string | null = null,
 ): string {
   const top = topDimension(student.riasec);
   const topName = RIASEC_DIMENSION_NAMES[top];
@@ -506,6 +625,18 @@ function buildReason(
   }
 
   const clauses = [opening];
+
+  // The career-alignment clause (2026-09-18). `careerAlignment` is 25% of a program score and is
+  // driven hardest by this one career, so naming it turns the largest single reason a program
+  // ranks where it does from a number into a sentence. It is also the answer to the question this
+  // component was added for — "my top career is X, so why is the program that leads to X not at
+  // the top?" — which a student can now read off the card without asking the assistant at all.
+  //
+  // Omitted for an unmapped program rather than hedged: there is no career to name, and a program
+  // that leads nowhere in the catalog should not be given a sentence implying it leads somewhere.
+  if (bestCareer !== null) {
+    clauses.push(`Its strongest career match for you is ${bestCareer}.`);
+  }
 
   // §27: the clause states a *match*, so it appears only when there is one to state.
   if (student.strand !== null && programStrand !== null && student.strand === programStrand) {

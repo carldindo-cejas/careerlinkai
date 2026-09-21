@@ -154,8 +154,7 @@ describe('ResultListPage', () => {
   it('shows the RIASEC card with its code, top three and bands', async () => {
     renderPage();
 
-    expect(await screen.findByText('Both assessments complete')).toBeInTheDocument();
-    expect(screen.getByText('IAS')).toBeInTheDocument();
+    expect(await screen.findByText('IAS')).toBeInTheDocument();
     expect(screen.getByText('Investigative · Artistic · Social')).toBeInTheDocument();
     expect(screen.getByText('90.0 · Very High Interest')).toBeInTheDocument();
 
@@ -249,6 +248,41 @@ describe('ResultListPage', () => {
     expect(downloadReportsPdf).not.toHaveBeenCalled();
   });
 
+  /** The paper travels with the choice: into the print link, and into the file. */
+  it('carries the chosen paper size into both ways out', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText('80.0');
+    await user.click(screen.getByRole('button', { name: 'Export SCCT results' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Export results' });
+
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Paper size' }), 'long');
+    await user.click(within(dialog).getByRole('button', { name: 'Download PDF' }));
+
+    await waitFor(() =>
+      expect(downloadReportsPdf).toHaveBeenCalledWith(
+        [SCCT],
+        expect.objectContaining({ paper: 'long' }),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Export SCCT results' }));
+
+    const reopened = await screen.findByRole('dialog', { name: 'Export results' });
+
+    await user.selectOptions(
+      within(reopened).getByRole('combobox', { name: 'Paper size' }),
+      'short',
+    );
+    await user.click(within(reopened).getByRole('button', { name: 'Print' }));
+
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/student/reports?attempts=attempt-scct&paper=short&print=1',
+    );
+  });
+
   /** The other way out of the dialog: a file, straight away, and the student stays put. */
   it('downloads the chosen report as a PDF without leaving the page', async () => {
     const user = userEvent.setup();
@@ -270,6 +304,7 @@ describe('ResultListPage', () => {
         recommendations: null,
         showAppendix: false,
         showRecommendations: true,
+        paper: 'a4',
       }),
     );
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -302,12 +337,24 @@ describe('ResultListPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('1 of 2 assessments complete')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'SCCT Career Confidence Scale' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: 'SCCT Career Confidence Scale' }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Not completed yet/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Print results' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Export RIASEC results' })).toBeInTheDocument();
     expect(screen.getByText(/Nothing else yet/)).toBeInTheDocument();
+  });
+
+  /**
+   * The "BOTH ASSESSMENTS COMPLETE" kicker over the heading was removed on 2026-09-20. The two
+   * cards below say which instruments exist in more detail than a count of them could.
+   */
+  it('does not count the standing instruments over the heading', async () => {
+    renderPage();
+
+    await screen.findByText('IAS');
+    expect(screen.queryByText(/assessments? complete/i)).not.toBeInTheDocument();
   });
 
   /** The matches live on "My recommendations" — this page carries the two results only. */
@@ -316,7 +363,7 @@ describe('ResultListPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('Both assessments complete')).toBeInTheDocument();
+    expect(await screen.findByText('IAS')).toBeInTheDocument();
     await waitFor(() => expect(recommendationApi.getMine).toHaveBeenCalled());
     expect(screen.queryByText(/Top matches/)).not.toBeInTheDocument();
     expect(screen.queryByText('BS Program 1')).not.toBeInTheDocument();

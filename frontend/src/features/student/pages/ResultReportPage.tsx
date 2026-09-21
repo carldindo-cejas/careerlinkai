@@ -1,10 +1,16 @@
 import { Download, Printer } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { useReports } from '@/features/student/hooks/useAssessment';
 import { useMyRecommendations } from '@/features/student/hooks/useRecommendations';
+import {
+  paperSizeFrom,
+  paperSpec,
+  PAPER_SIZES,
+  type PaperSize,
+} from '@/features/student/reports/paperSize';
 import { inReportOrder } from '@/features/student/reports/reportContent';
 import { Corners } from '@/features/student/reports/reportParts';
 import { RiasecReport } from '@/features/student/reports/RiasecReport';
@@ -21,9 +27,14 @@ import { paths, resultPath } from '@/routes/paths';
  * **Download PDF** builds the same report as a file (`useReportDownload`) with no dialog at all.
  * Both honour the section toggles.
  *
- * `appendix=0` / `matches=0` pre-set the toggles. `print=1` opens the browser's print dialog once
- * every report has loaded, and is then dropped from the URL so a reload does not print a second
- * time.
+ * `appendix=0` / `matches=0` pre-set the toggles and `paper=short|long` the paper size, so the
+ * export dialog's choices carry over into this page. `print=1` opens the browser's print dialog
+ * once every report has loaded, and is then dropped from the URL so a reload does not print a
+ * second time.
+ *
+ * **Paper.** A4, short (Letter) or long (Folio) — the same choice for both ways out. It writes the
+ * `@page` rule the print dialog opens on (browsers offer no other way to preselect a size, and the
+ * reader can still override it there) and is handed to the PDF builder as its page box.
  *
  * Rendered outside the student shell (see router.tsx) — the page is the sheet.
  */
@@ -45,6 +56,8 @@ export function ResultReportPage() {
     searchParams.get('matches') !== '0',
   );
   const [showAppendix, setShowAppendix] = useState(searchParams.get('appendix') !== '0');
+  const [paper, setPaper] = useState<PaperSize>(paperSizeFrom(searchParams.get('paper')));
+  const sheet = paperSpec(paper);
 
   const loading = queries.some((query) => query.isLoading) || recommendations.isLoading;
   const failedToLoad = queries.some((query) => query.isError);
@@ -107,7 +120,10 @@ export function ResultReportPage() {
   const hasRiasec = reports.some((report) => report.assessment?.category === 'RIASEC');
 
   return (
-    <div className="industry">
+    <div className="industry" style={{ '--rr-sheet-width': sheet.cssWidth } as CSSProperties}>
+      {/* `@page` takes no selector, so the chosen size is written as a rule of its own. */}
+      <style data-rr-paper={sheet.id}>{`@page { size: ${sheet.css}; }`}</style>
+
       <div className="rr rr-toolbar" role="toolbar" aria-label="Report controls">
         <button
           type="button"
@@ -137,6 +153,20 @@ export function ResultReportPage() {
           />
           Item appendix
         </label>
+        <label className="rr-toggle">
+          Paper
+          <select
+            className="rr-paper"
+            value={paper}
+            onChange={(event) => setPaper(paperSizeFrom(event.target.value))}
+          >
+            {PAPER_SIZES.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label} · {option.detail}
+              </option>
+            ))}
+          </select>
+        </label>
         <button type="button" className="btn btn-secondary" onClick={() => window.print()}>
           <Printer className="size-4" aria-hidden="true" />
           Print
@@ -150,6 +180,7 @@ export function ResultReportPage() {
               recommendations: recommendations.data ?? null,
               showRecommendations,
               showAppendix,
+              paper,
             })
           }
         >

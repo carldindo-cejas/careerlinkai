@@ -148,8 +148,8 @@ export function ReportDocument({
 }
 
 /**
- * How many items took each point on the scale. The label for a value is whatever the student's
- * own answers called it; a value nobody chose falls back to its number.
+ * How many items took each point on the scale — all five points, named by the scale itself
+ * (`AGREEMENT_SCALE`), including the ones no item landed on.
  */
 export function LikertDistribution({ report }: { report: AssessmentReport }) {
   const tally = likertTally(report);
@@ -282,7 +282,6 @@ export function ItemAppendix({
           </table>
         </div>
       ))}
-      <p className="rr-fine">{APPENDIX_COPY.fine}</p>
     </section>
   );
 }

@@ -182,7 +182,9 @@ export function RecommendationPage() {
             </CardContent>
           </Card>
         ) : (
-          <>
+          // A wrapper rather than the fragment that was here, so the tour has something to point
+          // at. `gap-6` matches the column it replaced a fragment inside, so nothing moves.
+          <div data-tour="recommendation-lists" className="flex flex-col gap-6">
             <ViewSwitch
               value={view}
               onChange={setView}
@@ -215,7 +217,7 @@ export function RecommendationPage() {
                 )}
               />
             )}
-          </>
+          </div>
         )}
       </div>
 

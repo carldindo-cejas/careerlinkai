@@ -1,8 +1,8 @@
 /**
  * The in-process domain-event dispatcher (FULLPLAN §11) — a small typed pub/sub, not an external
- * broker, and deliberately so: v1 has exactly **four** events, and a message broker to carry four
- * events between modules that share a process would be infrastructure bought to solve a problem
- * nobody has (§3, principle 6).
+ * broker, and deliberately so: v1 has seven events, and a message broker to carry seven events
+ * between modules that share a process would be infrastructure bought to solve a problem nobody
+ * has (§3, principle 6).
  *
  * Two communication patterns exist in this system and only two. A **direct service call** is the
  * default and is used whenever the caller needs the answer. An **event** is used only for the
@@ -118,13 +118,39 @@ export interface ClassRosterFieldsChangedEvent {
   studentIds?: string[];
 }
 
+/**
+ * The seventh event (prompt-driven, 2026-09-20) — **"a student changed their own name"**.
+ *
+ * An event for the reason the other two cross-module ones are. A student renaming themselves on
+ * their profile has to reach their counselors' notification bells, and notifications live in the
+ * Platform module while the profile lives in Assessment. More decisively, the failure mode settles
+ * it: **the rename must stand even if nobody can be told about it.** The name is already written
+ * and committed by the time this fires, and `dispatch` guarantees that a listener which throws is
+ * logged and absorbed rather than turning a successful save into a 500 on a form the student
+ * watched succeed.
+ *
+ * `from` and `to` both travel, because the notification is useless without the old one — a
+ * counselor reading "Ana Reyes changed their name" cannot find the row that used to say something
+ * else. The username does not travel: it is per class, so the listener resolves it alongside the
+ * class name when it works out who to tell. It is nonetheless the point of the message rather
+ * than a detail — a rename deliberately does **not** change how the student signs in, and a
+ * counselor who assumed otherwise would go looking for a credential that never moved.
+ */
+export interface StudentRenamedEvent {
+  type: 'StudentRenamed';
+  studentId: string;
+  from: string;
+  to: string;
+}
+
 export type DomainEvent =
   | AssessmentCompletedEvent
   | RecommendationGeneratedEvent
   | AssessmentDraftGeneratedEvent
   | KnowledgeDocumentProcessedEvent
   | ClassActivatedEvent
-  | ClassRosterFieldsChangedEvent;
+  | ClassRosterFieldsChangedEvent
+  | StudentRenamedEvent;
 
 export type Listener<E extends DomainEvent> = (event: E) => Promise<void>;
 

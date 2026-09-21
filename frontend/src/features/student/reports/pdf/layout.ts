@@ -292,6 +292,12 @@ export interface ColumnsBlock extends Spacing {
   columns: { weight: number; children: Block[] }[];
   /** `align-items: stretch`: a box that is a column's only child grows to the row's height. */
   stretch?: boolean;
+  /**
+   * Never split across pages, as `break-inside: avoid` on the sheet. Only for a row short enough
+   * that the white it can push to the next page is worth less than the split — the distribution
+   * beside the bands table, whose second half would arrive with no heading over it.
+   */
+  keepTogether?: boolean;
 }
 
 export interface RuleBlock extends Spacing {
@@ -379,7 +385,9 @@ function sliceBlock(pen: Pen, block: Block, x: number, width: number): Slice[] {
     case 'box':
       return block.keepTogether ? [atomic(boxPlaceable(pen, block, width), x)] : boxSlices(pen, block, x, width);
     case 'columns':
-      return columnsSlices(pen, block, x, width);
+      return block.keepTogether
+        ? [atomic(columnsPlaceable(pen, block, width), x)]
+        : columnsSlices(pen, block, x, width);
     case 'rule':
       return [
         slice(block.width, (target, dx, y) =>

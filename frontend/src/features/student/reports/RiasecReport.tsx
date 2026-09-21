@@ -110,7 +110,6 @@ export function RiasecReport({
           <div className="panel">
             <div className="rk">{normalization.kicker}</div>
             <p className="mono rr-formula">{normalization.formula}</p>
-            <p className="rr-note">{normalization.note}</p>
             {normalization.example ? (
               <p className="mono rr-example">{normalization.example}</p>
             ) : null}

@@ -263,9 +263,12 @@ export function formatScore(value: number): string {
 
 const COMPONENT_LABELS: [string, string][] = [
   ['riasecCompatibility', 'RIASEC fit'],
+  ['careerAlignment', 'career alignment'],
   ['careerConfidenceIndex', 'career confidence'],
   ['academicFit', 'academic fit'],
   ['strandAlignment', 'strand alignment'],
+  // `programEligibility` is listed so that a recommendation stored before 2026-09-18 still reads
+  // back with the component it was actually scored on. The engine no longer produces it.
   ['programEligibility', 'eligibility'],
 ];
 

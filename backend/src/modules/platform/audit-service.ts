@@ -43,6 +43,13 @@ export type AuditAction =
   | 'STAFF_LOGIN_FAILED'
   | 'STAFF_LOGOUT'
   | 'STAFF_PASSWORD_CHANGED'
+  // Staff editing their own account on /counselor/profile (prompt-driven, 2026-09-20). Two
+  // actions, not one, because they are not the same risk: a name is a label, while the email is
+  // the login identifier *and* where a password reset is delivered — so "when did this account
+  // start answering to a different address" has to be answerable by filtering on the action
+  // rather than by reading every profile edit's diff. Both rows carry the old and new values.
+  | 'STAFF_PROFILE_UPDATED'
+  | 'STAFF_EMAIL_CHANGED'
   | 'STAFF_PASSWORD_RESET_REQUESTED'
   | 'STAFF_PASSWORD_RESET_COMPLETED'
   | 'STUDENT_CLASS_ACCESS_SUCCESS'
@@ -59,6 +66,13 @@ export type AuditAction =
   | 'CLASS_REASSIGNED'
   | 'ROSTER_STUDENTS_ENROLLED'
   | 'ROSTER_STUDENT_REMOVED'
+  // A student editing their own name on their profile (prompt-driven, 2026-09-20). Its own action
+  // rather than a nameless profile update, and the only field on that form that gets one: the rest
+  // of the profile is a student's own answer about themselves, while a name is the handle a roster
+  // and an exported report identify them by. "Who changed this, and when" is a question a guidance
+  // office asks about a record that has already left the system, and the old and new names are on
+  // the row so the answer does not depend on reconstructing it.
+  | 'STUDENT_RENAMED_SELF'
   | 'COLLEGE_CREATED'
   | 'COLLEGE_UPDATED'
   | 'COLLEGE_DELETED'
@@ -272,6 +286,8 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   STUDENT_CLASS_ACCESS_THROTTLED: 'LOGIN',
   // Credential lifecycle — changes to an account, not sign-ins.
   STAFF_PASSWORD_CHANGED: 'UPDATE',
+  STAFF_PROFILE_UPDATED: 'UPDATE',
+  STAFF_EMAIL_CHANGED: 'UPDATE',
   STAFF_PASSWORD_RESET_REQUESTED: 'UPDATE',
   STAFF_PASSWORD_RESET_COMPLETED: 'UPDATE',
   // Classes and roster.
@@ -283,6 +299,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   CLASS_REASSIGNED: 'UPDATE',
   ROSTER_STUDENTS_ENROLLED: 'CREATE',
   ROSTER_STUDENT_REMOVED: 'DELETE',
+  STUDENT_RENAMED_SELF: 'UPDATE',
   // Catalog.
   COLLEGE_CREATED: 'CREATE',
   COLLEGE_UPDATED: 'UPDATE',

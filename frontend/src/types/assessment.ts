@@ -227,6 +227,18 @@ export interface StudentProfile {
 }
 
 export type UpdateProfilePayload = Partial<{
+  /**
+   * The student's own name (prompt-driven, 2026-09-20).
+   *
+   * `first_name` is not nullable — the column is NOT NULL and the form refuses an empty one.
+   * `last_name` is: a mononym is a legitimate name (§13.1), and the server normalises `""` to
+   * NULL rather than storing an empty string.
+   *
+   * Sending these never changes the student's **username**. That is per class, it is what the
+   * whole class signs in with, and the server does not touch it — see `StudentProfileService`.
+   */
+  first_name: string;
+  last_name: string | null;
   birthdate: string | null;
   gender: string | null;
   /**

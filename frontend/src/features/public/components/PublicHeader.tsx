@@ -77,10 +77,10 @@ export function PublicHeader() {
           ) : (
             <>
               <Link
-                to={paths.login}
+                to={paths.counselorSignup}
                 className="hidden h-9 items-center rounded-none px-4 text-sm font-medium text-sidebar-foreground transition-colors hover:text-sidebar-active-foreground sm:inline-flex"
               >
-                Counselor Login
+                Sign up as a counselor
               </Link>
               <Link
                 to={paths.studentAccess}
@@ -124,11 +124,11 @@ export function PublicHeader() {
             {!user ? (
               <li>
                 <Link
-                  to={paths.login}
+                  to={paths.counselorSignup}
                   onClick={() => setMenuOpen(false)}
                   className="block py-2 text-sm text-sidebar-foreground transition-colors hover:text-sidebar-active-foreground sm:hidden"
                 >
-                  Counselor Login
+                  Sign up as a counselor
                 </Link>
               </li>
             ) : null}

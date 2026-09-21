@@ -206,6 +206,30 @@ describe('PDF pagination', () => {
     expect(pen.drawn.filter((entry) => entry.text === 'Row-2').map((entry) => entry.page)).toEqual([2, 2]);
   });
 
+  /**
+   * …unless the pair asks to stay whole, which the report's distribution does: cut between rows,
+   * its second column arrived on the next page with no heading above it.
+   */
+  it('moves a keepTogether pair whole rather than breaking between its rows', () => {
+    const pen = recordingPen();
+    const pair: Block = {
+      kind: 'columns',
+      gap: 4,
+      keepTogether: true,
+      columns: [
+        { weight: 1, children: [rows(8)] },
+        { weight: 1, children: [rows(8)] },
+      ],
+    };
+
+    render(pen, flow([[...lines(12), pair]]));
+
+    // Nothing of it on the first page; every row of both columns on the second.
+    expect(onPage(pen, 1)).toEqual(['HEADER-0', ...lines(12).map((_, i) => `Line-${i + 1}`), 'FOOTER']);
+    expect(pen.drawn.filter((entry) => entry.text === 'Row-1').map((entry) => entry.page)).toEqual([2, 2]);
+    expect(pen.drawn.filter((entry) => entry.text === 'Row-8').map((entry) => entry.page)).toEqual([2, 2]);
+  });
+
   it('starts the second report on the same page, under its own header', () => {
     const pen = recordingPen();
 

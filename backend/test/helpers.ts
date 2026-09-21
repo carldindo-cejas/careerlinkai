@@ -307,10 +307,16 @@ export async function enrolStudents(
   return confirm.body.data;
 }
 
-/** Join a class as a student and return the bearer token. */
+/**
+ * Join a class as a student and return the bearer token.
+ *
+ * `confirm: true` because a join is two calls now (see `StudentAccessService`): without it the
+ * endpoint answers with the student's name and issues nothing. Fixtures want the session, so they
+ * take the second step directly; the confirmation itself is tested in `student-access/join.test.ts`.
+ */
 export async function joinClass(classCode: string, username: string): Promise<string> {
   const response = await api('POST', '/student-access/join', {
-    body: { class_code: classCode, username },
+    body: { class_code: classCode, username, confirm: true },
   });
 
   if (response.status !== 200) {

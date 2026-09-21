@@ -20,6 +20,13 @@ const nav: AppNavItem[] = [
   { to: paths.counselorKnowledge, label: 'Knowledge', icon: FileText },
 ];
 
+/**
+ * Not a nav row (2026-09-20). `AppShell` renders it as the identity block above "Sign out" and as
+ * the name in the top bar, which is where an account belongs — among the things that are true
+ * about you, rather than among the five things you came here to do.
+ */
+const profile = { to: paths.counselorProfile, label: 'My account' };
+
 export function CounselorLayout() {
-  return <AppShell title="Counselor" nav={nav} />;
+  return <AppShell title="Counselor" nav={nav} profile={profile} />;
 }

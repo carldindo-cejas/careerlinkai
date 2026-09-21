@@ -17,6 +17,15 @@ export interface AppNavItem {
   icon: LucideIcon;
   /** Exact-match only — "Dashboard" needs it, or /admin/colleges lights it up too. */
   end?: boolean;
+  /**
+   * The `data-tour` anchor written on this row, for shells whose tour points at the navigation
+   * one destination at a time (the student's, 2026-09-20).
+   *
+   * It is a property of the *item* rather than a string in this file because only the shell that
+   * runs a tour knows which of its rows the tour names, and a row nobody points at should carry
+   * no attribute at all. See `features/student/tour/stops.ts` for the other half.
+   */
+  tour?: string;
 }
 
 /**
@@ -57,16 +66,6 @@ export interface AppShellProps {
   /** Extra chrome next to the breadcrumb — the student shell shows the joined class here. */
   headerBadge?: ReactNode;
   /**
-   * A full-width strip between the top bar and the page, on **every** route in this shell.
-   *
-   * The student shell puts its profiling warning here (v1.6). It belongs to the layout rather than
-   * to a page because the thing it warns about — recommendations being unavailable — is reachable
-   * from every destination, and a warning that only appeared on the dashboard would be invisible to
-   * the student who goes straight to Assessments. Renders nothing when the banner has nothing to
-   * say, so no shell pays for it in layout.
-   */
-  banner?: ReactNode;
-  /**
    * The signed-in person's own page — the student's profile. Given, the name in the top bar and
    * the identity block above "Sign out" both link to it, which is where an account lives, and it
    * stays out of the nav among the things the person came to do.
@@ -86,7 +85,7 @@ export interface AppShellProps {
  * CounselorLayout and StudentLayout compose this; they differ only in title, navigation
  * and the small role-specific chrome passed through props.
  */
-export function AppShell({ title, nav, headerBadge, banner, profile, onSignedOut }: AppShellProps) {
+export function AppShell({ title, nav, headerBadge, profile, onSignedOut }: AppShellProps) {
   const user = useAuthStore((state) => state.user);
   const logout = useLogout();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -208,8 +207,12 @@ export function AppShell({ title, nav, headerBadge, banner, profile, onSignedOut
           <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
             <div className="flex items-center gap-3">
               <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+                {/* `data-tour` marks what the student tour points at. The navigation is a
+                    sidebar on a laptop and this button on a phone, so the stop names both and the
+                    overlay highlights whichever one is on screen. */}
                 <SheetTrigger
                   aria-label="Open menu"
+                  data-tour="nav-mobile"
                   className="flex size-11 items-center justify-center rounded-none text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:size-9 lg:hidden"
                 >
                   <Menu className="size-5" aria-hidden="true" />
@@ -242,7 +245,11 @@ export function AppShell({ title, nav, headerBadge, banner, profile, onSignedOut
             </div>
 
             <div className="flex items-center gap-3">
-              <NotificationBell />
+              {/* Wrapped rather than marked on the bell itself: `NotificationBell` owns its own
+                  markup, and a layout concern has no business reaching inside it. */}
+              <span data-tour="notifications-bell" className="flex">
+                <NotificationBell />
+              </span>
               {user && profile ? (
                 <NavLink
                   to={profile.to}
@@ -265,10 +272,6 @@ export function AppShell({ title, nav, headerBadge, banner, profile, onSignedOut
             </div>
           </div>
         </header>
-
-        {/* Full-bleed, directly under the sticky top bar and above the content column — so it
-            reads as a property of the session rather than as the first card on a page. */}
-        {banner}
 
         {/* `tabIndex={-1}` so the skip link above can actually put focus here. A bare `#id` target
             that is not focusable moves the *scroll* position and leaves the focus ring back on the
@@ -410,7 +413,13 @@ function SidebarBody({
         nav short enough to fit without one, but a shell whose content overflowed and could not be
         reached would be a worse bug than the scrollbar ever was.
       */}
-      <nav aria-label="Main" className="no-scrollbar flex-1 space-y-1 overflow-y-auto px-3">
+      {/* Rendered twice at some widths — the rail and the drawer's copy of it — so the tour
+          overlay picks whichever one is currently visible rather than the first in the DOM. */}
+      <nav
+        aria-label="Main"
+        data-tour="nav"
+        className="no-scrollbar flex-1 space-y-1 overflow-y-auto px-3"
+      >
         {nav.map((entry) =>
           isGroup(entry) ? (
             <NavGroup
@@ -441,6 +450,9 @@ function SidebarBody({
             // The rail shows only initials, so the tooltip and the accessible name carry the rest.
             title={expanded ? undefined : profile.label}
             aria-label={`${userName} — ${profile.label}`}
+            // The profile is not a nav row, so it carries its tour anchor here rather than
+            // through `AppNavItem.tour`. Same attribute, same lookup.
+            data-tour="nav-profile"
             className={({ isActive }) =>
               cn(
                 'mb-2 flex items-center gap-3 border-l-2 py-2 transition-colors',
@@ -466,6 +478,7 @@ function SidebarBody({
           type="button"
           onClick={onSignOut}
           disabled={signingOut}
+          data-tour="sign-out"
           title={expanded ? undefined : 'Sign out'}
           className="flex w-full items-center gap-3 rounded-none border-l-2 border-transparent px-3 py-2.5 text-sm font-medium text-sidebar-muted transition-colors hover:bg-sidebar-active/60 hover:text-sidebar-active-foreground disabled:opacity-50"
         >
@@ -525,6 +538,7 @@ function NavRow({
       // and `aria-label` has to carry it for everyone else.
       title={expanded ? undefined : item.label}
       aria-label={item.label}
+      {...(item.tour === undefined ? {} : { 'data-tour': item.tour })}
       className={({ isActive }) =>
         cn(
           // The transparent left border on the inactive state reserves the accent bar's

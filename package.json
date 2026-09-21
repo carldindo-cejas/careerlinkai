@@ -10,6 +10,8 @@
     "db:migrate:production": "npm --prefix backend run db:migrate:production",
     "preview": "npm --prefix backend run preview",
     "_comment:audit:responsive": "Prompt §10. Drives system Chrome through the admin, counselor and student interfaces at 320/360/375/390/414/430/768/1024/1280 and reports horizontal page scroll, sub-44px touch targets and controls covered by fixed overlays. Needs `npm run preview` on :8787 and a bootstrapped local database (see the script header). It WRITES rows and refuses production. `--shots <dir>` also saves a PNG per page per width, which is the only way to judge the things it deliberately does not score.",
-    "audit:responsive": "node scripts/responsive-audit.mjs"
+    "audit:responsive": "node scripts/responsive-audit.mjs",
+    "_comment:audit:signin": "The sign-in screens, at phone HEIGHTS. `audit:responsive` runs every width at height:900 and reaches its pages by injecting a token, so it never renders a sign-in screen and never sees a control fall below the fold — which is exactly how the 2026-09-18 confirmation step shipped with both its buttons 18px off the bottom of a 320x568 phone. Needs `npm run preview` on :8787 and a local class; pass --code/--username, and --username-live for a student who already holds a session (the tallest state the confirmation step has). Read-only apart from the session the confirmed join creates.",
+    "audit:signin": "node scripts/signin-viewport-audit.mjs"
   }
 }

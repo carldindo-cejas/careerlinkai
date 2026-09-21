@@ -82,9 +82,24 @@ export const SIGNATURE_LABELS = ['Student signature', 'Guidance counselor', 'Dat
 
 // --- The parts both reports carry -----------------------------------------------------------
 
+/**
+ * The two instruments' 5-point agreement scale, by score (backend `instruments.ts` LIKERT).
+ *
+ * The report payload carries the label of the option a student *chose*, item by item, and nothing
+ * else — so a point nobody landed on has no label in the data at all. Reading the labels off the
+ * answers therefore left every unused point of the scale showing as a bare "1" or "2", which is
+ * not a response and reads as missing data. The distribution is an axis of the scale, so it is
+ * named by the scale: all five points, every time, whatever the student happened to pick.
+ *
+ * The midpoint is "Neutral" here. The instrument itself presents it as "Neither Agree nor
+ * Disagree" (§8A), which is the same point said at length; the appendix still prints the student's
+ * own wording item by item, and the Value column pins which point each row is.
+ */
+const AGREEMENT_SCALE = ['Strongly Disagree', 'Disagree', 'Neutral', 'Agree', 'Strongly Agree'];
+
 export interface LikertRow {
   value: number;
-  /** Whatever the student's own answers called this point; its number when nobody chose it. */
+  /** The scale's name for this point — see `AGREEMENT_SCALE`. */
   label: string;
   count: number;
   /** "13.3%" */
@@ -97,12 +112,13 @@ export function likertTally(report: AssessmentReport): { heading: string; rows: 
   const answered = answeredItems(report);
   const counted = Array.from({ length: scaleMaxOf(report) }, (_, i) => {
     const value = i + 1;
-    const items = answered.filter((item) => item.answer.score === value);
 
     return {
       value,
-      count: items.length,
-      label: items.find((item) => item.answer.label !== null)?.answer.label ?? `${value}`,
+      count: answered.filter((item) => item.answer.score === value).length,
+      // A scale longer than the five points above is not one of the two instruments; its extra
+      // points have no name to give, so they keep their number.
+      label: AGREEMENT_SCALE[i] ?? `${value}`,
     };
   });
   const total = answered.length;
@@ -128,9 +144,6 @@ export const APPENDIX_COPY = {
   title: 'Appendix A — Item responses',
   lead: (questionCount: number) =>
     `All ${questionCount} items in administered order, with the response given and the score it contributed`,
-  fine:
-    'Scores are the values snapshotted at the moment of answering; they are never re-derived ' +
-    'from the option table afterwards.',
   notAnswered: 'Not answered',
 };
 
@@ -144,20 +157,14 @@ export const CALCULATION_TITLE = 'How these numbers were calculated';
 interface Normalization {
   kicker: string;
   formula: string;
-  note: string;
   /** The lead dimension, worked through — absent when nothing was measured. */
   example: string | null;
 }
 
-function normalization(
-  noun: 'dimension' | 'construct',
-  scaleMax: number,
-  lead: ReportDimension | undefined,
-): Normalization {
+function normalization(lead: ReportDimension | undefined): Normalization {
   return {
     kicker: 'Normalization',
     formula: 'score = (raw ÷ max) × 100',
-    note: `Each item on a ${noun} is worth 1–${scaleMax}, so max = items × ${scaleMax} × weight.`,
     example: lead
       ? `${lead.name}: (${count(lead.raw)} ÷ ${count(lead.max)}) × 100 = ${pct(lead.pct)}`
       : null,
@@ -258,7 +265,7 @@ export function riasecContent(
       'pass mark.',
     breakdownTitle: 'Dimension breakdown',
     breakdownLead: 'Raw / max · normalized percentage · interpretation band',
-    normalization: normalization('dimension', scaleMaxOf(report), ranked[0]),
+    normalization: normalization(ranked[0]),
     tieBreak: {
       kicker: 'Holland Code — top 3, with tie-break',
       note:
@@ -360,7 +367,7 @@ export function scctContent(report: AssessmentReport): ScctContent {
       'for the reader and no number is ever read back out of it.',
     breakdownTitle: 'Construct breakdown',
     breakdownLead: 'Raw / max · normalized percentage · weight applied to the index',
-    normalization: normalization('construct', scaleMaxOf(report), dims[0]),
+    normalization: normalization(dims[0]),
     composite: {
       kicker: `Weighted composite — ${terms.map((term) => term.weight.toFixed(1)).join(' / ') || 'mean'}`,
       formula: 'index = ∑(score × weight) ÷ ∑(weight)',

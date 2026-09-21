@@ -23,9 +23,22 @@ interface AuthState {
    * `user` is already null (§38).
    */
   lastRole: UserRole | null;
+  /**
+   * True when the session ended *to* the student rather than *by* them — the server rejected
+   * their token, so `endSession()` cleared it rather than `clear()`.
+   *
+   * It exists to answer the question the 18 September 2026 incident left every student asking:
+   * they were mid-question, and then they were on the sign-in screen with no explanation. The
+   * sign-in screen reads this and says what happened. Deliberately **not** persisted — a notice
+   * that survived a reload would outlive the event it describes.
+   */
+  sessionEnded: boolean;
   setToken: (token: string) => void;
   setUser: (user: User | null) => void;
+  /** A sign-out the user asked for: logout, or a password change that revoked the token. */
   clear: () => void;
+  /** A sign-out the server imposed: the token was rejected. Leaves a notice behind. */
+  endSession: () => void;
 }
 
 /** The local-storage key the token is persisted under — shared by every tab on the origin. */
@@ -37,9 +50,11 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       user: null,
       lastRole: null,
-      setToken: (token) => set({ token }),
+      sessionEnded: false,
+      setToken: (token) => set({ token, sessionEnded: false }),
       setUser: (user) => set(user ? { user, lastRole: user.role } : { user }),
-      clear: () => set({ token: null, user: null }),
+      clear: () => set({ token: null, user: null, sessionEnded: false }),
+      endSession: () => set({ token: null, user: null, sessionEnded: true }),
     }),
     {
       name: AUTH_STORAGE_KEY,

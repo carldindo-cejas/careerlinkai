@@ -10,5 +10,6 @@
 // shell serves the same two — one copy, loaded by whichever shell asks for it first.
 export { CounselorLayout } from '@/layouts/CounselorLayout';
 export { CounselorDashboardPage } from '@/features/counselor/pages/CounselorDashboardPage';
+export { CounselorProfilePage } from '@/features/counselor/pages/CounselorProfilePage';
 export { ClassListPage } from '@/features/counselor/pages/ClassListPage';
 export { ClassDetailPage } from '@/features/counselor/pages/ClassDetailPage';

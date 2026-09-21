@@ -335,6 +335,44 @@ describe('the chat pipeline (stubbed model + vector store)', () => {
 
     expect(turn.answer.content).toContain('completed both the RIASEC and SCCT assessments');
   });
+
+  /**
+   * The navigation gate (migration 0038). Two things are asserted and the second is the point:
+   * the answer names the screen, **and** no model was called to produce it. A question about where
+   * a button is must never reach a generation — there is nothing in the corpus to ground it, and
+   * an ungrounded model asked to describe our navigation invents a plausible one.
+   */
+  it('answers a "where is it" question from the destination table, with no model call', async () => {
+    await clearConversation();
+
+    // A response is stubbed precisely so its absence from the transcript proves it went unused.
+    const { service, prompts } = pipeline({ responses: ['Should never be reached.'] });
+    const turn = await service.ask(
+      studentId,
+      'Where do I download my results?',
+      await currentSet(),
+    );
+
+    expect(prompts).toHaveLength(0);
+    expect(turn.failure).toBeNull();
+    expect(turn.answer.aiRequestId).toBeNull();
+    expect(turn.answer.content).toContain('Print results');
+    expect(turn.answer.content).toContain('Want me to take you there?');
+    // The id the client resolves to a route and an element — persisted, so the button survives a
+    // transcript reloaded next week.
+    expect(turn.answer.navTarget).toBe('report-download');
+    // Answered, not refused: there is no gap here for an admin to write an entry about.
+    expect(turn.answer.knowledgeRequest).toBeNull();
+  });
+
+  it('leaves a question that merely sounds like one alone', async () => {
+    await clearConversation();
+
+    const { service } = pipeline({ responses: ['Several colleges offer it.'] });
+    const turn = await service.ask(studentId, 'Where can I study nursing?', await currentSet());
+
+    expect(turn.answer.navTarget).toBeNull();
+  });
 });
 
 // --- the HTTP surface, with the AI bindings genuinely absent -------------------------------

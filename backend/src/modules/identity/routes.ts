@@ -5,14 +5,17 @@ import type { AppEnv } from '@/env';
 import { successEnvelope } from '@/lib/envelope';
 import { clientIp, parseBody } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
+import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { CounselorSignupService } from '@/modules/identity/counselor-signup-service';
 import {
+  changeEmailSchema,
   changePasswordSchema,
   counselorSignupSchema,
   forgotPasswordSchema,
   loginSchema,
   resendSignupCodeSchema,
   resetPasswordSchema,
+  updateAccountSchema,
   verifySignupCodeSchema,
 } from '@/modules/identity/schemas';
 import { serializeUser } from '@/modules/identity/serializers';
@@ -129,6 +132,15 @@ authRoutes.post('/counselor-signup/verify', async (c) => {
 authRoutes.use('/me', authenticate());
 authRoutes.use('/logout', authenticate());
 authRoutes.use('/change-password', authenticate());
+/*
+  The two self-service account endpoints (prompt-driven, 2026-09-20). These are the only routes in
+  this router that carry `ensurePasswordChanged`, and that is the point of listing them separately
+  from the three above: renaming yourself or moving your email is not part of getting out of a
+  temporary password, so a flagged account is refused here exactly as it is everywhere else. The
+  three above are the whole of what such an account is allowed to do.
+*/
+authRoutes.use('/profile', authenticate(), ensurePasswordChanged());
+authRoutes.use('/change-email', authenticate(), ensurePasswordChanged());
 
 authRoutes.get('/me', async (c) => {
   const { user, counselorProfile } = await service(c).me(requireUser(c));
@@ -146,6 +158,47 @@ authRoutes.post('/logout', async (c) => {
   await service(c).logout(user, tokenId, clientIp(c));
 
   return c.json(successEnvelope(null, 'Signed out successfully.'));
+});
+
+/**
+ * Edit your own account — the name, and for a counselor the profile fields beside it.
+ *
+ * It answers with the same `serializeUser` envelope `/auth/me` does, so the client replaces its
+ * cached user from the response rather than refetching: the name is in the sidebar, the top bar
+ * and the breadcrumb of the very screen that submitted this.
+ */
+authRoutes.patch('/profile', async (c) => {
+  const input = await parseBody(c, updateAccountSchema);
+  const { user, counselorProfile } = await service(c).updateAccount(
+    requireUser(c),
+    input,
+    clientIp(c),
+  );
+
+  return c.json(successEnvelope(serializeUser(user, counselorProfile), 'Profile updated.'));
+});
+
+/**
+ * Change the address this account signs in with. The current password is part of the body, not a
+ * formality — see `StaffAuthenticationService.changeEmail`.
+ *
+ * Unlike `/auth/change-password`, this does **not** revoke the caller's sessions, so the response
+ * carries the updated user and the client stays signed in.
+ */
+authRoutes.post('/change-email', async (c) => {
+  const input = await parseBody(c, changeEmailSchema);
+  const { user, counselorProfile } = await service(c).changeEmail(
+    requireUser(c),
+    input,
+    clientIp(c),
+  );
+
+  return c.json(
+    successEnvelope(
+      serializeUser(user, counselorProfile),
+      'Email updated. Use your new address the next time you sign in.',
+    ),
+  );
 });
 
 authRoutes.post('/change-password', async (c) => {

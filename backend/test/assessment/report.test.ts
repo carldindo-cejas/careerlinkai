@@ -107,6 +107,37 @@ describe('the printable report', () => {
     expect(report.dimensions.find((d: any) => d.code === 'I').raw_score).toBe(rawI.toFixed(2));
   });
 
+  /**
+   * The point of letting a student rename themselves (prompt-driven, 2026-09-20): the name on the
+   * record they export is the one they say is theirs, not the one a counselor typed off a class
+   * list. The report reads `users.name`, which the profile save moves in the same batch as the
+   * roster's copy — so an already-scored attempt re-exports under the new name without any of
+   * this having to reach back into scoring.
+   */
+  it('prints the name the student corrected, on an attempt taken under the old one', async () => {
+    const { student, studentToken, attemptId } = await scoredRiasecAttempt('Maria Fernandez');
+
+    const before = await api('GET', `/student/results/${attemptId}/report`, {
+      token: studentToken,
+    });
+
+    expect(before.body.data.student.name).toBe('Maria Fernandez');
+
+    await api('PATCH', '/student/profile', {
+      token: studentToken,
+      body: { first_name: 'Maria Louise', last_name: 'Fernandez-Cruz' },
+    });
+
+    const after = await api('GET', `/student/results/${attemptId}/report`, {
+      token: studentToken,
+    });
+
+    expect(after.body.data.student.name).toBe('Maria Louise Fernandez-Cruz');
+    // The username on the same identity block is untouched — it is how they sign in, not what
+    // they are called.
+    expect(after.body.data.student.username).toBe(student.username);
+  });
+
   /** SCCT (§23): the version's weights travel with the report so the index can be recomputed. */
   it('carries the composite weights for the SCCT instrument', async () => {
     const { classRoom, studentToken } = await classWithStudent(counselorToken);

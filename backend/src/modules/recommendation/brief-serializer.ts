@@ -41,7 +41,10 @@ export function suggestedQuestions(brief: StudentBrief): string[] {
       `Why ${topCareer.title}?`,
       `Where can I study ${topProgram.title}?`,
       'What are my top 5 careers?',
-      'Which of my top careers pays the best?',
+      // Migration 0038. A navigation question among the starters, because nothing else on screen
+      // says the assistant will walk you to a button — and a student with recommendations is
+      // exactly the one about to want the PDF.
+      'How do I download my results?',
     ];
   }
 
@@ -49,15 +52,17 @@ export function suggestedQuestions(brief: StudentBrief): string[] {
     return [
       'What is my Holland code?',
       'Show my RIASEC scores',
+      'Where do I see my results?',
       'What can you do?',
-      'What colleges are in Bohol?',
     ];
   }
 
   return [
     'What can you do?',
+    // The starter for the student who has just arrived and has nothing yet: the tour is the most
+    // useful thing the assistant can give them, and "show me around" is how they would ask.
+    'Show me around',
     'What colleges are in Bohol?',
-    'Which colleges offer BS Information Technology?',
     'What careers come after BS Accountancy?',
   ];
 }

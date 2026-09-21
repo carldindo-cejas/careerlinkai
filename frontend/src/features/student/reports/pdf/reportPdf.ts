@@ -21,6 +21,7 @@ import {
   type TextBlock,
   type TextStyle,
 } from '@/features/student/reports/pdf/layout';
+import { paperSheet, type PaperSize } from '@/features/student/reports/paperSize';
 import {
   APPENDIX_COPY,
   appendixScore,
@@ -57,6 +58,8 @@ export interface ReportPdfOptions {
   recommendations: RecommendationSet | null;
   showRecommendations: boolean;
   showAppendix: boolean;
+  /** The page box to typeset into (paperSize.ts). A4 when the caller does not say. */
+  paper?: PaperSize;
 }
 
 /** CSS px → PDF pt. The mockups are specified in px at 96 to the inch. */
@@ -85,9 +88,6 @@ const NEUTRAL_800: Rgb = [66, 66, 68];
 const CORNER: Rgb = [131, 132, 132];
 
 const HAIRLINE = px(1);
-
-/** A4 with the sheet's 0.62in margins (report.css `@page`). */
-const A4 = { width: 595.28, height: 841.89, margin: 0.62 * 72 };
 
 function style(size: number, overrides: Partial<TextStyle> = {}): TextStyle {
   return { face: 'regular', size: px(size), color: INK, lineHeight: 1.55, ...overrides };
@@ -377,13 +377,11 @@ function calculation(left: Block[], right: Block[], weights: [number, number]): 
 function normalizationPanel(normalization: {
   kicker: string;
   formula: string;
-  note: string;
   example: string | null;
 }): Block[] {
   return [
     kicker(normalization.kicker),
     paragraph(normalization.formula, style(13, MONO), { marginTop: SPACE[2], marginBottom: SPACE[2] }),
-    paragraph(normalization.note, style(10)),
     ...(normalization.example
       ? [paragraph(normalization.example, style(10.5, MONO), { marginTop: SPACE[2] })]
       : []),
@@ -394,7 +392,11 @@ function breakdownBar(dimension: ReportDimension): Cell {
   return { runs: [], bar: dimension.pct };
 }
 
-/** The Likert tally beside the bands table (`.rr-grid-dist`). */
+/**
+ * The Likert tally beside the bands table (`.rr-grid-dist`) — kept whole, as the sheet keeps it:
+ * two five-row tables that read as one legend for the scale, and the second column's heading sits
+ * at the top of it.
+ */
 function distribution(report: AssessmentReport, bandsHeading: string): ColumnsBlock {
   const tally = likertTally(report);
   const right = { align: 'right' } as const;
@@ -403,6 +405,7 @@ function distribution(report: AssessmentReport, bandsHeading: string): ColumnsBl
     kind: 'columns',
     gap: SPACE[3],
     marginBottom: SPACE[6],
+    keepTogether: true,
     columns: [
       {
         weight: 1.15,
@@ -536,7 +539,6 @@ function appendix(report: AssessmentReport, dims: ReportDimension[]): Block[] {
         { marginBottom: SPACE[3] },
       ),
     ]),
-    paragraph(APPENDIX_COPY.fine, style(9.5, { color: NEUTRAL_700 })),
   ];
 }
 
@@ -729,9 +731,12 @@ export async function createReportsPdf(
   if (first === undefined) throw new Error('There is no RIASEC or SCCT report to put in the PDF.');
 
   const assets = await loadPdfAssets();
-  const doc = new jsPDF({ unit: 'pt', format: 'a4', compress: true, putOnlyUsedFonts: true });
-  const pen = createPen(doc, assets);
-  const width = A4.width - 2 * A4.margin;
+  // The chosen paper, in points, as both the document's own format and every page added after it.
+  const sheet = paperSheet(options.paper);
+  const format: [number, number] = [sheet.width, sheet.height];
+  const doc = new jsPDF({ unit: 'pt', format, compress: true, putOnlyUsedFonts: true });
+  const pen = createPen(doc, assets, format);
+  const width = sheet.width - 2 * sheet.margin;
 
   const sections = ordered.map((report) =>
     report.assessment?.category === 'RIASEC' ? riasecSection(report, options) : scctSection(report, options),
@@ -742,7 +747,7 @@ export async function createReportsPdf(
   const fallbackHeader = headers[0] ?? runningHeader(pen, width, '', '', '');
 
   const pages = render(pen, {
-    page: A4,
+    page: sheet,
     header: (section) => headers[section] ?? fallbackHeader,
     footer: runningFooter(pen, width),
     sectionGap: SPACE[8],

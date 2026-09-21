@@ -27,10 +27,20 @@ export const classApi = {
     return unwrap(httpClient.get<ApiSuccess<ClassOptions>>('/counselor/class-options'));
   },
 
-  /** One page of the caller's classes. The page is the caller's to choose — see `listAll` for the lot. */
-  list(page = 1): Promise<Paginated<ClassRoom>> {
+  /**
+   * One page of the caller's classes. The page *and its size* are the caller's to choose — see
+   * `listAll` for the lot.
+   *
+   * `perPage` exists because the classes screen is a card grid rather than a table: it shows six,
+   * two rows of three, which is a different number from the twenty rows a table wants and from
+   * the hundred `listAll` walks in. The server's default (20) still applies when nothing is asked
+   * for, so every other caller is unchanged.
+   */
+  list(page = 1, perPage?: number): Promise<Paginated<ClassRoom>> {
     return unwrap(
-      httpClient.get<ApiSuccess<Paginated<ClassRoom>>>('/counselor/classes', { params: { page } }),
+      httpClient.get<ApiSuccess<Paginated<ClassRoom>>>('/counselor/classes', {
+        params: perPage === undefined ? { page } : { page, per_page: perPage },
+      }),
     );
   },
 

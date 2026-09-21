@@ -23,6 +23,8 @@ import {
   unsupportedClaims,
   validateCitations,
 } from '@/lib/grounding';
+// Migration 0038: "where do I download my results?" is a navigation question, not a guidance one.
+import { destinationFor, navigationReply } from '@/knowledge/student-destinations';
 // v2 since 2026-09-13 (AI-COVERAGE-PLAN.md Phase 1): the prompt that knows about the Student Brief.
 import {
   RECOMMENDATION_CHAT_V2_PROMPT_VERSION as RECOMMENDATION_CHAT_PROMPT_VERSION,
@@ -126,6 +128,15 @@ interface Answer {
    * migration 0033 declined for the same reason.
    */
   kind: ChatAnswerKind;
+  /**
+   * Where this answer offered to take the student (migration 0038), or null — which is every
+   * answer but a navigation one.
+   *
+   * Recorded on the row for the same reason `coverageGap` is: the button has to survive a
+   * transcript reloaded next week, and re-deriving it by matching the reply text would be a second
+   * copy of the gate's judgement, kept in a different place, in a weaker language.
+   */
+  navTarget?: string | null;
 }
 
 export interface ChatTurn {
@@ -319,6 +330,7 @@ export class ChatService {
       outcome.sources,
       outcome.coverageGap ? 'OFFERED' : null,
       outcome.kind,
+      outcome.navTarget ?? null,
     );
 
     await this.db
@@ -381,6 +393,40 @@ export class ChatService {
         sources: [canned.title],
         coverageGap: false,
         kind: 'CURATED',
+      };
+    }
+
+    /**
+     * **Gate 1b — the student is asking where something *is*** (migration 0038).
+     *
+     * Not a guidance question at all, and nothing downstream can answer one: retrieval holds the
+     * school's materials and the catalog, neither of which knows this product's own navigation.
+     * Before this gate those questions came back as a refusal, or — the worse outcome — as a
+     * fluent paragraph in which an 8B model invented a menu.
+     *
+     * It sits **after** Gate 1, because an admin who has written their own answer to *"how do I
+     * print my results"* outranks ours, and **before** Gate 2, because Gate 2 would read *"where
+     * can I see my scores?"* as `MY_SCORES` and print the scores. That is a true answer to a
+     * question nobody asked: the student can already see their scores, they are asking for the
+     * screen.
+     *
+     * Deterministic, so it costs nothing, cannot be wrong about where a screen is, and works with
+     * the model down. And it *asks* rather than acting — the button beside the answer is what
+     * navigates, which is a decision that belongs to the student.
+     */
+    const destination = destinationFor(normaliseQuestion(question));
+
+    if (destination !== null) {
+      return {
+        text: navigationReply(destination),
+        aiRequestId: null,
+        failure: null,
+        // Nothing to cite: this is the product describing itself, not a passage from anywhere.
+        sources: [],
+        // Answered, not refused — there is no gap here for an admin to fill.
+        coverageGap: false,
+        kind: 'CANNED',
+        navTarget: destination.id,
       };
     }
 
@@ -923,6 +969,7 @@ export class ChatService {
     sources: string[] = [],
     knowledgeRequest: KnowledgeRequestState | null = null,
     answerKind: ChatAnswerKind | null = null,
+    navTarget: string | null = null,
   ): Promise<ChatMessage> {
     const message: ChatMessage = {
       id: uuid(),
@@ -949,6 +996,12 @@ export class ChatService {
       knowledgeRequest,
       // Set only when a question the student requested is later answered (migration 0033).
       knowledgeAnsweredAt: null,
+      /*
+        The screen this answer offered to open (migration 0038). Written here rather than derived
+        on read, so the button is still under the answer in a transcript reloaded next week — and
+        so that changing the wording of a reply can never silently take its button away.
+      */
+      navTarget,
       createdAt: now(),
     };
 

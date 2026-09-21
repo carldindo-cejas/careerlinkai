@@ -4,7 +4,8 @@ import {
   CAREER_WEIGHTS,
   PROGRAM_WEIGHTS,
   academicFit,
-  programEligibility,
+  careerAlignment,
+  careerMatchScore,
   programRiasecCompatibility,
   rankTop,
   rankTopDistinct,
@@ -23,8 +24,14 @@ import {
  * §26 claims recommendations are deterministic and reproducible. The only way to hold that
  * claim to account is to check the engine against numbers a human computed by hand, rather
  * than against itself: FULLPLAN §28 works "Software Engineer" out to 69.1 and "BS Computer
- * Science" to 76.1, and those two numbers are the fixed point of this whole file. If a refactor
- * moves them, the refactor is wrong — not the example.
+ * Science" out of the same inputs, and those numbers are the fixed point of this whole file.
+ * If a refactor moves them, the refactor is wrong — not the example.
+ *
+ * **The program half of the example was re-derived by hand on 2026-09-18**, when the program
+ * weights changed (see `lib/recommendation.ts`'s header). §28's *inputs* are untouched — the same
+ * student, the same two careers, the same program — and every intermediate below is worked out
+ * the long way from those inputs rather than copied off a test run. The career half (69.1) did not
+ * move at all: `CAREER_WEIGHTS` was not touched.
  *
  * The seeded catalog is built to match (§27's worked example scores UP Diliman's BSCS through
  * Software Engineer `IEC` and Data Analyst `ICE`), so these are not invented fixtures — they
@@ -38,6 +45,12 @@ const WORKED_EXAMPLE_STUDENT: StudentSignals = {
   academicAverage: 88,
   strand: 'Academic',
 };
+
+/** §28's two linked careers, as `scoreProgram` now takes them: a title and a Holland code. */
+const BSCS_CAREERS = [
+  { title: 'Software Engineer', typicalRiasecCode: 'IEC' },
+  { title: 'Data Analyst', typicalRiasecCode: 'ICE' },
+];
 
 const profile = (overrides: Partial<RiasecProfile> = {}): RiasecProfile => ({
   R: 0,
@@ -69,28 +82,35 @@ describe('§28 worked example — the fixed point', () => {
     expect(riasecCompatibility(WORKED_EXAMPLE_STUDENT.riasec, 'ICE')).toBeCloseTo(68.1, 6);
   });
 
-  it('scores BS Computer Science at 76.1', () => {
+  it('scores BS Computer Science at 72.0', () => {
     // program_riasec_compat = (67.4 + 68.1) / 2 = 67.75
+    //
+    // career_alignment — the two careers' own career_match_scores, best first, under the
+    // renormalized depth weights [0.6, 0.25] / 0.85 = [0.705882…, 0.294118…]:
+    //   Data Analyst      (68.1×0.60) + (72.3×0.30) + (70×0.10) = 40.86 + 21.69 + 7.00 = 69.55
+    //   Software Engineer (67.4×0.60) + (72.3×0.30) + (70×0.10) = 40.44 + 21.69 + 7.00 = 69.13
+    //   = (69.55 × 0.705882…) + (69.13 × 0.294118…) = 49.0941… + 20.3324… = 69.4265…
+    //
     // academic_fit          = clamp(((88-75)/(95-75))×100) = 65.0
     // strand_alignment      = 100   (Academic == Academic)
-    // program_eligibility   = 100   (gwa 88 >= 80)
-    // = (67.75×0.35) + (72.3×0.15) + (65.0×0.20) + (100×0.15) + (100×0.10) + (70×0.05)
-    // = 23.71 + 10.85 + 13.00 + 15.00 + 10.00 + 3.50 = 76.06
+    //
+    // = (67.75×0.35) + (69.4265…×0.25) + (72.3×0.20) + (65.0×0.10) + (100×0.10)
+    // = 23.7125 + 17.3566… + 14.46 + 6.50 + 10.00 = 72.029… → 72.0
     const match = scoreProgram(
       WORKED_EXAMPLE_STUDENT,
       { id: 'program-bscs', name: 'BS Computer Science', recommendedStrand: 'Academic' },
-      ['IEC', 'ICE'],
+      BSCS_CAREERS,
     );
 
     expect(match.components.riasecCompatibility).toBeCloseTo(67.75, 6);
+    expect(match.components.careerAlignment).toBeCloseTo(69.42647058823529, 6);
     expect(match.components.academicFit).toBeCloseTo(65.0, 6);
     expect(match.components.strandAlignment).toBe(100);
-    expect(match.components.programEligibility).toBe(100);
-    expect(match.matchScore).toBe(76.1);
+    expect(match.matchScore).toBe(72.0);
   });
 
   it('ranks the program above the bare career match, which is §28’s actual point', () => {
-    // 76.1 > 69.1 — the program score also rewards strand and academic alignment, which is why
+    // 72.0 > 69.1 — the program score also rewards strand and academic alignment, which is why
     // the platform separates career-level and program-level matching rather than collapsing
     // them into one number.
     const career = scoreCareer(WORKED_EXAMPLE_STUDENT, {
@@ -101,7 +121,7 @@ describe('§28 worked example — the fixed point', () => {
     const program = scoreProgram(
       WORKED_EXAMPLE_STUDENT,
       { id: 'program-bscs', name: 'BS Computer Science', recommendedStrand: 'Academic' },
-      ['IEC', 'ICE'],
+      BSCS_CAREERS,
     );
 
     expect(program.matchScore).toBeGreaterThan(career.matchScore);
@@ -113,7 +133,7 @@ describe('§28 worked example — the fixed point', () => {
     const match = scoreProgram(
       WORKED_EXAMPLE_STUDENT,
       { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
-      ['IEC', 'ICE'],
+      BSCS_CAREERS,
     );
 
     expect(match.components.riasecCompatibility).not.toBe(67.8);
@@ -235,17 +255,100 @@ describe('strandAlignment', () => {
   });
 });
 
-describe('programEligibility', () => {
-  it('applies the §27 tiers at their exact boundaries', () => {
-    expect(programEligibility(88)).toBe(100); // §28
-    expect(programEligibility(80)).toBe(100);
-    expect(programEligibility(79.99)).toBe(70);
-    expect(programEligibility(75)).toBe(70);
-    expect(programEligibility(74.99)).toBe(40);
+describe('careerAlignment', () => {
+  /**
+   * The component exists to be the *opposite* of `programRiasecCompatibility`'s average, and this
+   * is the case that produced it: a student whose top career was Clinical Psychologist saw BS
+   * Psychology at #7, because the one perfect destination was averaged away against the program's
+   * ordinary ones. A program that leads to the student's best career must outscore one that leads
+   * to three mediocre careers, even when the two averages say otherwise.
+   */
+  it('rewards the best destination where the average punishes it', () => {
+    // One-letter codes, so a career's compatibility *is* that dimension's score and the arithmetic
+    // is readable: I 90, A 60, S 30.
+    const student: StudentSignals = {
+      riasec: profile({ I: 90, A: 60, S: 30 }),
+      careerConfidenceIndex: 72.3,
+      academicAverage: 88,
+      strand: 'Academic',
+    };
+    const peaked = ['I', 'S', 'S']; // one excellent destination, two poor ones — average 50
+    const flat = ['A', 'A', 'A']; // three middling destinations — average 60
+
+    // The average prefers the flat program…
+    expect(programRiasecCompatibility(student.riasec, peaked)).toBeCloseTo(50, 6);
+    expect(programRiasecCompatibility(student.riasec, flat)).toBeCloseTo(60, 6);
+
+    // …and career alignment reverses it: (90×0.6) + (30×0.25) + (30×0.15) = 66 against a flat 60,
+    // before both are carried through the career formula, which is monotonic and preserves it.
+    expect(careerAlignment(student, peaked)).toBeGreaterThan(careerAlignment(student, flat));
   });
 
-  it('leans positive on an unknown GWA', () => {
-    expect(programEligibility(null)).toBe(70);
+  it('is the career composite itself when one career is linked', () => {
+    expect(careerAlignment(WORKED_EXAMPLE_STUDENT, ['IEC'])).toBeCloseTo(
+      careerMatchScore(WORKED_EXAMPLE_STUDENT, 'IEC'),
+      6,
+    );
+  });
+
+  /**
+   * Renormalized below three careers, for the same reason `riasecCompatibility` renormalizes a
+   * short Holland code: without it, a program with one linked career could never exceed 60% of the
+   * range and breadth of mapping would quietly outrank fit.
+   */
+  it('renormalizes rather than capping a program with fewer than three careers', () => {
+    const one = careerAlignment(WORKED_EXAMPLE_STUDENT, ['I']);
+    const two = careerAlignment(WORKED_EXAMPLE_STUDENT, ['I', 'I']);
+    const three = careerAlignment(WORKED_EXAMPLE_STUDENT, ['I', 'I', 'I']);
+
+    expect(one).toBeCloseTo(three, 6);
+    expect(two).toBeCloseTo(three, 6);
+  });
+
+  /** Only the best three vote, so a long tail of poor mappings cannot drag a program down. */
+  it('reads only the best three careers', () => {
+    const three = careerAlignment(WORKED_EXAMPLE_STUDENT, ['I', 'I', 'I']);
+    const threePlusTail = careerAlignment(WORKED_EXAMPLE_STUDENT, ['I', 'I', 'I', 'R', 'R', 'R']);
+
+    expect(threePlusTail).toBeCloseTo(three, 6);
+  });
+
+  /** Order in, order out: the catalog returns its rows in no meaningful order (§26). */
+  it('does not depend on the order the careers arrive in', () => {
+    expect(careerAlignment(WORKED_EXAMPLE_STUDENT, ['R', 'IEC', 'ICE'])).toBeCloseTo(
+      careerAlignment(WORKED_EXAMPLE_STUDENT, ['ICE', 'R', 'IEC']),
+      6,
+    );
+  });
+
+  /**
+   * An unmapped program is scored as one codeless career — the neutral 50 compatibility carried
+   * through the *career* formula, so it lands on the same scale as every other value here. A flat
+   * 50 would be a different unit, and would read as a middling career rather than as no signal.
+   */
+  it('puts a program with no scorable careers on the same scale, not on a flat 50', () => {
+    const empty = careerAlignment(WORKED_EXAMPLE_STUDENT, []);
+
+    expect(empty).toBeCloseTo(careerMatchScore(WORKED_EXAMPLE_STUDENT, null), 6);
+    expect(Number.isNaN(empty)).toBe(false);
+  });
+});
+
+describe('careerMatchScore', () => {
+  /**
+   * One definition of "what this career scores for this student", used by both composites. If
+   * these two ever diverge, a program's career alignment is built on a number the student's own
+   * career list does not show — which is the whole thing the component was added to prevent.
+   */
+  it('is the unrounded number behind the career match a student is shown', () => {
+    const match = scoreCareer(WORKED_EXAMPLE_STUDENT, {
+      id: 'career-se',
+      title: 'Software Engineer',
+      typicalRiasecCode: 'IEC',
+    });
+
+    expect(careerMatchScore(WORKED_EXAMPLE_STUDENT, 'IEC')).toBeCloseTo(69.13, 6);
+    expect(match.matchScore).toBe(69.1);
   });
 });
 
@@ -449,22 +552,52 @@ describe('the deterministic reason string', () => {
     expect(reason).not.toMatch(/subject average/);
   });
 
-  it('adds both clauses on an aligned program match', () => {
+  it('adds every clause on an aligned program match', () => {
     const { reason } = scoreProgram(
       WORKED_EXAMPLE_STUDENT,
       { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
-      ['IEC', 'ICE'],
+      BSCS_CAREERS,
     );
 
+    // Data Analyst (ICE, 69.55) outscores Software Engineer (IEC, 69.13) for this student, so the
+    // clause names it — the reason must not name whichever career the catalog listed first.
+    expect(reason).toContain('Its strongest career match for you is Data Analyst.');
     expect(reason).toContain('Matches your Academic track.');
     expect(reason).toContain('Your subject average of 88 meets the typical academic profile for this path.');
+  });
+
+  /**
+   * The career-alignment clause is 25% of the score put into words, so it must name the career
+   * the component actually leaned on — not the first row, and not a tie broken by luck.
+   */
+  it('names no career when the program leads nowhere in the catalog', () => {
+    const { reason } = scoreProgram(
+      WORKED_EXAMPLE_STUDENT,
+      { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
+      [],
+    );
+
+    expect(reason).not.toMatch(/strongest career match/);
+  });
+
+  it('breaks a tie between equally-matched careers by title, so the reason is reproducible', () => {
+    const { reason } = scoreProgram(
+      WORKED_EXAMPLE_STUDENT,
+      { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
+      [
+        { title: 'Zoologist', typicalRiasecCode: 'IEC' },
+        { title: 'Archivist', typicalRiasecCode: 'IEC' },
+      ],
+    );
+
+    expect(reason).toContain('Its strongest career match for you is Archivist.');
   });
 
   it('states no track match when the strands differ', () => {
     const { reason } = scoreProgram(
       { ...WORKED_EXAMPLE_STUDENT, strand: 'Technical-Professional' },
       { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
-      ['IEC'],
+      [{ title: 'Software Engineer', typicalRiasecCode: 'IEC' }],
     );
 
     expect(reason).not.toMatch(/track/);
@@ -479,7 +612,7 @@ describe('the deterministic reason string', () => {
     const { reason } = scoreProgram(
       { ...WORKED_EXAMPLE_STUDENT, academicAverage: 72 },
       { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
-      ['IEC'],
+      [{ title: 'Software Engineer', typicalRiasecCode: 'IEC' }],
     );
 
     expect(reason).not.toMatch(/subject average/);
@@ -490,7 +623,7 @@ describe('the deterministic reason string', () => {
     const { reason } = scoreProgram(
       { ...WORKED_EXAMPLE_STUDENT, academicAverage: null },
       { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' },
-      ['IEC'],
+      [{ title: 'Software Engineer', typicalRiasecCode: 'IEC' }],
     );
 
     expect(reason).not.toMatch(/subject average/);
@@ -545,8 +678,10 @@ describe('the composite weights', () => {
     };
     const program = { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' as const };
 
-    expect(scoreProgram(perfect, program, ['IEC']).matchScore).toBeLessThanOrEqual(100);
-    expect(scoreProgram(empty, program, ['IEC']).matchScore).toBeGreaterThanOrEqual(0);
+    const linked = [{ title: 'Software Engineer', typicalRiasecCode: 'IEC' }];
+
+    expect(scoreProgram(perfect, program, linked).matchScore).toBeLessThanOrEqual(100);
+    expect(scoreProgram(empty, program, linked).matchScore).toBeGreaterThanOrEqual(0);
     expect(
       scoreCareer(perfect, { id: 'c', title: 'X', typicalRiasecCode: 'IEC' }).matchScore,
     ).toBeLessThanOrEqual(100);

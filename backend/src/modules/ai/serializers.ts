@@ -103,6 +103,12 @@ export function serializeChatMessage(message: ChatMessage): Record<string, unkno
      * "Requested" for "Answered — ask again", so a student who asked is not left guessing.
      */
     knowledge_answered_at: message.knowledgeAnsweredAt,
+    /**
+     * Where this answer offered to take the student (migration 0038). The client turns the id into
+     * a route and an on-screen anchor and renders the *"Yes, show me"* button; an id it does not
+     * know renders nothing, and the answer's own sentence has already said where to go.
+     */
+    nav_target: message.navTarget,
     created_at: message.createdAt,
   };
 }

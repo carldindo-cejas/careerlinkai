@@ -52,6 +52,7 @@ export const authApi = {
     await httpClient.post('/auth/change-password', payload);
   },
 
+
   // --- Counselor self-signup (migration 0034) ------------------------------------------
 
   /**

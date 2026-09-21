@@ -1,4 +1,4 @@
-import { Bot, Loader2, Send, Trash2, User, X } from 'lucide-react';
+import { Bot, Loader2, MapPin, Send, Trash2, User, X } from 'lucide-react';
 import {
   type CSSProperties,
   type FormEvent,
@@ -21,7 +21,9 @@ import {
   useRequestKnowledge,
 } from '@/features/student/hooks/useRecommendations';
 import { useStudentBrief } from '@/features/student/hooks/useStudentBrief';
+import { stopFor } from '@/features/student/tour/stops';
 import { toast } from '@/stores/toastStore';
+import { useTourStore } from '@/stores/tourStore';
 import type { ChatMessage } from '@/types/recommendation';
 
 /**
@@ -196,6 +198,7 @@ function ChatLauncherButton({ open, onOpen }: { open: boolean; onOpen: () => voi
       aria-haspopup="dialog"
       aria-label="Ask CareerLinkAI"
       title="Ask CareerLinkAI"
+      data-tour="assistant-launcher"
       className={cn(
         'group fixed z-40 flex size-12 items-center justify-center rounded-full',
         'border border-border bg-card shadow-lg transition',
@@ -384,7 +387,14 @@ function ChatSurface({
         ) : (
           <ul className="flex flex-col gap-4">
             {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              /*
+                `onClose` doubles as "the student accepted a navigation" (2026-09-18). It is the
+                same thing to do — get the panel out of the way — and the panel has exactly one
+                way to be out of the way. On the recommendations page, where the assistant is a
+                column rather than a drawer, there is nothing to close and nothing is passed, so
+                the highlight simply appears beside the still-open conversation.
+              */
+              <MessageBubble key={message.id} message={message} onNavigated={onClose} />
             ))}
           </ul>
         )}
@@ -479,7 +489,13 @@ function EmptyState({
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  onNavigated,
+}: {
+  message: ChatMessage;
+  onNavigated?: (() => void) | undefined;
+}) {
   const flag = useFlagAnswer();
   const requestKnowledge = useRequestKnowledge();
   const isStudent = message.role === 'user';
@@ -602,7 +618,75 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             Request to add to knowledge
           </button>
         ) : null}
+
+        {/* The other half of a navigation answer (migration 0038). */}
+        {isStudent ? null : <NavigationOffer message={message} onNavigated={onNavigated} />}
       </div>
     </li>
+  );
+}
+
+/**
+ * *"Want me to take you there?"* — and the button that does it (migration 0038).
+ *
+ * ## Why the assistant asks instead of going
+ *
+ * Because accepting throws the student off the screen they are on, mid-conversation. A student who
+ * only wanted to know *where* the download button was — and is in the middle of reading something
+ * else — has not asked to be moved. So the answer names the screen first, which is often all they
+ * needed, and the navigation is a second, separate decision with a visible way to decline it.
+ *
+ * ## What happens on yes
+ *
+ * `pointAt` puts the tour overlay into its single-stop mode. The overlay owns the navigation as
+ * well as the highlight, which is why nothing here calls `navigate`: one component decides what
+ * route a stop is on, and it is the one that has to find the element when it gets there.
+ *
+ * The tour is the exception — it is not a place — so *"show me around"* starts the whole thing.
+ *
+ * ## What happens on no
+ *
+ * The buttons go, and nothing is sent anywhere. Declining an offer to change screens is not a
+ * signal worth a row in a table, and it is certainly not worth a round trip in a conversation the
+ * student is still having.
+ */
+function NavigationOffer({
+  message,
+  onNavigated,
+}: {
+  message: ChatMessage;
+  onNavigated?: (() => void) | undefined;
+}) {
+  const [declined, setDeclined] = useState(false);
+  const pointAt = useTourStore((state) => state.pointAt);
+  const startTour = useTourStore((state) => state.startTour);
+
+  const target = message.nav_target ?? null;
+  // An id this build does not know renders nothing. The answer's own sentence has already told the
+  // student where to go, so a server that learns a new destination first degrades to plain prose.
+  const stop = target === null ? null : stopFor(target);
+
+  if (stop === null || declined) return null;
+
+  const accept = () => {
+    if (stop.id === 'tour') {
+      startTour();
+    } else {
+      pointAt(stop.id);
+    }
+
+    onNavigated?.();
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+      <Button size="sm" onClick={accept}>
+        <MapPin className="size-4" aria-hidden="true" />
+        {stop.id === 'tour' ? 'Start the tour' : 'Yes, show me'}
+      </Button>
+      <Button variant="ghost" size="sm" onClick={() => setDeclined(true)}>
+        No thanks
+      </Button>
+    </div>
   );
 }

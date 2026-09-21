@@ -19,6 +19,11 @@ vi.mock('@/features/student/reports/pdf/reportPdf', () => ({ downloadReportsPdf:
 const RIASEC = riasecReport();
 const SCCT = scctReport();
 
+/** The `@page` rule the page writes for the chosen paper. */
+function pageRule(): string {
+  return document.querySelector('style[data-rr-paper]')?.textContent ?? '';
+}
+
 function renderAt(url: string) {
   render(
     <QueryClientProvider client={createQueryClient()}>
@@ -62,6 +67,38 @@ describe('ResultReportPage', () => {
     print.mockRestore();
   });
 
+  /** The paper drives both ways out: the `@page` rule the print dialog opens on, and the file. */
+  it('lays the sheet out for the paper chosen in the toolbar', async () => {
+    const user = userEvent.setup();
+
+    renderAt(reportsPath([RIASEC.attempt_id]));
+    await screen.findByText('RIASEC Interest Inventory', { selector: 'h1' });
+
+    expect(pageRule()).toContain('size: 210mm 297mm');
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Paper' }), 'long');
+
+    expect(pageRule()).toContain('size: 8.5in 13in');
+
+    await user.click(screen.getByRole('button', { name: 'Download PDF' }));
+
+    await waitFor(() =>
+      expect(downloadReportsPdf).toHaveBeenCalledWith(
+        [RIASEC],
+        expect.objectContaining({ paper: 'long' }),
+      ),
+    );
+  });
+
+  it('pre-sets the paper from the export link', async () => {
+    renderAt(reportsPath([RIASEC.attempt_id], { paper: 'short' }));
+
+    await screen.findByText('RIASEC Interest Inventory', { selector: 'h1' });
+
+    expect(screen.getByRole('combobox', { name: 'Paper' })).toHaveValue('short');
+    expect(pageRule()).toContain('size: 8.5in 11in');
+  });
+
   it('pre-sets the section toggles from the export link', async () => {
     renderAt(reportsPath([RIASEC.attempt_id], { appendix: false }));
 
@@ -88,6 +125,7 @@ describe('ResultReportPage', () => {
         recommendations: null,
         showRecommendations: true,
         showAppendix: false,
+        paper: 'a4',
       }),
     );
   });

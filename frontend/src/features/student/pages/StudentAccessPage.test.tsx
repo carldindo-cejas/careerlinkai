@@ -36,6 +36,23 @@ const classRoom = {
 /** The one message every failed join returns, whatever actually went wrong (§38). */
 const GENERIC_ERROR = 'The class code or username is incorrect.';
 
+/** Step one's answer: whose account this is. No token, nobody signed out. */
+const confirmation = {
+  confirmation_required: true as const,
+  student_name: 'Juan Dela Cruz',
+  class: classRoom,
+  username: 'juan.delacruz',
+  active_session: false,
+};
+
+const session = {
+  confirmation_required: false as const,
+  user: student,
+  class: classRoom,
+  username: 'juan.delacruz',
+  token: 'student-token',
+};
+
 function renderAccessPage() {
   return render(
     <QueryClientProvider client={createQueryClient()}>
@@ -46,29 +63,33 @@ function renderAccessPage() {
   );
 }
 
+/** Step one: fill the form and ask the server whose account this is. */
 async function submit(code: string, username: string) {
   const user = userEvent.setup();
 
   await user.type(screen.getByLabelText(/class code/i), code);
   await user.type(screen.getByLabelText(/username/i), username);
-  await user.click(screen.getByRole('button', { name: /sign in/i }));
+  await user.click(screen.getByRole('button', { name: /continue/i }));
+}
+
+/** Step two: "yes, that name is mine" — the click that actually takes the session. */
+async function confirmIsMe() {
+  await userEvent.setup().click(await screen.findByRole('button', { name: /yes, it's me/i }));
 }
 
 describe('StudentAccessPage', () => {
   beforeEach(() => {
     vi.mocked(studentAccessApi.join).mockReset();
+    vi.mocked(studentAccessApi.confirm).mockReset();
   });
 
   it('signs a student in with a class code and a username, and remembers the class', async () => {
-    vi.mocked(studentAccessApi.join).mockResolvedValue({
-      user: student,
-      class: classRoom,
-      username: 'juan.delacruz',
-      token: 'student-token',
-    });
+    vi.mocked(studentAccessApi.confirm).mockResolvedValue(confirmation);
+    vi.mocked(studentAccessApi.join).mockResolvedValue(session);
 
     renderAccessPage();
     await submit('HVJE-5977', 'juan.delacruz');
+    await confirmIsMe();
 
     await waitFor(() => {
       expect(useAuthStore.getState().token).toBe('student-token');
@@ -93,7 +114,7 @@ describe('StudentAccessPage', () => {
    * helpfully "improve" on it by guessing which one it was.
    */
   it('shows the generic failure verbatim and never explains which part was wrong', async () => {
-    vi.mocked(studentAccessApi.join).mockRejectedValue(new ApiRequestError(GENERIC_ERROR, 401));
+    vi.mocked(studentAccessApi.confirm).mockRejectedValue(new ApiRequestError(GENERIC_ERROR, 401));
 
     renderAccessPage();
     await submit('HVJE-5977', 'nobody.here');
@@ -109,7 +130,7 @@ describe('StudentAccessPage', () => {
   });
 
   it('surfaces the throttle message after too many failed attempts', async () => {
-    vi.mocked(studentAccessApi.join).mockRejectedValue(
+    vi.mocked(studentAccessApi.confirm).mockRejectedValue(
       new ApiRequestError('Validation failed.', 429, {
         class_code: ['Too many failed attempts. Try again in 900 seconds.'],
       }),
@@ -125,9 +146,10 @@ describe('StudentAccessPage', () => {
     const user = userEvent.setup();
     renderAccessPage();
 
-    await user.click(screen.getByRole('button', { name: /sign in/i }));
+    await user.click(screen.getByRole('button', { name: /continue/i }));
 
     expect(await screen.findByText(/enter your class code/i)).toBeInTheDocument();
+    expect(studentAccessApi.confirm).not.toHaveBeenCalled();
     expect(studentAccessApi.join).not.toHaveBeenCalled();
   });
 
@@ -145,7 +167,7 @@ describe('StudentAccessPage', () => {
     const user = userEvent.setup();
     renderAccessPage();
 
-    await user.click(screen.getByRole('button', { name: /sign in/i }));
+    await user.click(screen.getByRole('button', { name: /continue/i }));
 
     await waitFor(() =>
       expect(screen.getByLabelText(/class code/i)).toHaveAccessibleDescription(
@@ -161,7 +183,7 @@ describe('StudentAccessPage', () => {
    * throttled code was announced as valid while a red message sat under it.
    */
   it('attaches a server field error to its field as well', async () => {
-    vi.mocked(studentAccessApi.join).mockRejectedValue(
+    vi.mocked(studentAccessApi.confirm).mockRejectedValue(
       new ApiRequestError('Validation failed.', 429, {
         class_code: ['Too many failed attempts. Try again in 900 seconds.'],
       }),
@@ -192,12 +214,8 @@ describe('StudentAccessPage', () => {
    * one thing left to type — and the code must reach the server as the link spelled it.
    */
   it('fills the class code in from a shared link, so the student types only their username', async () => {
-    vi.mocked(studentAccessApi.join).mockResolvedValue({
-      user: student,
-      class: classRoom,
-      username: 'juan.delacruz',
-      token: 'student-token',
-    });
+    vi.mocked(studentAccessApi.confirm).mockResolvedValue(confirmation);
+    vi.mocked(studentAccessApi.join).mockResolvedValue(session);
 
     render(
       <QueryClientProvider client={createQueryClient()}>
@@ -214,14 +232,120 @@ describe('StudentAccessPage', () => {
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText(/username/i), 'juan.delacruz');
-    await user.click(screen.getByRole('button', { name: /sign in/i }));
+    await user.click(screen.getByRole('button', { name: /continue/i }));
 
     await waitFor(() =>
-      expect(studentAccessApi.join).toHaveBeenCalledWith({
+      expect(studentAccessApi.confirm).toHaveBeenCalledWith({
         class_code: 'HVJE-5977',
         username: 'juan.delacruz',
       }),
     );
+  });
+
+  /**
+   * The confirmation step (incident 2026-09-18).
+   *
+   * Students share a class code and are told apart by a roster number a neighbour can guess, so
+   * a mistyped username used to be a silent sign-in as somebody else — and, because a join
+   * revoked every other token on the account, an eviction of whoever was using it. 61 of 79 joins
+   * in the hour that got diagnosed ended somebody else's session. Naming the account before
+   * claiming it is what makes the mistake visible to the person making it.
+   */
+  it('names the account and issues nothing until the student says it is theirs', async () => {
+    vi.mocked(studentAccessApi.confirm).mockResolvedValue(confirmation);
+    vi.mocked(studentAccessApi.join).mockResolvedValue(session);
+
+    renderAccessPage();
+    await submit('HVJE-5977', 'juan.delacruz');
+
+    expect(await screen.findByText('Juan Dela Cruz')).toBeInTheDocument();
+
+    // The whole point: nothing has been taken yet.
+    expect(studentAccessApi.join).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().token).toBeNull();
+
+    await confirmIsMe();
+
+    await waitFor(() => expect(useAuthStore.getState().token).toBe('student-token'));
+  });
+
+  it('warns that continuing will sign another device out, before it does it', async () => {
+    vi.mocked(studentAccessApi.confirm).mockResolvedValue({
+      ...confirmation,
+      active_session: true,
+    });
+
+    renderAccessPage();
+    await submit('HVJE-5977', 'juan.delacruz');
+
+    expect(await screen.findByText(/already signed in on another device/i)).toBeInTheDocument();
+
+    /*
+      And the whole card turns red, not just the line inside it (prompt-driven, 2026-09-20). A
+      warning-toned sentence in an otherwise ordinary card reads as small print; saying yes here
+      ends somebody else's assessment, which is the one thing on this screen a student should not
+      be able to do without noticing.
+    */
+    expect(screen.getByTestId('identity-confirmation').className).toContain('border-destructive');
+  });
+
+  it('leaves the card in its ordinary colours when no session is being ended', async () => {
+    vi.mocked(studentAccessApi.confirm).mockResolvedValue(confirmation);
+
+    renderAccessPage();
+    await submit('HVJE-5977', 'juan.delacruz');
+
+    await screen.findByText('Juan Dela Cruz');
+    expect(
+      screen.getByTestId('identity-confirmation').className,
+    ).not.toContain('border-destructive');
+  });
+
+  it('says nothing about other devices when there is no session to end', async () => {
+    vi.mocked(studentAccessApi.confirm).mockResolvedValue(confirmation);
+
+    renderAccessPage();
+    await submit('HVJE-5977', 'juan.delacruz');
+
+    await screen.findByText('Juan Dela Cruz');
+    expect(screen.queryByText(/another device/i)).not.toBeInTheDocument();
+  });
+
+  it('lets a student who does not recognise the name go back without signing in', async () => {
+    vi.mocked(studentAccessApi.confirm).mockResolvedValue({
+      ...confirmation,
+      student_name: 'Someone Else',
+    });
+
+    renderAccessPage();
+    await submit('HVJE-5977', 'juan.delacrus');
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: /not me/i }));
+
+    // Back on the form, with what they typed still in it — the username is the part to fix.
+    expect(await screen.findByLabelText(/class code/i)).toHaveValue('HVJE-5977');
+    expect(studentAccessApi.join).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().token).toBeNull();
+  });
+
+  /**
+   * The other half of the incident: a student mid-question was dropped on this screen with no
+   * explanation, which is exactly the state in which somebody signs in again and evicts the next
+   * person. `sessionEnded` is set only by a rejected token, never by a deliberate sign-out.
+   */
+  it('explains an involuntary sign-out when the student lands back here', async () => {
+    useAuthStore.setState({ sessionEnded: true });
+
+    renderAccessPage();
+
+    expect(screen.getByText(/you were signed out/i)).toBeInTheDocument();
+    expect(screen.getByText(/your answers were saved/i)).toBeInTheDocument();
+  });
+
+  it('says nothing about a sign-out to a student who simply arrived', async () => {
+    renderAccessPage();
+
+    expect(screen.queryByText(/you were signed out/i)).not.toBeInTheDocument();
   });
 
   /**

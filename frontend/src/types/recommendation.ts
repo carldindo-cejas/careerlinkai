@@ -99,6 +99,17 @@ export interface ChatMessage {
    * transcript cached from before that deploy does not carry it.
    */
   knowledge_answered_at?: string | null;
+  /**
+   * Where this answer offered to take the student (migration 0038) — a destination id, never a URL.
+   *
+   * Set only on an answer to a navigation question (*"where do I download my results?"*), which is
+   * what puts *"Yes, show me"* under it. The id is resolved by `features/student/tour/stops.ts`
+   * into a route and an element to highlight; one this build does not recognise renders no button
+   * at all, and the answer's own sentence has already said where to go.
+   *
+   * Optional, because a transcript cached from before that deploy does not carry it.
+   */
+  nav_target?: string | null;
   created_at: string | null;
 }
 

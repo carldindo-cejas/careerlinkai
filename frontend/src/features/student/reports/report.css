@@ -17,13 +17,17 @@
  * signature row, and a heading with the first lines under it.
  */
 
+/*
+ * The sheet's size is chosen at run time — ResultReportPage writes `@page { size: … }` for the
+ * paper the student picked (paperSize.ts), and sets `--rr-sheet-width` to match so the column on
+ * screen is the width of that sheet. The margin is the same on every size.
+ */
 @page {
-  size: A4;
   margin: 0.62in;
 }
 
 .rr {
-  max-width: 210mm;
+  max-width: var(--rr-sheet-width, 210mm);
   margin: 0 auto;
   padding: var(--space-8) var(--space-6);
 }
@@ -379,6 +383,13 @@
   gap: var(--space-2);
   font-size: 13px;
 }
+.rr-paper {
+  font: inherit;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-divider);
+  background: transparent;
+  color: inherit;
+}
 .rr-toolbar-error {
   flex-basis: 100%;
   margin: 0;
@@ -445,10 +456,16 @@
   /*
    * The small units that still keep together — see the note at the top of this file. The two
    * calculation panels are a few lines each; split, they left a lone kicker at the foot of a page.
+   *
+   * `.rr-grid-dist` is the Likert distribution beside the bands table: two five-row tables, about
+   * 44mm, and the pair is a legend for the scale the whole report is read against. Cut down the
+   * middle it turned into two halves of a table with no heading on the second, so it travels
+   * whole — on the sheet as in the PDF, where the same block is `keepTogether`.
    */
   .rr-title,
   .rr-hero,
   .rr-grid-2 > .panel,
+  .rr-grid-dist,
   .rr-signatures {
     break-inside: avoid;
   }

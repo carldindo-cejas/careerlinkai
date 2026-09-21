@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { createDatabase } from '@/db/client';
 import { assessmentDimensions, gradeLevels, shsStrands } from '@/db/schema';
 import type { AppEnv } from '@/env';
+import { dispatch } from '@/events/dispatcher';
+import { notifyStudentRenamed } from '@/events/send-notifications';
 import { paginate, successEnvelope } from '@/lib/envelope';
 import { clientIp, parseBody, parseQuery } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
@@ -86,14 +88,36 @@ studentRoutes.get('/profile', async (c) => {
 
 studentRoutes.patch('/profile', async (c) => {
   const input = await parseBody(c, updateStudentProfileSchema);
-  const service = new StudentProfileService(createDatabase(c.env.DB));
+  const db = createDatabase(c.env.DB);
+  const service = new StudentProfileService(db);
 
-  await service.update(requireUser(c), input);
+  const { rename } = await service.update(requireUser(c), input, { ipAddress: clientIp(c) });
 
-  // Re-read through the same path GET uses, rather than serializing the row `update` returned.
-  // The two are not the same object: the derived-field flags and the resolved lookup names come
-  // from other tables, and a PATCH response missing them would leave the screen thinking a field
-  // it just saved is now editable.
+  /*
+    The counselors, told after the fact (prompt-driven, 2026-09-20).
+
+    Dispatched here rather than inside `update` so that the save and the telling stay separable:
+    `dispatch` absorbs a throwing listener, which is what guarantees a student still gets the
+    rename they watched succeed when the notification insert fails. `rename` is null unless the
+    name actually moved, so an ordinary grade edit notifies nobody.
+  */
+  if (rename !== null) {
+    await dispatch(
+      { type: 'StudentRenamed', studentId: rename.studentId, from: rename.from, to: rename.to },
+      [notifyStudentRenamed(db)],
+    );
+  }
+
+  /*
+    Re-read through the same path GET uses, rather than serializing the row `update` returned.
+    The two are not the same object: the derived-field flags and the resolved lookup names come
+    from other tables, and a PATCH response missing them would leave the screen thinking a field
+    it just saved is now editable.
+
+    `requireUser(c)` is the user resolved at authentication, so after a rename its `name` is the
+    *old* one — which does not matter here, because `viewFor` reads `student_profiles` and the
+    serializer takes the name from that row rather than from the token's copy.
+  */
   const view = await service.viewFor(requireUser(c));
 
   return c.json(

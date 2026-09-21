@@ -1,13 +1,20 @@
-import { count, eq } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
-import { assessmentQuestions, assessmentTemplates, assessmentVersions } from '@/db/schema';
+import {
+  assessmentQuestions,
+  assessmentTemplates,
+  assessmentVersions,
+  classStudents,
+  classes,
+} from '@/db/schema';
 import type {
   AssessmentCompletedEvent,
   AssessmentDraftGeneratedEvent,
   KnowledgeDocumentProcessedEvent,
   Listener,
   RecommendationGeneratedEvent,
+  StudentRenamedEvent,
 } from '@/events/dispatcher';
 import { NotificationService } from '@/modules/platform/notification-service';
 
@@ -103,5 +110,95 @@ export function notifyAssessmentDraftGenerated(
       message: `Your AI-generated draft for '${version?.title ?? 'your assessment'}' is ready — ${questionCount} question${questionCount === 1 ? '' : 's'} need review before you can publish.`,
       category: 'ASSESSMENT',
     });
+  };
+}
+
+/**
+ * (to every counselor whose active class holds them) "{old} is now {new}." — prompt-driven,
+ * 2026-09-20.
+ *
+ * Three things the message has to carry, and the reason for each:
+ *
+ *   * **The old name first.** A counselor who reads only the new one cannot find the row that
+ *     changed; the old name is the handle they have been using for this person all term.
+ *   * **The username, and that it did not change.** This is the sentence that stops a support
+ *     request. A rename changes what the student is called on the roster and on their exported
+ *     report; it deliberately does not touch `class_students.username`, which is the credential
+ *     the whole class signs in with and is unique per class.
+ *   * **The class.** A counselor runs several, and "which roster do I look at" is the first thing
+ *     they will want to know.
+ *
+ * `CLASS` rather than `ACCOUNT`, on §13.8's own logic for the assignment notification: this
+ * reaches a counselor *because of* a class they own, not because of anything about their account.
+ *
+ * Silent when nobody qualifies — a student in no active class has no counselor whose roster just
+ * changed, and inventing a recipient would be worse than saying nothing.
+ */
+export function notifyStudentRenamed(db: Database): Listener<StudentRenamedEvent> {
+  return async (event) => {
+    /*
+      Queried here rather than through a module service, which is how every other listener in this
+      file resolves what it needs — see the draft one above, which reads `assessment_questions`
+      and `assessment_versions` directly.
+
+      The reason is the direction of the dependency. This module is imported *by* the Assessment
+      module (`assessment-attempt-service.ts` and `modules/assessment/routes.ts` both pull
+      listeners out of it), so importing an Assessment service back into it points an edge the
+      wrong way through a boundary §11 draws deliberately. A listener's dependency is the
+      database; the module it reacts to is the thing that calls *it*.
+
+      The rows are the student's active enrollments in active classes. Active on both sides: a
+      counselor whose class is archived is not working from that roster, and a student removed
+      from a class is not on it — neither has a roster that just changed.
+    */
+    const rows = await db
+      .select({
+        counselorId: classes.counselorId,
+        className: classes.name,
+        username: classStudents.username,
+      })
+      .from(classStudents)
+      .innerJoin(classes, eq(classStudents.classId, classes.id))
+      .where(
+        and(
+          eq(classStudents.studentId, event.studentId),
+          eq(classStudents.status, 'active'),
+          eq(classes.status, 'active'),
+        ),
+      );
+
+    /*
+      One notification per counselor, not per class. A counselor who teaches the same student in
+      two of their classes learnt the fact once; saying it twice is noise, and the bell is the one
+      surface where noise costs the next real message its attention.
+    */
+    const audience = new Map<string, (typeof rows)[number]>();
+
+    for (const row of rows) {
+      if (!audience.has(row.counselorId)) audience.set(row.counselorId, row);
+    }
+
+    if (audience.size === 0) {
+      return;
+    }
+
+    const notifications = new NotificationService(db);
+
+    /*
+      One `send` per counselor rather than `sendToMany`, because the message is not the same for
+      each of them: it names the class the rename shows up on and the username in that class, and
+      both differ per counselor. A student is on one or two rosters, not forty.
+    */
+    for (const entry of audience.values()) {
+      await notifications.send({
+        userId: entry.counselorId,
+        title: 'A student changed their name',
+        message:
+          `${event.from} is now ${event.to} in ${entry.className}. ` +
+          `Their username (${entry.username}) has not changed, and their roster and results ` +
+          'already show the new name.',
+        category: 'CLASS',
+      });
+    }
   };
 }

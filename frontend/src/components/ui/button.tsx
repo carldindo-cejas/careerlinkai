@@ -1,6 +1,6 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Loader2 } from 'lucide-react';
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 
 import { Corners } from '@/components/ui/blueprint';
 import { cn } from '@/components/ui/cn';
@@ -52,6 +52,15 @@ export interface ButtonProps
     VariantProps<typeof buttonVariants> {
   loading?: boolean;
   children: ReactNode;
+  /**
+   * A handle on the underlying `<button>`.
+   *
+   * React 19 passes `ref` to a function component as an ordinary prop, but `ButtonHTMLAttributes`
+   * does not declare it, so it has to be named here to be typed. Added for the tour overlay, which
+   * moves focus to each step's primary action — a dialog that opens without moving focus leaves a
+   * keyboard user's focus behind the dim layer, invisible and still operable.
+   */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 export function Button({
@@ -61,6 +70,7 @@ export function Button({
   loading = false,
   disabled,
   children,
+  ref,
   ...props
 }: ButtonProps) {
   // The primary button is the system's one solid object, so it also wears the registration marks
@@ -69,6 +79,7 @@ export function Button({
 
   return (
     <button
+      ref={ref}
       className={cn(buttonVariants({ variant, size }), className)}
       disabled={disabled ?? loading}
       {...props}

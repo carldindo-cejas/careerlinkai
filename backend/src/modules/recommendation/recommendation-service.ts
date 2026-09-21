@@ -711,7 +711,10 @@ export class RecommendationService {
         const match = scoreProgram(
           student,
           { id: program.id, name: program.name, recommendedStrand: program.recommendedStrand },
-          careersOf.map((career) => career.typicalRiasecCode),
+          careersOf.map((career) => ({
+            title: career.title,
+            typicalRiasecCode: career.typicalRiasecCode,
+          })),
         );
 
         return {
@@ -824,7 +827,10 @@ export class RecommendationService {
         ...scoreProgram(
           student,
           target,
-          linked.map((career) => career.typicalRiasecCode),
+          linked.map((career) => ({
+            title: career.title,
+            typicalRiasecCode: career.typicalRiasecCode,
+          })),
         ),
         name: program.name,
         /*

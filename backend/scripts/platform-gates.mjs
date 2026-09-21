@@ -732,8 +732,29 @@ function weighRoutes(distDir, kib) {
    * the shell's mobile drawer, so splitting it saves ~3 KiB. The next real cut is moving
    * `AssessmentPlayerPage` into a route group of its own. Do not raise this again without a row
    * like this one saying what was bought.
+   *
+   * Raised 560 → 565 KiB on 2026-09-21. The screen measured 561 KiB (574,259 bytes), and the
+   * overage is two things rather than one:
+   *
+   *   * **~576 bytes were already over the line** before the day's work started — the profile
+   *     gate, the scroll hint and the welcome tour's static half (`tourOrder.ts`, which
+   *     `stores/tourStore.ts` must have on the first paint to decide whether to offer the tour
+   *     at all). Measured by stripping the day's edits and rebuilding, not estimated.
+   *   * **~243 bytes are the tour's navigation stops**: `AppNavItem.tour`, the four anchors the
+   *     student shell names on its nav rows, and five ids in `TOUR`. Every destination is now
+   *     introduced by the menu row that reaches it before the student is taken there, which is
+   *     the difference between having seen four screens and being able to get back to them.
+   *
+   * What was *not* simply absorbed: the counselor's account page arrived the same day and its API
+   * and hooks would have ridden into this closure through `services/authApi.ts` and
+   * `features/auth/hooks/useAuth.ts`, both of which `AppShell` reaches on every screen in every
+   * shell. They were split into `services/accountApi.ts` and
+   * `features/counselor/hooks/useAccount.ts`, and the tour's stylesheet moved out of `index.css`
+   * into the lazy tour chunk — together ~870 bytes that a student no longer pays for a page they
+   * cannot open. The headroom below is 4 KiB, not a licence: the next real cut is still moving
+   * `AssessmentPlayerPage` into a route group of its own.
    */
-  const STUDENT_SCREEN_BUDGET = 560 * 1024;
+  const STUDENT_SCREEN_BUDGET = 565 * 1024;
 
   /**
    * **`/join` is the only screen with a budget of its own, because it is the only screen a

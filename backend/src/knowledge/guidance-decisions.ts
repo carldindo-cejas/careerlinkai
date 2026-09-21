@@ -69,7 +69,7 @@ Engineering, architecture, computing and maritime programs: Mathematics (General
 Health sciences, agriculture, fisheries and environment: Biology and Chemistry.
 Business and accountancy: Mathematics and Statistics, and English for writing.
 Education, law, political science, English, tourism and hospitality: English, oral communication, and reading and writing.
-Your profile's Math, Science and English grades count for 20% of every program score through academic fit. Improving the subject your program depends on most helps both your score here and your college application.`,
+Your profile's Math, Science and English grades count for 10% of every program score through academic fit. Improving the subject your program depends on most helps both your score here and your college application.`,
   },
   {
     slug: 'board-exams',

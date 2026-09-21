@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { demoInstead, useTourDemo } from '@/features/student/tour/demoMode';
 import { aiApi } from '@/services/aiApi';
 import { catalogLinksApi, chatApi, recommendationApi } from '@/services/recommendationApi';
 import type { ChatTranscript } from '@/types/recommendation';
@@ -14,10 +15,14 @@ export const recommendationKeys = {
 };
 
 export function useMyRecommendations() {
-  return useQuery({
+  const query = useQuery({
     queryKey: recommendationKeys.mine,
     queryFn: () => recommendationApi.getMine(),
   });
+
+  // The tour's example student, for a student who has none of their own — see
+  // `features/student/tour/demoMode.ts`. Only ever while the overlay is up.
+  return demoInstead(query, useTourDemo()?.recommendations);
 }
 
 /**

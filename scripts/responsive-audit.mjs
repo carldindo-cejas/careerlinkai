@@ -415,7 +415,8 @@ async function seedFixtures(adminToken, counselorToken) {
   if (first) {
     const joined = await api('/student-access/join', {
       method: 'POST',
-      body: { class_code: classRoom.join_code, username: first.username },
+      // `confirm: true` — the second of the two calls a join takes; the first issues no token.
+      body: { class_code: classRoom.join_code, username: first.username, confirm: true },
     });
 
     if (joined.status === 200) {

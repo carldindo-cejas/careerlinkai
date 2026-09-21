@@ -19,7 +19,15 @@ import { paths } from '@/routes/paths';
 export function StudentAccessLayout() {
   return (
     <div className="grid min-h-screen lg:grid-cols-[1fr_1.15fr]">
-      <div className="relative flex flex-col items-center justify-center gap-6 overflow-hidden bg-background p-4 sm:p-8">
+      {/*
+        The vertical rhythm is tighter below `sm` than it used to be, and that is a fix rather than
+        a taste: this panel centres a card in a full-height column, so every pixel the logo, the
+        back link and the footer spend is a pixel the card's *buttons* are pushed down by. On a
+        320x568 phone the confirmation step's "Yes, this is me" landed 18px below the fold — the
+        card still rendered, the student just had no visible way forward and no reason to suspect
+        there was one. Scrolling was possible and unsignalled, which is the same thing as broken.
+      */}
+      <div className="relative flex flex-col items-center justify-center gap-4 overflow-hidden bg-background px-4 py-6 sm:gap-6 sm:p-8">
         <Link to={paths.landing} className="focus-visible:outline-none">
           <Logo />
         </Link>

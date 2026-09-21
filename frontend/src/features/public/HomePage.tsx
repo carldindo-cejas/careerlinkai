@@ -78,10 +78,10 @@ export function HomePage() {
                 <ArrowRight className="size-4" aria-hidden="true" />
               </Link>
               <Link
-                to={paths.counselorSignup}
+                to={paths.login}
                 className="inline-flex h-11 items-center rounded-none border border-sidebar-border px-6 text-base font-medium text-sidebar-active-foreground transition-colors hover:bg-sidebar-active"
               >
-                Sign up as a counselor
+                Counselor Login
               </Link>
             </div>
             <p className="mt-3 text-xs text-sidebar-muted">

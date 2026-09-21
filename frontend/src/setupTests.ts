@@ -51,7 +51,7 @@ configure({ asyncUtilTimeout: 5_000 });
 // user leaks from one test into the next.
 beforeEach(() => {
   window.localStorage.clear();
-  useAuthStore.setState({ token: null, user: null });
+  useAuthStore.setState({ token: null, user: null, sessionEnded: false });
   useStudentClassStore.setState({ classRoom: null, username: null });
 });
 
