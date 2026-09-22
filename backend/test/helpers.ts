@@ -1,5 +1,5 @@
 import { SELF, env } from 'cloudflare:test';
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 
 import { createDatabase } from '@/db/client';
 import type { UserRole, UserStatus } from '@/db/enums';
@@ -13,10 +13,12 @@ import {
   counselorProfiles,
   counselorSignupRequests,
   gradeLevels,
+  notifications,
   passwordResetTokens,
   programCareers,
   programs,
   shsStrands,
+  staffEmailChangeRequests,
   users,
 } from '@/db/schema';
 import { hashPassword } from '@/do/auth-guard';
@@ -412,6 +414,32 @@ export async function findSignupRequest(email: string) {
   return db().query.counselorSignupRequests.findFirst({
     where: eq(counselorSignupRequests.email, email.toLowerCase()),
   });
+}
+
+/** Age a staged email change so the TTL check sees it as expired (migration 0039). */
+export async function backdateEmailChangeRequest(
+  userId: string,
+  minutesAgo: number,
+): Promise<void> {
+  await db()
+    .update(staffEmailChangeRequests)
+    .set({ createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString() })
+    .where(eq(staffEmailChangeRequests.userId, userId));
+}
+
+export async function findEmailChangeRequest(userId: string) {
+  return db().query.staffEmailChangeRequests.findFirst({
+    where: eq(staffEmailChangeRequests.userId, userId),
+  });
+}
+
+/** The in-app notifications a user has been sent, newest first — §44's only delivery record. */
+export async function notificationsFor(userId: string) {
+  return db()
+    .select()
+    .from(notifications)
+    .where(eq(notifications.userId, userId))
+    .orderBy(desc(notifications.createdAt));
 }
 
 /** Every audit action recorded for a user, oldest first — the §13.8 trail under assertion. */

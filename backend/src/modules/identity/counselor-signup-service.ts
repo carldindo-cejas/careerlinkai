@@ -18,7 +18,7 @@ import {
   signupVerifyGuard,
   staffAuthGuard,
 } from '@/lib/auth-guard';
-import { hashToken, timingSafeEqualString, uuid } from '@/lib/crypto';
+import { generateNumericCode, hashToken, timingSafeEqualString, uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError } from '@/lib/envelope';
@@ -67,33 +67,13 @@ const MODULE = 'Identity';
  */
 export const SIGNUP_CODE_TTL_MINUTES = 15;
 
-const CODE_DIGITS = 6;
-
 /**
- * A uniformly random six-digit code.
- *
- * Rejection sampling, the same rule as the temporary-password and join-code generators: `byte % 10`
- * would make 0–5 more likely than 6–9, which costs roughly a third of a digit of entropy per
- * position. It is a small loss and an entirely free one to avoid.
- *
- * Six digits is 10^6, which is only safe because `signupVerifyGuard` stops at five wrong guesses.
- * Neither number means much without the other.
+ * Six digits, from the shared generator in `lib/crypto.ts`. Six is 10^6, which is only safe
+ * because `signupVerifyGuard` stops at five wrong guesses — neither number means much without
+ * the other.
  */
 function generateCode(): string {
-  const digits: string[] = [];
-  const byte = new Uint8Array(1);
-  // 250 = floor(256/10)*10. Bytes at or above it are discarded rather than folded.
-  const cap = 250;
-
-  while (digits.length < CODE_DIGITS) {
-    crypto.getRandomValues(byte);
-
-    if (byte[0]! < cap) {
-      digits.push(String(byte[0]! % 10));
-    }
-  }
-
-  return digits.join('');
+  return generateNumericCode(6);
 }
 
 export interface SignupResult {

@@ -19,5 +19,7 @@ export { CanonicalProgramPage } from '@/features/admin/pages/CanonicalProgramPag
 export { AiPolicyPage } from '@/features/admin/pages/AiPolicyPage';
 export { CounselorManagementPage } from '@/features/admin/pages/CounselorManagementPage';
 export { CounselorDetailPage } from '@/features/admin/pages/CounselorDetailPage';
+export { ScoringFormulaPage } from '@/features/admin/pages/ScoringFormulaPage';
+export { MatchingPage } from '@/features/admin/pages/MatchingPage';
 export { PlatformUsagePage } from '@/features/admin/pages/PlatformUsagePage';
 export { AuditLogPage } from '@/features/admin/pages/AuditLogPage';

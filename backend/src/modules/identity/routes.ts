@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 
 import { createDatabase } from '@/db/client';
 import type { AppEnv } from '@/env';
-import { successEnvelope } from '@/lib/envelope';
+import { ApiError, successEnvelope } from '@/lib/envelope';
 import { clientIp, parseBody } from '@/lib/validation';
 import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
@@ -16,6 +16,7 @@ import {
   resendSignupCodeSchema,
   resetPasswordSchema,
   updateAccountSchema,
+  verifyEmailChangeSchema,
   verifySignupCodeSchema,
 } from '@/modules/identity/schemas';
 import { serializeUser } from '@/modules/identity/serializers';
@@ -141,6 +142,11 @@ authRoutes.use('/change-password', authenticate());
 */
 authRoutes.use('/profile', authenticate(), ensurePasswordChanged());
 authRoutes.use('/change-email', authenticate(), ensurePasswordChanged());
+// `use('/change-email')` matches that path and nothing below it, so the three steps that hang off
+// it need their own mount. Written as a wildcard rather than three lines so that a fourth step
+// cannot be added later without the guard — an unauthenticated `/change-email/verify` would be a
+// code-guessing endpoint against every account at once.
+authRoutes.use('/change-email/*', authenticate(), ensurePasswordChanged());
 
 authRoutes.get('/me', async (c) => {
   const { user, counselorProfile } = await service(c).me(requireUser(c));
@@ -179,17 +185,104 @@ authRoutes.patch('/profile', async (c) => {
 });
 
 /**
- * Change the address this account signs in with. The current password is part of the body, not a
- * formality — see `StaffAuthenticationService.changeEmail`.
+ * **Step one.** Ask to move the address this account signs in with: the current password proves
+ * who is asking, and a six-digit code goes to the address being asked for.
  *
- * Unlike `/auth/change-password`, this does **not** revoke the caller's sessions, so the response
- * carries the updated user and the client stays signed in.
+ * `202`, not `200`, and the difference is the honest one: nothing has changed yet. The account
+ * still signs in with its old address, and will keep doing so until the code comes back — see
+ * `StaffAuthenticationService.requestEmailChange` for why that is worth two round trips.
+ *
+ * The code is echoed in the body **only** when `APP_ENV === 'local'`, exactly as
+ * `/auth/forgot-password` treats its reset token and `/auth/counselor-signup` its own code, so the
+ * flow is exercisable end to end in development and by the suite with no mail channel.
  */
 authRoutes.post('/change-email', async (c) => {
   const input = await parseBody(c, changeEmailSchema);
-  const { user, counselorProfile } = await service(c).changeEmail(
+  const issued = await service(c).requestEmailChange(requireUser(c), input, clientIp(c));
+
+  return c.json(
+    successEnvelope(
+      {
+        pending_email: issued.email,
+        expires_in_minutes: issued.expiresInMinutes,
+        ...(c.env.APP_ENV === 'local' ? { verification_code: issued.code } : {}),
+      },
+      `Enter the six-digit code sent to ${issued.email} to finish moving your account.`,
+    ),
+    202,
+  );
+});
+
+/**
+ * What is waiting on a code, if anything.
+ *
+ * The account page calls this on mount, and that is not a nicety: the code arrives in a mail
+ * client, usually on a different device, and the tab gets reloaded on the way back. Without this
+ * the page would forget a change that is still live and offer to start it again — spending a
+ * second code to reach a state it was already in.
+ */
+authRoutes.get('/change-email', async (c) => {
+  const pending = await service(c).pendingEmailChange(requireUser(c));
+
+  return c.json(
+    successEnvelope(
+      pending === null
+        ? null
+        : { pending_email: pending.email, expires_in_minutes: pending.expiresInMinutes },
+      pending === null ? 'No email change is pending.' : 'An email change is waiting for a code.',
+    ),
+  );
+});
+
+/**
+ * A new code for the change already staged. The destination cannot be changed here — that is what
+ * cancelling and starting again is for, and it is why this endpoint needs no password.
+ *
+ * `404` when nothing is staged, rather than a cheerful 202: the one thing this must not do is tell
+ * somebody a code is on its way to an address no longer being changed to.
+ */
+authRoutes.post('/change-email/resend', async (c) => {
+  const issued = await service(c).resendEmailChangeCode(requireUser(c), clientIp(c));
+
+  if (issued === null) {
+    throw ApiError.notFound('No email change is waiting for a code. Start again.');
+  }
+
+  return c.json(
+    successEnvelope(
+      {
+        pending_email: issued.email,
+        expires_in_minutes: issued.expiresInMinutes,
+        ...(c.env.APP_ENV === 'local' ? { verification_code: issued.code } : {}),
+      },
+      `A new code is on its way to ${issued.email}.`,
+    ),
+    202,
+  );
+});
+
+/**
+ * Abandon a staged change. Idempotent, and a success even when there was nothing staged: the
+ * button exists to make the page stop asking for a code, and a 404 would leave it asking.
+ */
+authRoutes.delete('/change-email', async (c) => {
+  await service(c).cancelEmailChange(requireUser(c), clientIp(c));
+
+  return c.json(successEnvelope(null, 'The email change was cancelled.'));
+});
+
+/**
+ * **Step two.** Spend the code, and the address moves.
+ *
+ * Answers with the updated user in the same shape `/auth/me` does, so the client replaces its
+ * cached user from the response rather than refetching. No session is revoked, unlike
+ * `/auth/change-password` — the caller proved their password at step one and their mailbox here.
+ */
+authRoutes.post('/change-email/verify', async (c) => {
+  const input = await parseBody(c, verifyEmailChangeSchema);
+  const { user, counselorProfile } = await service(c).verifyEmailChange(
     requireUser(c),
-    input,
+    input.code,
     clientIp(c),
   );
 

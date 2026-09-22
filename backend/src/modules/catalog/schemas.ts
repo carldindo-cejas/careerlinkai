@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
-import { CATALOG_STATUSES, PROGRAM_STATUSES, STRANDS } from '@/db/enums';
+import { CATALOG_STATUSES, LINK_RELATIONSHIPS, PROGRAM_STATUSES, STRANDS } from '@/db/enums';
 import { isGoogleMapsUrl } from '@/lib/google-maps';
 import { parseHollandCode } from '@/lib/holland';
+import { MAX_IMPORT_ROWS } from '@/modules/catalog/mapping-transfer-service';
 
 /**
  * An optional foreign-key field: a non-empty id, `null` to clear it, or absent to leave it. The
@@ -137,14 +138,23 @@ export const createCanonicalProgramSchema = z.object({
   code: z.string().trim().min(1, 'A code is required.').max(30),
   name: z.string().trim().min(1, 'A name is required.').max(200),
   description: z.string().trim().nullish(),
+  /** The default strand for every offering of it (migration 0040). `null` is "no requirement". */
+  recommended_strand: z.enum(STRANDS).nullish(),
 });
 
+/**
+ * `recommended_strand` here is **applied to every offering** when it changes — see
+ * `AcademicCatalogService.updateCanonicalProgram`. Omit it to leave the offerings alone; the admin
+ * form sends it only when the admin actually changed it, so renaming an entry never overwrites a
+ * campus that deliberately differs.
+ */
 export const updateCanonicalProgramSchema = z
   .object({
     code: z.string().trim().min(1).max(30),
     name: z.string().trim().min(1).max(200),
     description: z.string().trim().nullable(),
     status: z.enum(CATALOG_STATUSES),
+    recommended_strand: z.enum(STRANDS).nullable(),
   })
   .partial();
 
@@ -242,7 +252,37 @@ export const updateCareerSchema = z
 
 export const attachCareerSchema = z.object({
   career_id: z.string().trim().min(1, 'A career is required.'),
+  /** How strongly the program leads there (migration 0041). Omitted is `direct`. */
+  relationship: z.enum(LINK_RELATIONSHIPS).optional(),
 });
+
+/**
+ * A spreadsheet of the canonical mapping (2026-09-22). Fields are plain strings on purpose: the
+ * relationship is validated **per line** by `MappingTransferService`, so a typo on line 40 comes
+ * back as "line 40", not as a schema error pointing at `rows.38.relationship`.
+ */
+export const importMappingSchema = z
+  .object({
+    rows: z
+      .array(
+        z
+          .object({
+            program_code: z.string().max(60),
+            career_title: z.string().max(200).default(''),
+            relationship: z.string().max(40).default(''),
+          })
+          .strip(),
+      )
+      .min(1, 'The file has no rows.')
+      .max(MAX_IMPORT_ROWS, `A file may hold at most ${MAX_IMPORT_ROWS} rows.`),
+    apply: z.boolean().default(false),
+  })
+  .strict();
+
+/** Re-grade an existing link — `PATCH …/careers/{careerId}` (migration 0041). */
+export const setRelationshipSchema = z
+  .object({ relationship: z.enum(LINK_RELATIONSHIPS) })
+  .strict();
 
 /**
  * A free-text list filter. `''` normalises to `undefined` rather than passing through as an empty
@@ -310,6 +350,8 @@ export type CreateCollegeInput = z.infer<typeof createCollegeSchema>;
 export type UpdateCollegeInput = z.infer<typeof updateCollegeSchema>;
 export type CreateProgramInput = z.infer<typeof createProgramSchema>;
 export type UpdateProgramInput = z.infer<typeof updateProgramSchema>;
+export type CreateCanonicalProgramInput = z.infer<typeof createCanonicalProgramSchema>;
+export type UpdateCanonicalProgramInput = z.infer<typeof updateCanonicalProgramSchema>;
 export type CreateCareerInput = z.infer<typeof createCareerSchema>;
 export type UpdateCareerInput = z.infer<typeof updateCareerSchema>;
 export type AttachCareerInput = z.infer<typeof attachCareerSchema>;

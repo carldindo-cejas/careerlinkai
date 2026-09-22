@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 
@@ -67,9 +67,23 @@ export interface ProgramFormProps {
   program?: Program;
   onSaved: () => void;
   onCancel: () => void;
+  /**
+   * Drop the surrounding `Card`, for a caller that already frames the form.
+   *
+   * The college page now opens this in a dialog, which supplies its own heading and border. A card
+   * inside a dialog is two frames around one form, and the duplicated title ("Edit BSCS" above
+   * "Edit BSCS") reads as a rendering bug rather than as structure.
+   */
+  bare?: boolean;
 }
 
-export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFormProps) {
+export function ProgramForm({
+  collegeId,
+  program,
+  onSaved,
+  onCancel,
+  bare = false,
+}: ProgramFormProps) {
   const isEditing = Boolean(program);
 
   const createProgram = useCreateProgram(collegeId);
@@ -136,6 +150,13 @@ export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFo
 
     setValue('code', entry.code, { shouldDirty: true, shouldValidate: true });
     setValue('name', entry.name, { shouldDirty: true, shouldValidate: true });
+
+    // A new offering starts from the program's default strand (backend migration 0040), so it is
+    // scored like its twins at other campuses unless this college says otherwise. Not on an edit:
+    // re-pointing an existing offering must not quietly change a requirement it already states.
+    if (!isEditing) {
+      setValue('recommended_strand', entry.recommended_strand ?? NO_STRAND, { shouldDirty: true });
+    }
   }
 
   const onSubmit = handleSubmit((values) => {
@@ -175,145 +196,170 @@ export function ProgramForm({ collegeId, program, onSaved, onCancel }: ProgramFo
   });
 
   return (
+    <FormFrame bare={bare} title={isEditing ? `Edit ${program?.code}` : 'Add a program'}>
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+        {generalError ? <Alert>{generalError}</Alert> : null}
+
+        {/*
+          The picker, above the two fields it fills, because choosing is the first thing to do
+          and retyping a program the catalog already knows about is the thing this is here to
+          stop. Clearable: "not yet decided" is a legitimate answer, and on an edit it is the way
+          to unlink an offering that was matched to the wrong entry.
+        */}
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="program-canonical">Program</Label>
+          <Combobox
+            id="program-canonical"
+            value={canonical?.id ?? null}
+            selectedLabel={canonical ? `${canonical.code} · ${canonical.name}` : null}
+            onChange={(id) => pickCanonical(candidates.find((entry) => entry.id === id) ?? null)}
+            options={candidates.map((entry) => ({
+              id: entry.id,
+              name: `${entry.code} · ${entry.name}`,
+            }))}
+            query={search}
+            onQueryChange={setSearch}
+            onOpenChange={setIsPickerOpen}
+            loading={options.isFetching}
+            clearable
+            placeholder="Choose a program already in the catalog…"
+            searchPlaceholder="Search by name or code…"
+            emptyText={
+              search.trim() === ''
+                ? 'No programs in the catalog yet — type the code and name below instead.'
+                : `Nothing matches “${search.trim()}”. Type the code and name below and it will be added.`
+            }
+            footer={
+              candidates.length >= CANONICAL_OPTION_LIMIT
+                ? `Showing the first ${CANONICAL_OPTION_LIMIT} matches — refine your search to narrow this down.`
+                : null
+            }
+          />
+          <p className="text-xs text-muted-foreground">
+            {canonical
+              ? 'This offering is matched to the shared catalog, so “which colleges offer this?” finds it.'
+              : 'Optional. Pick an existing program to avoid a near-duplicate entry, or leave this and a new one is created from the code below.'}
+          </p>
+          <FieldError message={serverError?.fieldError('program_catalog_id')} />
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="program-code">Code</Label>
+            <Input
+              id="program-code"
+              autoFocus
+              placeholder="BSCS"
+              aria-invalid={Boolean(errors.code ?? serverError?.fieldError('code'))}
+              {...register('code')}
+            />
+            {/* Codes are unique per college, not globally — "BSCS" at UP and at DLSU are
+                different programs, so this 422 only fires within one institution. */}
+            <FieldError message={errors.code?.message ?? serverError?.fieldError('code')} />
+          </div>
+
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label htmlFor="program-name">Name</Label>
+            <Input
+              id="program-name"
+              placeholder="BS Computer Science"
+              aria-invalid={Boolean(errors.name ?? serverError?.fieldError('name'))}
+              {...register('name')}
+            />
+            <FieldError message={errors.name?.message ?? serverError?.fieldError('name')} />
+          </div>
+
+          <div className="flex flex-col gap-1.5 sm:col-span-3">
+            <Label htmlFor="program-department">Department</Label>
+            <Input
+              id="program-department"
+              placeholder="College of Computer Studies"
+              {...register('department_name')}
+            />
+            <FieldError message={serverError?.fieldError('department_name')} />
+          </div>
+
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label htmlFor="program-strand">Recommended strand</Label>
+            <Select
+              id="program-strand"
+              aria-invalid={Boolean(serverError?.fieldError('recommended_strand'))}
+              {...register('recommended_strand')}
+            >
+              <option value={NO_STRAND}>No strand requirement</option>
+              {STRANDS.map((strand) => (
+                <option key={strand} value={strand}>
+                  {strand}
+                </option>
+              ))}
+            </Select>
+            <FieldError message={serverError?.fieldError('recommended_strand')} />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="program-status">Status</Label>
+            <Select id="program-status" {...register('status')}>
+              <option value="active">Active</option>
+              <option value="draft">Draft</option>
+              <option value="archived">Archived</option>
+            </Select>
+            {/* Only an active program is ever recommended (§27) — so this is not a label,
+                it is the difference between a program students can be matched to and one
+                that exists only in the catalog. */}
+            <p className="text-xs text-muted-foreground">Only active programs are recommended.</p>
+          </div>
+
+          <div className="flex flex-col gap-1.5 sm:col-span-3">
+            <Label htmlFor="program-description">Description</Label>
+            <Textarea id="program-description" rows={2} {...register('description')} />
+            <FieldError message={serverError?.fieldError('description')} />
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <Button type="submit" loading={mutation.isPending}>
+            {mutation.isPending ? 'Saving…' : isEditing ? 'Save program' : 'Add program'}
+          </Button>
+          <Button type="button" variant="secondary" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </FormFrame>
+  );
+}
+
+/**
+ * The form's own frame — a card, or nothing at all when the caller already supplies one.
+ *
+ * The college page opens this form in a dialog, which brings its own border and heading; the
+ * standalone callers do not. Rather than making every caller draw the chrome, the frame stays here
+ * and `bare` turns it off.
+ */
+function FormFrame({
+  bare,
+  title,
+  children,
+}: {
+  bare: boolean;
+  title: string;
+  children: ReactNode;
+}) {
+  if (bare) {
+    return children;
+  }
+
+  return (
     <Card>
       <CardHeader>
-        <CardTitle>{isEditing ? `Edit ${program?.code}` : 'Add a program'}</CardTitle>
+        <CardTitle>{title}</CardTitle>
         <CardDescription>
           The recommended strand is a coarse eligibility gate — a student on the other track
           still sees the program, ranked lower, never excluded.
         </CardDescription>
       </CardHeader>
 
-      <CardContent>
-        <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
-          {generalError ? <Alert>{generalError}</Alert> : null}
-
-          {/*
-            The picker, above the two fields it fills, because choosing is the first thing to do
-            and retyping a program the catalog already knows about is the thing this is here to
-            stop. Clearable: "not yet decided" is a legitimate answer, and on an edit it is the way
-            to unlink an offering that was matched to the wrong entry.
-          */}
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="program-canonical">Program</Label>
-            <Combobox
-              id="program-canonical"
-              value={canonical?.id ?? null}
-              selectedLabel={canonical ? `${canonical.code} · ${canonical.name}` : null}
-              onChange={(id) => pickCanonical(candidates.find((entry) => entry.id === id) ?? null)}
-              options={candidates.map((entry) => ({
-                id: entry.id,
-                name: `${entry.code} · ${entry.name}`,
-              }))}
-              query={search}
-              onQueryChange={setSearch}
-              onOpenChange={setIsPickerOpen}
-              loading={options.isFetching}
-              clearable
-              placeholder="Choose a program already in the catalog…"
-              searchPlaceholder="Search by name or code…"
-              emptyText={
-                search.trim() === ''
-                  ? 'No programs in the catalog yet — type the code and name below instead.'
-                  : `Nothing matches “${search.trim()}”. Type the code and name below and it will be added.`
-              }
-              footer={
-                candidates.length >= CANONICAL_OPTION_LIMIT
-                  ? `Showing the first ${CANONICAL_OPTION_LIMIT} matches — refine your search to narrow this down.`
-                  : null
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              {canonical
-                ? 'This offering is matched to the shared catalog, so “which colleges offer this?” finds it.'
-                : 'Optional. Pick an existing program to avoid a near-duplicate entry, or leave this and a new one is created from the code below.'}
-            </p>
-            <FieldError message={serverError?.fieldError('program_catalog_id')} />
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="program-code">Code</Label>
-              <Input
-                id="program-code"
-                autoFocus
-                placeholder="BSCS"
-                aria-invalid={Boolean(errors.code ?? serverError?.fieldError('code'))}
-                {...register('code')}
-              />
-              {/* Codes are unique per college, not globally — "BSCS" at UP and at DLSU are
-                  different programs, so this 422 only fires within one institution. */}
-              <FieldError message={errors.code?.message ?? serverError?.fieldError('code')} />
-            </div>
-
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
-              <Label htmlFor="program-name">Name</Label>
-              <Input
-                id="program-name"
-                placeholder="BS Computer Science"
-                aria-invalid={Boolean(errors.name ?? serverError?.fieldError('name'))}
-                {...register('name')}
-              />
-              <FieldError message={errors.name?.message ?? serverError?.fieldError('name')} />
-            </div>
-
-            <div className="flex flex-col gap-1.5 sm:col-span-3">
-              <Label htmlFor="program-department">Department</Label>
-              <Input
-                id="program-department"
-                placeholder="College of Computer Studies"
-                {...register('department_name')}
-              />
-              <FieldError message={serverError?.fieldError('department_name')} />
-            </div>
-
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
-              <Label htmlFor="program-strand">Recommended strand</Label>
-              <Select
-                id="program-strand"
-                aria-invalid={Boolean(serverError?.fieldError('recommended_strand'))}
-                {...register('recommended_strand')}
-              >
-                <option value={NO_STRAND}>No strand requirement</option>
-                {STRANDS.map((strand) => (
-                  <option key={strand} value={strand}>
-                    {strand}
-                  </option>
-                ))}
-              </Select>
-              <FieldError message={serverError?.fieldError('recommended_strand')} />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="program-status">Status</Label>
-              <Select id="program-status" {...register('status')}>
-                <option value="active">Active</option>
-                <option value="draft">Draft</option>
-                <option value="archived">Archived</option>
-              </Select>
-              {/* Only an active program is ever recommended (§27) — so this is not a label,
-                  it is the difference between a program students can be matched to and one
-                  that exists only in the catalog. */}
-              <p className="text-xs text-muted-foreground">Only active programs are recommended.</p>
-            </div>
-
-            <div className="flex flex-col gap-1.5 sm:col-span-3">
-              <Label htmlFor="program-description">Description</Label>
-              <Textarea id="program-description" rows={2} {...register('description')} />
-              <FieldError message={serverError?.fieldError('description')} />
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <Button type="submit" loading={mutation.isPending}>
-              {mutation.isPending ? 'Saving…' : isEditing ? 'Save program' : 'Add program'}
-            </Button>
-            <Button type="button" variant="secondary" onClick={onCancel}>
-              Cancel
-            </Button>
-          </div>
-        </form>
-      </CardContent>
+      <CardContent>{children}</CardContent>
     </Card>
   );
 }

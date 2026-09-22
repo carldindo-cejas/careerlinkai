@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { z } from 'zod';
 
 import { createDatabase, type Database } from '@/db/client';
 import type { AppEnv } from '@/env';
@@ -9,10 +10,14 @@ import {
   RECOMMENDATION_REGENERATE_LIMIT,
   RECOMMENDATION_REGENERATE_WINDOW_SECONDS,
   recommendationRegenerateGuard,
+  staffAuthGuard,
 } from '@/lib/auth-guard';
+import { STRANDS } from '@/db/enums';
 import { aiVerifierEnabled } from '@/lib/config';
 import { successEnvelope, ApiError } from '@/lib/envelope';
-import { parseBody } from '@/lib/validation';
+import { DEFAULT_FORMULA } from '@/lib/scoring-formula';
+import { clientIp, parseBody } from '@/lib/validation';
+import { requestGuidanceSync } from '@/jobs/ai-jobs';
 import { authenticate, requireUser } from '@/middleware/authenticate';
 import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
@@ -20,7 +25,7 @@ import { AiPolicyService } from '@/modules/ai/ai-policy-service';
 import { ChatService } from '@/modules/ai/chat-service';
 import { ExplanationService } from '@/modules/ai/explanation-service';
 import { aiGatewayFrom, retrievalFrom } from '@/modules/ai/factory';
-import { askChatSchema } from '@/modules/ai/schemas';
+import { askChatSchema, explainInChatSchema } from '@/modules/ai/schemas';
 import { serializeChatMessage, serializeExplanation } from '@/modules/ai/serializers';
 import { AcademicCatalogService } from '@/modules/catalog/academic-catalog-service';
 import {
@@ -29,9 +34,15 @@ import {
   serializeCollege,
   serializeProgram,
 } from '@/modules/catalog/serializers';
+import { FormulaService, scoringFormulaSchema } from '@/modules/recommendation/formula-service';
+import { RecommendationFreshnessService } from '@/modules/recommendation/freshness-service';
 import { RecommendationService } from '@/modules/recommendation/recommendation-service';
 import { serializeBrief } from '@/modules/recommendation/brief-serializer';
-import { serializeRecommendationSet } from '@/modules/recommendation/serializers';
+import {
+  serializeFormula,
+  serializeRecommendationSet,
+  serializeStoredFormula,
+} from '@/modules/recommendation/serializers';
 import { StudentBriefService } from '@/modules/recommendation/student-brief-service';
 import { authorizeStudentRecommendations } from '@/policies/recommendation';
 
@@ -430,6 +441,92 @@ studentRecommendationRoutes.post('/chat', async (c) => {
 });
 
 /**
+ * `POST /student/chat/explain` — the recommendation page's "Explain more", answered in the chat
+ * (2026-09-22) instead of inline on the card.
+ *
+ * The student's bubble reads "Explain more about <title>"; what actually runs is the §30
+ * explanation pipeline for that one recommendation — the same call `/recommendations/:id/explain`
+ * makes, with the same cache (an existing paragraph is free) and the same rate limit on a fresh
+ * one. When there is no paragraph, the answer is the deterministic §27 reason, said as such.
+ */
+studentRecommendationRoutes.post('/chat/explain', async (c) => {
+  const user = requireUser(c);
+  const input = await parseBody(c, explainInChatSchema);
+  const db = createDatabase(c.env.DB);
+  const recommendationService = new RecommendationService(db);
+
+  const recommendation = await recommendationService.findForStudent(
+    user.id,
+    input.recommendation_id,
+  );
+
+  if (recommendation === null) {
+    throw ApiError.notFound('Recommendation not found.');
+  }
+
+  // Charged only when a model call may follow — an already-written paragraph costs nothing.
+  if ((await recommendationService.explanationFor(recommendation.id)) === null) {
+    const guard = aiRateLimitGuard(c.env, user.id);
+    const state = await guard.charge(AI_REQUEST_LIMIT, AI_REQUEST_WINDOW_SECONDS);
+
+    if (state.locked) {
+      throw ApiError.tooManyRequests({
+        message: [`Too many AI requests. Try again in ${state.retryAfterSeconds} seconds.`],
+      });
+    }
+  }
+
+  const policy = await new AiPolicyService(db).activeGlobal();
+  const explainer = new ExplanationService(
+    db,
+    aiGatewayFrom(db, c.env),
+    retrievalFrom(db, c.env),
+    policy,
+  );
+  const target = await explainer.targetLabelFor(recommendation);
+  const outcome = await explainer.explain(recommendation, user.id);
+
+  const answer =
+    outcome.explanation === null
+      ? {
+          text: `I don’t have more from the school’s guidance materials on ${target.label} yet, but here is how this match was calculated: ${outcome.fallbackReason}`,
+          sources: [],
+          kind: 'CANNED' as const,
+        }
+      : {
+          text: outcome.explanation.explanationText,
+          // No "From: …" line under this answer: the list of catalog entries was longer than the
+          // paragraph. The sources stay on the explanation row, which is where review reads them.
+          sources: [],
+          kind: 'KNOWLEDGE' as const,
+        };
+
+  const recommendations = await recommendationService.latestFor(user.id);
+  const chat = await chatServiceForAsync(db, c);
+  const turn = await chat.recordTurn(
+    user.id,
+    recommendations,
+    `Explain more about ${target.label}`,
+    answer,
+  );
+
+  return c.json(
+    successEnvelope(
+      {
+        conversation_id: turn.conversation.id,
+        question: serializeChatMessage(turn.question),
+        answer: serializeChatMessage(turn.answer),
+        failure: outcome.failure ?? null,
+      },
+      outcome.explanation === null
+        ? 'No AI explanation is available — the computed reason was sent instead.'
+        : 'Explanation added to the conversation.',
+    ),
+    201,
+  );
+});
+
+/**
  * `POST /student/chat/messages/:id/feedback` — *this answer was wrong* (Phase 4).
  *
  * The one signal in this system that leads straight to a fix. The answer's retrieved chunk ids are
@@ -581,3 +678,226 @@ counselorRecommendationRoutes.post(
     );
   },
 );
+
+// --- /admin (role: admin only) ---------------------------------------------------------------
+
+/**
+ * **The match formula, as a screen** (2026-09-21).
+ *
+ * Every number §27 multiplies by used to be a constant in `lib/recommendation.ts`, changeable only
+ * by an engineer with a deploy. These three routes make it a configuration a school owns: read it,
+ * replace it, put it back. `FormulaService` holds the reasoning about storage and failure; this
+ * holds the reasoning about the HTTP shape.
+ *
+ * ## What changing it does, and what it deliberately does not do
+ *
+ * A saved formula applies to **every score computed from then on** — a student finishing an
+ * assessment, a "rebuild my recommendations", a counselor rebuilding one for a student, a
+ * "what should I choose at this campus" lookup. It does **not** retroactively rewrite the rows of
+ * students who already have a set. That is not laziness: rescoring every student in the deployment
+ * inside one admin request would exceed a Worker's subrequest budget long before it finished (§45),
+ * and a half-rescored cohort is a cohort where two students' scores are not comparable. The two
+ * regenerate endpoints above are the supported catch-up, one student at a time, and the response
+ * below reports how many students are currently holding a set computed under older weights so an
+ * administrator can see the size of what they have just changed.
+ */
+export const adminRecommendationRoutes = new Hono<AppEnv>();
+
+adminRecommendationRoutes.use('*', authenticate());
+adminRecommendationRoutes.use('*', ensureRole('admin'));
+adminRecommendationRoutes.use('*', ensurePasswordChanged());
+
+const currentPassword = z.string().min(1, 'Your password is required.');
+
+const saveFormulaSchema = scoringFormulaSchema.extend({ current_password: currentPassword });
+
+const resetFormulaSchema = z.object({ current_password: currentPassword }).strict();
+
+/**
+ * Both writes re-score every recommendation generated afterwards, so an unattended admin session is
+ * not enough to make them — the same re-authentication the account's own password change asks for.
+ */
+async function confirmAdminPassword(c: Context<AppEnv>, password: string): Promise<void> {
+  const user = requireUser(c);
+  const verified = await staffAuthGuard(c.env, user.email ?? user.id).verify(
+    password,
+    user.password,
+  );
+
+  if (!verified) {
+    throw ApiError.validation({ current_password: ['Your password is incorrect.'] });
+  }
+}
+
+/**
+ * The formula, the shipped defaults, and who last changed it.
+ *
+ * The defaults travel **with** the current values rather than being duplicated in the client: the
+ * "Restore defaults" button and the "changed from 60%" marker beside each field both need to know
+ * what shipped, and a frontend copy of these numbers is a second source of truth that drifts on the
+ * first release that tunes one.
+ */
+adminRecommendationRoutes.get('/recommendation-formula', async (c) => {
+  const db = createDatabase(c.env.DB);
+  const stored = await new FormulaService(db).stored();
+
+  return c.json(
+    successEnvelope(
+      {
+        ...serializeStoredFormula(stored),
+        defaults: serializeFormula(DEFAULT_FORMULA),
+        students_with_recommendations: await new RecommendationService(db).studentsWithSets(),
+      },
+      'Recommendation formula retrieved successfully.',
+    ),
+  );
+});
+
+/**
+ * Replace it. `PUT`, and the whole object — the fields are not independent (see `FormulaService.set`).
+ *
+ * A guidance re-sync is requested afterwards because the corpus passage students are cited
+ * ("a career match adds up three parts: … 60% … 30% … 10%") is generated from these very weights.
+ * Leaving it stale would have the assistant quoting the old formula as fact while the engine used
+ * the new one — the one failure mode of a configurable formula that a student would actually
+ * notice. It is one queue message, it never throws, and the nightly cron asks again, so a dropped
+ * message is a delay rather than a wrong answer that sticks.
+ */
+adminRecommendationRoutes.put('/recommendation-formula', async (c) => {
+  const { current_password, ...input } = await parseBody(c, saveFormulaSchema);
+  await confirmAdminPassword(c, current_password);
+
+  const db = createDatabase(c.env.DB);
+  const formula = await new FormulaService(db).set(input, requireUser(c), clientIp(c));
+  // Every set generated before now is scored under the old weights (see RecommendationFreshnessService).
+  await new RecommendationFreshnessService(db).touch(requireUser(c).id);
+
+  await requestGuidanceSync(c.env);
+
+  return c.json(
+    successEnvelope(
+      serializeFormula(formula),
+      'Formula saved. It applies to every recommendation generated from now on.',
+    ),
+  );
+});
+
+/** Back to the shipped formula — the row is deleted, not overwritten. See `FormulaService.reset`. */
+adminRecommendationRoutes.post('/recommendation-formula/reset', async (c) => {
+  const { current_password } = await parseBody(c, resetFormulaSchema);
+  await confirmAdminPassword(c, current_password);
+
+  const db = createDatabase(c.env.DB);
+  const formula = await new FormulaService(db).reset(requireUser(c), clientIp(c));
+  // Every set generated before now is scored under the old weights (see RecommendationFreshnessService).
+  await new RecommendationFreshnessService(db).touch(requireUser(c).id);
+
+  await requestGuidanceSync(c.env);
+
+  return c.json(successEnvelope(serializeFormula(formula), 'Formula restored to the defaults.'));
+});
+
+// --- Keeping sets current (2026-09-22) ------------------------------------------------------------
+//
+// Recommendations are snapshots. Since the catalog links (migration 0040) and the formula are both
+// admin-editable, a snapshot can describe a configuration that no longer exists — so the admin
+// Matching page shows how many are stale, recomputes them page by page, and previews what a given
+// set of results would be shown today.
+
+/** How many stale sets exist — the number the Matching page's "recompute" button works down. */
+adminRecommendationRoutes.get('/recommendations/freshness', async (c) => {
+  const summary = await new RecommendationFreshnessService(createDatabase(c.env.DB)).summary();
+
+  return c.json(
+    successEnvelope(
+      {
+        inputs_changed_at: summary.inputsChangedAt,
+        students_with_sets: summary.studentsWithSets,
+        stale_sets: summary.staleSets,
+      },
+      'Recommendation freshness retrieved successfully.',
+    ),
+  );
+});
+
+/**
+ * Three students per request, and the ceiling is five: generation costs ~7 D1 calls a student on
+ * top of ~5 shared, and the Free plan allows 50 per invocation (§45). The client calls again while
+ * `remaining > 0` and the last page made progress. See `RecommendationService.recomputeStale`.
+ */
+const recomputeSchema = z
+  .object({ limit: z.number().int().min(1).max(5).optional() })
+  .strict();
+
+export const RECOMPUTE_PAGE_SIZE = 3;
+
+adminRecommendationRoutes.post('/recommendations/recompute', async (c) => {
+  const input = await parseBody(c, recomputeSchema);
+  const result = await new RecommendationService(createDatabase(c.env.DB)).recomputeStale(
+    input.limit ?? RECOMPUTE_PAGE_SIZE,
+  );
+
+  return c.json(
+    successEnvelope(
+      result,
+      result.regenerated === 0 && result.remaining === 0
+        ? 'Every recommendation set is current.'
+        : `Recomputed ${result.regenerated}; ${result.remaining} still to go.`,
+    ),
+  );
+});
+
+const score = z.number().min(0).max(100);
+
+/**
+ * A hypothetical student: six RIASEC scores, an SCCT confidence index, and the two profile fields
+ * §27 reads. `formula` scores against an unsaved draft — the same shape `PUT /recommendation-formula`
+ * validates, so a draft that previews is a draft that would save.
+ */
+const previewSchema = z
+  .object({
+    riasec: z.object({ R: score, I: score, A: score, S: score, E: score, C: score }).strict(),
+    career_confidence: score,
+    academic_average: z.number().min(60).max(100).nullable(),
+    strand: z.enum(STRANDS).nullable(),
+    formula: scoringFormulaSchema.optional(),
+  })
+  .strict();
+
+adminRecommendationRoutes.post('/recommendations/preview', async (c) => {
+  const input = await parseBody(c, previewSchema);
+  const preview = await new RecommendationService(createDatabase(c.env.DB)).preview(
+    {
+      riasec: input.riasec,
+      careerConfidenceIndex: input.career_confidence,
+      academicAverage: input.academic_average,
+      strand: input.strand,
+    },
+    input.formula,
+  );
+
+  return c.json(
+    successEnvelope(
+      {
+        careers: preview.careers.map((match) => ({
+          id: match.id,
+          title: match.title,
+          typical_riasec_code: match.typicalRiasecCode,
+          match_score: match.matchScore,
+          reason: match.reason,
+          components: match.components,
+        })),
+        programs: preview.programs.map((match) => ({
+          id: match.id,
+          name: match.name,
+          college_name: match.collegeName,
+          match_score: match.matchScore,
+          reason: match.reason,
+          components: match.components,
+          careers: match.careers,
+        })),
+      },
+      'Preview computed. Nothing was saved.',
+    ),
+  );
+});

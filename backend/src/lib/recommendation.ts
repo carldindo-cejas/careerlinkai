@@ -1,5 +1,6 @@
-import type { RiasecDimension, Strand } from '@/db/enums';
+import type { LinkRelationship, RiasecDimension, Strand } from '@/db/enums';
 import { RIASEC_DIMENSIONS } from '@/db/enums';
+import { DEFAULT_FORMULA, type ScoringFormula } from '@/lib/scoring-formula';
 
 /**
  * The §27 matching engine — every number a student sees on a recommendation card.
@@ -73,6 +74,20 @@ import { RIASEC_DIMENSIONS } from '@/db/enums';
 // --- The §27 constants ---------------------------------------------------------------------
 
 /**
+ * ## The constants moved, and the engine takes them as an argument (2026-09-21)
+ *
+ * Every number below now lives in `lib/scoring-formula.ts` as a field of `DEFAULT_FORMULA`, and
+ * every function in this file takes a `ScoringFormula` whose default **is** `DEFAULT_FORMULA`. The
+ * arithmetic is untouched: a call that names no formula computes exactly what it computed before,
+ * which is what keeps §28's worked example a valid check on this file.
+ *
+ * The names below are kept as aliases onto the defaults because they are what the rest of the
+ * system reads when it wants to say "the shipped weights" — a test pinning §28, a knowledge
+ * passage stating what the shipped configuration does. Code that scores a *student* must use the
+ * formula it was handed, not these: an administrator may have changed them (see `FormulaService`).
+ */
+
+/**
  * Position weights for a Holland code (§27). The first letter is the dominant type, which is
  * how Holland Code interpretation itself works — `IEC` and `CEI` are different careers.
  *
@@ -81,31 +96,15 @@ import { RIASEC_DIMENSIONS } from '@/db/enums';
  * codes would be systematically outranked by long ones for reasons that have nothing to do
  * with the student. `lib/holland.ts` guarantees 1–3 letters, so there is no 4th weight to miss.
  */
-export const POSITION_WEIGHTS = [0.5, 0.3, 0.2] as const;
+export const POSITION_WEIGHTS = DEFAULT_FORMULA.positionWeights;
 
 /** §27 career composite. Sums to 1.00, so the score lands naturally in 0–100. */
-export const CAREER_WEIGHTS = {
-  riasecCompatibility: 0.6,
-  careerConfidence: 0.3,
-  studentPreference: 0.1,
-} as const;
+export const CAREER_WEIGHTS = DEFAULT_FORMULA.career;
 
 /**
  * The program composite. Sums to 1.00 — see the file header for what moved on 2026-09-18 and why.
- *
- * Read it as two halves. `riasecCompatibility` + `careerAlignment` = 0.60 is **the careers this
- * program leads to**, seen twice: once in breadth (the average over all of them) and once in depth
- * (the best few, on the student's own career scale). The remaining 0.40 is the student: how
- * confident they are (0.20), how their grades sit against the academic band (0.10), and whether
- * the track they are on is the one the program expects (0.10).
  */
-export const PROGRAM_WEIGHTS = {
-  riasecCompatibility: 0.35,
-  careerAlignment: 0.25,
-  careerConfidence: 0.2,
-  academicFit: 0.1,
-  strandAlignment: 0.1,
-} as const;
+export const PROGRAM_WEIGHTS = DEFAULT_FORMULA.program;
 
 /**
  * How many of a program's linked careers vote on `careerAlignment`, and how loudly.
@@ -122,7 +121,7 @@ export const PROGRAM_WEIGHTS = {
  * Renormalized when fewer than three careers are linked, exactly as `POSITION_WEIGHTS` is, so a
  * program with one linked career is scored on that career rather than capped at 60% of the range.
  */
-export const CAREER_ALIGNMENT_DEPTH = [0.6, 0.25, 0.15] as const;
+export const CAREER_ALIGNMENT_DEPTH = DEFAULT_FORMULA.careerAlignmentDepth;
 
 /**
  * §27's student-preference component, fixed at 70 for every match in v1. **Career matches only**
@@ -134,32 +133,10 @@ export const CAREER_ALIGNMENT_DEPTH = [0.6, 0.25, 0.15] as const;
  * shifts every career score by the same amount and therefore **changes no ranking**; it is there
  * to keep the composite on a 0–100 scale, not to discriminate between options.
  */
-export const STUDENT_PREFERENCE = 70;
-
-/**
- * §27's academic anchors: 75 is the PH SHS passing minimum, 95 a practical high-end anchor.
- *
- * Unchanged by the move off GWA — a subject grade and a general weighted average are on the same
- * 60–100 Philippine scale, so the same two anchors bound both.
- */
-const ACADEMIC_FLOOR = 75;
-const ACADEMIC_CEILING = 95;
-
-/** §27: "defaults to 50 if the program has no linked careers yet" — the no-RIASEC-signal value. */
-const NEUTRAL_RIASEC = 50;
-
-/** §27: an unknown academic average is "neutral-leaning-positive", not a failure. */
-const NEUTRAL_UNKNOWN_ACADEMIC_FIT = 60;
-
-/** SILENCE: an unfilled strand is unknown, not mismatched. See the file header. */
-const NEUTRAL_UNKNOWN_STRAND = 70;
-
-/** §27: reduced, never zero — "the platform advises, it does not gatekeep". */
-const STRAND_MISMATCH = 40;
-const STRAND_ALIGNED = 100;
+export const STUDENT_PREFERENCE = DEFAULT_FORMULA.neutrals.studentPreference;
 
 /** §27: only the top 10 of each type are persisted; the full catalog is rescanned each run. */
-export const TOP_N = 10;
+export const TOP_N = DEFAULT_FORMULA.topN;
 
 /**
  * The §22 dimension names, used by the reason string's `{top_dimension_name}`.
@@ -228,6 +205,16 @@ export interface ProgramTarget {
 export interface LinkedCareer {
   title: string;
   typicalRiasecCode: string | null;
+  /**
+   * How strongly the program leads there (migration 0041). Absent means `direct`, which counts
+   * fully — the only kind of link that existed before 0041.
+   */
+  relationship?: LinkRelationship;
+}
+
+/** Each linked career's weight under the formula's `linkWeights`, in the same order. */
+export function linkWeightsOf(linked: LinkedCareer[], formula: ScoringFormula = DEFAULT_FORMULA): number[] {
+  return linked.map((career) => formula.linkWeights[career.relationship ?? 'direct']);
 }
 
 // --- Component formulas (§27), all on a 0–100 scale -----------------------------------------
@@ -241,24 +228,27 @@ export interface LinkedCareer {
  * identically, so they tie with each other and are then ordered by title. They are not ranked
  * *against* each other on any evidence, because there is none.
  */
-export function riasecCompatibility(profile: RiasecProfile, targetCode: string | null): number {
+export function riasecCompatibility(
+  profile: RiasecProfile,
+  targetCode: string | null,
+  formula: ScoringFormula = DEFAULT_FORMULA,
+): number {
   if (targetCode === null || targetCode === '') {
-    return NEUTRAL_RIASEC; // SILENCE: no code = no signal, not a bad match.
+    return formula.neutrals.riasec; // SILENCE: no code = no signal, not a bad match.
   }
+
+  const positions = formula.positionWeights;
 
   // `lib/holland.ts` already caps a stored code at 3 letters — the same count as the position
   // weights. Truncating here too means a code that somehow evaded that validation is cut short
   // rather than read against a weight index that does not exist, which is the silent misread
   // holland.ts exists to prevent.
-  const letters = targetCode.split('').slice(0, POSITION_WEIGHTS.length) as RiasecDimension[];
-  const weightSum = POSITION_WEIGHTS.slice(0, letters.length).reduce(
-    (sum, weight) => sum + weight,
-    0,
-  );
+  const letters = targetCode.split('').slice(0, positions.length) as RiasecDimension[];
+  const weightSum = positions.slice(0, letters.length).reduce((sum, weight) => sum + weight, 0);
 
   // Renormalized (§27), so a 1- or 2-letter code still spans the full 0–100 range.
   return letters.reduce((score, letter, index) => {
-    const weight = POSITION_WEIGHTS[index] ?? 0; // Unreachable: `letters` is sliced to 3.
+    const weight = positions[index] ?? 0; // Unreachable: `letters` is sliced to 3.
 
     return score + profile[letter] * (weight / weightSum);
   }, 0);
@@ -275,17 +265,25 @@ export function riasecCompatibility(profile: RiasecProfile, targetCode: string |
 export function programRiasecCompatibility(
   profile: RiasecProfile,
   linkedCareerCodes: (string | null)[],
+  formula: ScoringFormula = DEFAULT_FORMULA,
+  linkWeights?: number[],
 ): number {
   if (linkedCareerCodes.length === 0) {
-    return NEUTRAL_RIASEC;
+    return formula.neutrals.riasec;
   }
 
+  // A **weighted** average since migration 0041: a related or conditional career is weaker evidence
+  // about what the program is, so it has a smaller say in the average. With every link `direct`
+  // (weight 1) this is exactly the plain average §28's worked example checks.
+  const weights = linkWeights ?? linkedCareerCodes.map(() => 1);
+  const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
+
   const total = linkedCareerCodes.reduce(
-    (sum, code) => sum + riasecCompatibility(profile, code),
+    (sum, code, index) => sum + riasecCompatibility(profile, code, formula) * (weights[index] ?? 1),
     0,
   );
 
-  return total / linkedCareerCodes.length;
+  return total / weightSum;
 }
 
 /**
@@ -297,12 +295,42 @@ export function programRiasecCompatibility(
  * number a program's career alignment is built from is the *same* number the student reads on
  * their career list, not a parallel opinion that can drift from it.
  */
-export function careerMatchScore(student: StudentSignals, targetCode: string | null): number {
+export function careerMatchScore(
+  student: StudentSignals,
+  targetCode: string | null,
+  formula: ScoringFormula = DEFAULT_FORMULA,
+): number {
   return (
-    riasecCompatibility(student.riasec, targetCode) * CAREER_WEIGHTS.riasecCompatibility +
-    student.careerConfidenceIndex * CAREER_WEIGHTS.careerConfidence +
-    STUDENT_PREFERENCE * CAREER_WEIGHTS.studentPreference
+    riasecCompatibility(student.riasec, targetCode, formula) * formula.career.riasecCompatibility +
+    student.careerConfidenceIndex * formula.career.careerConfidence +
+    formula.neutrals.studentPreference * formula.career.studentPreference
   );
+}
+
+/**
+ * A linked career's score for this student, **discounted toward neutral** by its link weight
+ * (migration 0041) — what `careerAlignment` ranks and `bestLinkedCareer` names.
+ *
+ * Toward the score of a career with no Holland code (the neutral point of this scale), not toward
+ * zero: a program that only *relates* to a student's best career is weaker evidence of fit, not
+ * evidence against it. A student whose best career scores below neutral is likewise pulled up
+ * rather than punished further, which is the same symmetry. Weight 1 returns the score unchanged.
+ */
+export function weightedCareerScore(
+  student: StudentSignals,
+  targetCode: string | null,
+  weight: number,
+  formula: ScoringFormula = DEFAULT_FORMULA,
+): number {
+  const score = careerMatchScore(student, targetCode, formula);
+
+  if (weight === 1) {
+    return score;
+  }
+
+  const neutral = careerMatchScore(student, null, formula);
+
+  return neutral + (score - neutral) * weight;
 }
 
 /**
@@ -324,22 +352,23 @@ export function careerMatchScore(student: StudentSignals, targetCode: string | n
 export function careerAlignment(
   student: StudentSignals,
   linkedCareerCodes: (string | null)[],
+  formula: ScoringFormula = DEFAULT_FORMULA,
+  linkWeights?: number[],
 ): number {
+  const depth = formula.careerAlignmentDepth;
   const codes = linkedCareerCodes.length === 0 ? [null] : linkedCareerCodes;
+  const weights = linkedCareerCodes.length === 0 ? [1] : (linkWeights ?? codes.map(() => 1));
   const best = codes
-    .map((code) => careerMatchScore(student, code))
+    .map((code, index) => weightedCareerScore(student, code, weights[index] ?? 1, formula))
     .sort((a, b) => b - a)
-    .slice(0, CAREER_ALIGNMENT_DEPTH.length);
-  const weightSum = CAREER_ALIGNMENT_DEPTH.slice(0, best.length).reduce(
-    (sum, weight) => sum + weight,
-    0,
-  );
+    .slice(0, depth.length);
+  const weightSum = depth.slice(0, best.length).reduce((sum, weight) => sum + weight, 0);
 
   // Renormalized for fewer than three careers, for the same reason `riasecCompatibility` does it:
   // otherwise a program with one linked career could never score above 60% of the range, and
   // breadth of mapping would outrank fit.
   return best.reduce((score, value, index) => {
-    const weight = CAREER_ALIGNMENT_DEPTH[index] ?? 0; // Unreachable: `best` is sliced to 3.
+    const weight = depth[index] ?? 0; // Unreachable: `best` is sliced to 3.
 
     return score + value * (weight / weightSum);
   }, 0);
@@ -370,12 +399,17 @@ export function academicAverage(grades: {
 }
 
 /** §27 — a linear academic fit between the passing floor and a high-end anchor. */
-export function academicFit(average: number | null): number {
+export function academicFit(
+  average: number | null,
+  formula: ScoringFormula = DEFAULT_FORMULA,
+): number {
   if (average === null) {
-    return NEUTRAL_UNKNOWN_ACADEMIC_FIT;
+    return formula.neutrals.academicUnknown;
   }
 
-  return clamp(((average - ACADEMIC_FLOOR) / (ACADEMIC_CEILING - ACADEMIC_FLOOR)) * 100, 0, 100);
+  const { floor, ceiling } = formula.academic;
+
+  return clamp(((average - floor) / (ceiling - floor)) * 100, 0, 100);
 }
 
 /**
@@ -387,16 +421,19 @@ export function academicFit(average: number | null): number {
 export function strandAlignment(
   studentStrand: Strand | null,
   programStrand: Strand | null,
+  formula: ScoringFormula = DEFAULT_FORMULA,
 ): number {
+  const { strandAligned, strandUnknown, strandMismatch } = formula.neutrals;
+
   if (programStrand === null) {
-    return STRAND_ALIGNED; // The program has no strand requirement to fail.
+    return strandAligned; // The program has no strand requirement to fail.
   }
 
   if (studentStrand === null) {
-    return NEUTRAL_UNKNOWN_STRAND; // SILENCE: unknown, not wrong.
+    return strandUnknown; // SILENCE: unknown, not wrong.
   }
 
-  return studentStrand === programStrand ? STRAND_ALIGNED : STRAND_MISMATCH;
+  return studentStrand === programStrand ? strandAligned : strandMismatch;
 }
 
 // --- Composites (§27) ----------------------------------------------------------------------
@@ -437,19 +474,23 @@ export interface ProgramMatch {
  * intermediate `67.75` is not first flattened to `67.8`. Rounding an input and then weighting
  * it compounds the error into the number a student is actually shown.
  */
-export function scoreCareer(student: StudentSignals, career: CareerTarget): CareerMatch {
+export function scoreCareer(
+  student: StudentSignals,
+  career: CareerTarget,
+  formula: ScoringFormula = DEFAULT_FORMULA,
+): CareerMatch {
   const components: CareerMatchComponents = {
-    riasecCompatibility: riasecCompatibility(student.riasec, career.typicalRiasecCode),
+    riasecCompatibility: riasecCompatibility(student.riasec, career.typicalRiasecCode, formula),
     careerConfidenceIndex: student.careerConfidenceIndex,
-    studentPreference: STUDENT_PREFERENCE,
+    studentPreference: formula.neutrals.studentPreference,
   };
 
-  const matchScore = roundToTenth(careerMatchScore(student, career.typicalRiasecCode));
+  const matchScore = roundToTenth(careerMatchScore(student, career.typicalRiasecCode, formula));
 
   return {
     careerId: career.id,
     matchScore,
-    reason: buildReason(student, 'CAREER', career.title, career.typicalRiasecCode, null),
+    reason: buildReason(student, 'CAREER', career.title, career.typicalRiasecCode, null, null, formula),
     components,
   };
 }
@@ -464,22 +505,29 @@ export function scoreProgram(
   student: StudentSignals,
   program: ProgramTarget,
   linkedCareers: LinkedCareer[],
+  formula: ScoringFormula = DEFAULT_FORMULA,
 ): ProgramMatch {
   const linkedCareerCodes = linkedCareers.map((career) => career.typicalRiasecCode);
+  const weights = linkWeightsOf(linkedCareers, formula);
   const components: ProgramMatchComponents = {
-    riasecCompatibility: programRiasecCompatibility(student.riasec, linkedCareerCodes),
-    careerAlignment: careerAlignment(student, linkedCareerCodes),
+    riasecCompatibility: programRiasecCompatibility(
+      student.riasec,
+      linkedCareerCodes,
+      formula,
+      weights,
+    ),
+    careerAlignment: careerAlignment(student, linkedCareerCodes, formula, weights),
     careerConfidenceIndex: student.careerConfidenceIndex,
-    academicFit: academicFit(student.academicAverage),
-    strandAlignment: strandAlignment(student.strand, program.recommendedStrand),
+    academicFit: academicFit(student.academicAverage, formula),
+    strandAlignment: strandAlignment(student.strand, program.recommendedStrand, formula),
   };
 
   const matchScore = roundToTenth(
-    components.riasecCompatibility * PROGRAM_WEIGHTS.riasecCompatibility +
-      components.careerAlignment * PROGRAM_WEIGHTS.careerAlignment +
-      components.careerConfidenceIndex * PROGRAM_WEIGHTS.careerConfidence +
-      components.academicFit * PROGRAM_WEIGHTS.academicFit +
-      components.strandAlignment * PROGRAM_WEIGHTS.strandAlignment,
+    components.riasecCompatibility * formula.program.riasecCompatibility +
+      components.careerAlignment * formula.program.careerAlignment +
+      components.careerConfidenceIndex * formula.program.careerConfidence +
+      components.academicFit * formula.program.academicFit +
+      components.strandAlignment * formula.program.strandAlignment,
   );
 
   return {
@@ -491,7 +539,8 @@ export function scoreProgram(
       program.name,
       null,
       program.recommendedStrand,
-      bestLinkedCareer(student, linkedCareers),
+      bestLinkedCareer(student, linkedCareers, formula),
+      formula,
     ),
     components,
   };
@@ -505,11 +554,23 @@ export function scoreProgram(
  * score would otherwise be named in whatever order the catalog query returned that day, and the
  * reason is persisted text a student can screenshot.
  */
-function bestLinkedCareer(student: StudentSignals, linked: LinkedCareer[]): string | null {
+function bestLinkedCareer(
+  student: StudentSignals,
+  linked: LinkedCareer[],
+  formula: ScoringFormula,
+): string | null {
+  // Ranked on the link-weighted score (migration 0041), so the career the sentence names is the one
+  // `careerAlignment` actually leaned on — a related link does not get named over a direct one it
+  // only narrowly beats on raw fit.
+  const score = (career: LinkedCareer) =>
+    weightedCareerScore(
+      student,
+      career.typicalRiasecCode,
+      formula.linkWeights[career.relationship ?? 'direct'],
+      formula,
+    );
   const ranked = [...linked].sort(
-    (a, b) =>
-      careerMatchScore(student, b.typicalRiasecCode) -
-        careerMatchScore(student, a.typicalRiasecCode) || a.title.localeCompare(b.title),
+    (a, b) => score(b) - score(a) || a.title.localeCompare(b.title),
   );
 
   return ranked[0]?.title ?? null;
@@ -606,6 +667,7 @@ function buildReason(
   targetCode: string | null,
   programStrand: Strand | null,
   bestCareer: string | null = null,
+  formula: ScoringFormula = DEFAULT_FORMULA,
 ): string {
   const top = topDimension(student.riasec);
   const topName = RIASEC_DIMENSION_NAMES[top];
@@ -650,7 +712,7 @@ function buildReason(
   // is. Telling a student their GWA is 88 when they never gave one — and when 88 is the mean of
   // the three subjects they did give — would be a small, avoidable lie in the one paragraph the
   // system promises is reproducible from its inputs (§26).
-  if (student.academicAverage !== null && student.academicAverage >= ACADEMIC_FLOOR) {
+  if (student.academicAverage !== null && student.academicAverage >= formula.academic.floor) {
     clauses.push(
       `Your subject average of ${formatNumber(student.academicAverage)} meets the typical academic profile for this path.`,
     );

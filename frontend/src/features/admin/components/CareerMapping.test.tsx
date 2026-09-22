@@ -1,12 +1,13 @@
 import { QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createQueryClient } from '@/app/queryClient';
 import { CareerMapping } from '@/features/admin/components/CareerMapping';
 import { catalogApi } from '@/services/catalogApi';
-import type { Career, Program } from '@/types/catalog';
+import type { Career, LinkedCareer, Program } from '@/types/catalog';
 
 vi.mock('@/services/catalogApi');
 
@@ -202,7 +203,11 @@ describe('CareerMapping', () => {
     await user.click(screen.getByRole('button', { name: /^link$/i }));
 
     await waitFor(() => {
-      expect(catalogApi.attachCareer).toHaveBeenCalledWith(PROGRAM_ID, SOFTWARE_ENGINEER.id);
+      expect(catalogApi.attachCareer).toHaveBeenCalledWith(
+        PROGRAM_ID,
+        SOFTWARE_ENGINEER.id,
+        'direct',
+      );
     });
   });
 
@@ -292,5 +297,177 @@ describe('CareerMapping', () => {
     expect(
       screen.getByRole('button', { name: /unlink switchboard operator from bscs/i }),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * Inherited links (backend migration 0040). What a program leads to is linked once on its canonical
+ * program and every offering inherits it; this screen may only add and remove this college's extras.
+ */
+describe('CareerMapping with inherited careers', () => {
+  function renderInherited(linked: LinkedCareer[]) {
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={createQueryClient()}>
+          <CareerMapping
+            collegeId={COLLEGE_ID}
+            program={{
+              ...program(linked),
+              program_catalog_id: 'canonical-1',
+              canonical: {
+                id: 'canonical-1',
+                code: 'BSCS',
+                name: 'BS Computer Science',
+                description: null,
+                status: 'active',
+                recommended_strand: 'Academic',
+                created_at: null,
+                updated_at: null,
+              },
+            }}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    return userEvent.setup();
+  }
+
+  beforeEach(() => {
+    vi.mocked(catalogApi.listCareers).mockReset();
+    vi.mocked(catalogApi.detachCareer).mockReset();
+    vi.mocked(catalogApi.setCareerRelationship).mockReset();
+    vi.mocked(catalogApi.listCareers).mockResolvedValue(page([SOFTWARE_ENGINEER, DATA_ANALYST]));
+  });
+
+  /** Removing it here would make this one campus score differently from its twins. */
+  it('marks an inherited career with its source and offers no unlink for it', async () => {
+    renderInherited([{ ...SOFTWARE_ENGINEER, inherited: true }]);
+
+    // Scoped to the chips: the explanatory line above them names the source too.
+    expect(within(await screen.findByRole('list')).getByText('from BSCS')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /unlink software engineer from bscs/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still lets a college remove its own extra', async () => {
+    vi.mocked(catalogApi.detachCareer).mockResolvedValue(program([]));
+
+    const user = renderInherited([
+      { ...SOFTWARE_ENGINEER, inherited: true },
+      { ...DATA_ANALYST, inherited: false },
+    ]);
+
+    await user.click(screen.getByRole('button', { name: /unlink data analyst from bscs/i }));
+
+    await waitFor(() => {
+      expect(catalogApi.detachCareer).toHaveBeenCalledWith(PROGRAM_ID, DATA_ANALYST.id);
+    });
+  });
+
+  it('points to the Canonical programs page for the inherited ones', async () => {
+    renderInherited([{ ...SOFTWARE_ENGINEER, inherited: true }]);
+
+    expect(await screen.findByRole('link', { name: /canonical programs/i })).toHaveAttribute(
+      'href',
+      '/admin/canonical-programs',
+    );
+  });
+
+  /**
+   * Re-grading (backend migration 0041). A chip is selected first and only then shows its pencil,
+   * so thirty graded chips do not read as thirty open forms.
+   */
+  it('shows the pencil only on the selected chip', async () => {
+    const user = renderInherited([
+      { ...SOFTWARE_ENGINEER, inherited: true, relationship: 'direct' },
+      { ...DATA_ANALYST, inherited: true, relationship: 'related' },
+    ]);
+
+    expect(screen.queryByRole('button', { name: /edit how strongly/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /software engineer/i, pressed: false }));
+
+    expect(
+      screen.getByRole('button', { name: /edit how strongly bscs leads to software engineer/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /edit how strongly bscs leads to data analyst/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * An inherited link lives on the canonical program — the offering endpoint would 422 it — so the
+   * grade is written there, and the picker says every college gets it before the admin saves.
+   */
+  it('re-grades an inherited career on its canonical program', async () => {
+    vi.mocked(catalogApi.setCanonicalCareerRelationship).mockReset();
+    vi.mocked(catalogApi.setCanonicalCareerRelationship).mockResolvedValue({
+      id: 'canonical-1',
+      code: 'BSCS',
+      name: 'BS Computer Science',
+      description: null,
+      status: 'active',
+      recommended_strand: 'Academic',
+      created_at: null,
+      updated_at: null,
+    });
+
+    const user = renderInherited([{ ...SOFTWARE_ENGINEER, inherited: true, relationship: 'direct' }]);
+
+    await user.click(screen.getByRole('button', { name: /software engineer/i, pressed: false }));
+    await user.click(
+      screen.getByRole('button', { name: /edit how strongly bscs leads to software engineer/i }),
+    );
+
+    expect(screen.getByText(/applies to every college that offers it/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
+
+    await user.click(screen.getByRole('radio', { name: /conditional/i }));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(catalogApi.setCanonicalCareerRelationship).toHaveBeenCalledWith(
+        'canonical-1',
+        SOFTWARE_ENGINEER.id,
+        'conditional',
+      );
+    });
+    expect(catalogApi.setCareerRelationship).not.toHaveBeenCalled();
+  });
+
+  it('re-grades a college extra on the offering itself', async () => {
+    vi.mocked(catalogApi.setCareerRelationship).mockReset();
+    vi.mocked(catalogApi.setCareerRelationship).mockResolvedValue(program([]));
+
+    const user = renderInherited([{ ...DATA_ANALYST, inherited: false, relationship: 'direct' }]);
+
+    await user.click(screen.getByRole('button', { name: /data analyst/i, pressed: false }));
+    await user.click(
+      screen.getByRole('button', { name: /edit how strongly bscs leads to data analyst/i }),
+    );
+
+    expect(screen.queryByText(/applies to every college/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('radio', { name: /related/i }));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(catalogApi.setCareerRelationship).toHaveBeenCalledWith(
+        PROGRAM_ID,
+        DATA_ANALYST.id,
+        'related',
+      );
+    });
+  });
+
+  it('does not offer an inherited career in the picker', async () => {
+    const user = renderInherited([{ ...SOFTWARE_ENGINEER, inherited: true }]);
+
+    await openPicker(user);
+
+    expect(await screen.findByRole('option', { name: /data analyst/i })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /software engineer/i })).not.toBeInTheDocument();
   });
 });

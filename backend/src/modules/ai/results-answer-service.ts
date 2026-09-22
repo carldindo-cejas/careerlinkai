@@ -6,7 +6,7 @@ import {
   careers,
   colleges,
   employmentOutlooks,
-  programCareers,
+  programCareerLinks,
   programCatalog,
   programs,
   towns,
@@ -14,7 +14,8 @@ import {
 import type { CatalogGap, VagueCareerTerm } from '@/knowledge/catalog-vocabulary';
 import { institutionName } from '@/lib/aliases';
 import { normaliseQuestion } from '@/lib/grounding';
-import { CAREER_WEIGHTS, PROGRAM_WEIGHTS } from '@/lib/recommendation';
+import { DEFAULT_FORMULA, type ScoringFormula } from '@/lib/scoring-formula';
+import { FormulaService } from '@/modules/recommendation/formula-service';
 import {
   allMatches,
   bestMatch,
@@ -204,6 +205,18 @@ function countOf(asked: string): number | null {
 
 export class ResultsAnswerService {
   private index: Promise<CatalogIndex> | null = null;
+  /**
+   * The live §27 weights, read at most once per instance (and only once a question has got past
+   * the cheap gates above it).
+   *
+   * They are **read**, not imported, because an administrator can change them (2026-09-21,
+   * `FormulaService`). This gate's whole promise is that it answers "why is X on my list" with the
+   * arithmetic that actually produced the number; quoting the shipped defaults at a deployment that
+   * has re-weighted its formula would make the assistant the most confident liar in the system.
+   *
+   * One indexed read of a one-row table, per chat turn that reaches a personal answer.
+   */
+  private formula: Promise<ScoringFormula> | null = null;
 
   constructor(
     private readonly db: Database,
@@ -235,7 +248,19 @@ export class ResultsAnswerService {
 
       if (TUITION.test(asked)) return null;
 
-      return await this.catalogAnswer(asked, set, history, studentId);
+      /*
+        Read here and not above it: `personalAnswer` never quotes a weight — a question that
+        matches `WHY` is explicitly handed on to `catalogAnswer`, which is the only path that
+        reaches `whyAnswer`. A turn answered by "what is my Holland code" should not pay a D1 read
+        for a formula it will not mention.
+      */
+      return await this.catalogAnswer(
+        asked,
+        set,
+        history,
+        studentId,
+        await this.scoringFormula(),
+      );
     } catch {
       return null;
     }
@@ -278,6 +303,13 @@ export class ResultsAnswerService {
     this.index ??= loadCatalogIndex(this.db, this.cache);
 
     return this.index;
+  }
+
+  /** The stored formula, memoised for the life of this instance — one request. See `formula`. */
+  private scoringFormula(): Promise<ScoringFormula> {
+    this.formula ??= new FormulaService(this.db).get();
+
+    return this.formula;
   }
 
   private mentions(
@@ -328,6 +360,7 @@ export class ResultsAnswerService {
     set: RecommendationSet | null,
     history: HistoryMessage[],
     studentId: string | null = null,
+    formula: ScoringFormula = DEFAULT_FORMULA,
   ): Promise<ResultsAnswer | null> {
     const needsCatalog =
       CHOOSE.test(asked) ||
@@ -396,7 +429,7 @@ export class ResultsAnswerService {
     if (WHY.test(asked)) {
       const target = targetFor(asked, set, m);
 
-      return target === null ? null : whyAnswer(target, set);
+      return target === null ? null : whyAnswer(target, set, formula);
     }
 
     // 1b. Which program to choose at a named college, or in a named town — ranked for this student.
@@ -509,13 +542,13 @@ export class ResultsAnswerService {
   ): Promise<ResultsAnswer> {
     const rows = await this.db
       .select({ programName: programs.name, collegeName: colleges.name, town: towns.name })
-      .from(programCareers)
-      .innerJoin(programs, eq(programCareers.programId, programs.id))
+      .from(programCareerLinks)
+      .innerJoin(programs, eq(programCareerLinks.programId, programs.id))
       .innerJoin(colleges, eq(programs.collegeId, colleges.id))
       .leftJoin(towns, eq(colleges.townId, towns.id))
       .where(
         and(
-          eq(programCareers.careerId, target.careerId),
+          eq(programCareerLinks.careerId, target.careerId),
           eq(programs.status, 'active'),
           isNull(programs.deletedAt),
           eq(colleges.status, 'active'),
@@ -582,18 +615,18 @@ export class ResultsAnswerService {
 
     const rows = await this.db
       .selectDistinct({
-        careerId: programCareers.careerId,
+        careerId: programCareerLinks.careerId,
         offering: programs.name,
         canonical: programCatalog.name,
       })
-      .from(programCareers)
-      .innerJoin(programs, eq(programCareers.programId, programs.id))
+      .from(programCareerLinks)
+      .innerJoin(programs, eq(programCareerLinks.programId, programs.id))
       .innerJoin(colleges, eq(programs.collegeId, colleges.id))
       .leftJoin(programCatalog, eq(programs.programCatalogId, programCatalog.id))
       .where(
         and(
           inArray(
-            programCareers.careerId,
+            programCareerLinks.careerId,
             found.map((career) => career.id),
           ),
           eq(programs.status, 'active'),
@@ -785,13 +818,13 @@ export class ResultsAnswerService {
         salaryMax: careers.salaryMax,
         outlook: employmentOutlooks.name,
       })
-      .from(programCareers)
-      .innerJoin(careers, eq(programCareers.careerId, careers.id))
+      .from(programCareerLinks)
+      .innerJoin(careers, eq(programCareerLinks.careerId, careers.id))
       .leftJoin(employmentOutlooks, eq(careers.employmentOutlookId, employmentOutlooks.id))
       .where(
         and(
           inArray(
-            programCareers.programId,
+            programCareerLinks.programId,
             offerings.map((offering) => offering.programId),
           ),
           eq(careers.status, 'active'),
@@ -1377,18 +1410,46 @@ function personalAnswer(
   return null;
 }
 
-function weightProse(components: Record<string, number> | null, kind: Kind): string | null {
+/**
+ * A weight as a percentage, without trailing-zero noise: `0.6` reads `60%`, `0.155` reads `15.5%`.
+ *
+ * One decimal rather than none, because the weights are operator-set now and rounding `0.615` to
+ * "62%" in a sentence that claims to state the arithmetic is a small, avoidable lie.
+ */
+function weightPercent(weight: number): string {
+  return `${Math.round(weight * 1000) / 10}%`;
+}
+
+/** What a career score is made of, in the deployment's own weights. */
+function careerWeightSentence(formula: ScoringFormula): string {
+  return `Career matches weigh RIASEC fit ${weightPercent(formula.career.riasecCompatibility)} and career confidence ${weightPercent(formula.career.careerConfidence)}.`;
+}
+
+/** The same for a program score. Both are generated, never written out — see `ResultsAnswerService.formula`. */
+function programWeightSentence(formula: ScoringFormula): string {
+  return `Program matches weigh RIASEC fit ${weightPercent(formula.program.riasecCompatibility)}, career alignment with your recommended careers ${weightPercent(formula.program.careerAlignment)}, career confidence ${weightPercent(formula.program.careerConfidence)}, academic fit ${weightPercent(formula.program.academicFit)} and strand alignment ${weightPercent(formula.program.strandAlignment)}.`;
+}
+
+function weightProse(
+  components: Record<string, number> | null,
+  kind: Kind,
+  formula: ScoringFormula,
+): string | null {
   const parts = componentsProse(components);
 
   if (parts === null) return null;
 
   return kind === 'CAREER'
-    ? `Its components: ${parts}. Career matches weigh RIASEC fit ${CAREER_WEIGHTS.riasecCompatibility * 100}% and career confidence ${CAREER_WEIGHTS.careerConfidence * 100}%.`
-    : `Its components: ${parts}. Program matches weigh RIASEC fit ${PROGRAM_WEIGHTS.riasecCompatibility * 100}%, career alignment with your recommended careers ${PROGRAM_WEIGHTS.careerAlignment * 100}%, career confidence ${PROGRAM_WEIGHTS.careerConfidence * 100}%, academic fit ${PROGRAM_WEIGHTS.academicFit * 100}% and strand alignment ${PROGRAM_WEIGHTS.strandAlignment * 100}%.`;
+    ? `Its components: ${parts}. ${careerWeightSentence(formula)}`
+    : `Its components: ${parts}. ${programWeightSentence(formula)}`;
 }
 
 /** The stored §27 reason, with the rank, score and components it came from. Never a new opinion. */
-function whyAnswer(target: Target, set: RecommendationSet | null): ResultsAnswer {
+function whyAnswer(
+  target: Target,
+  set: RecommendationSet | null,
+  formula: ScoringFormula = DEFAULT_FORMULA,
+): ResultsAnswer {
   if (target.rec === null) {
     const list = target.kind === 'CAREER' ? set?.careers : set?.programs;
 
@@ -1414,8 +1475,11 @@ function whyAnswer(target: Target, set: RecommendationSet | null): ResultsAnswer
       text: [
         `${career.title} is your #${recommendation.ranking} career match at ${formatScore(recommendation.matchScore)}%.`,
         recommendation.reason,
-        weightProse(recommendation.components ?? null, 'CAREER') ??
-          'Career matches weigh your RIASEC interest fit at 60% and your SCCT career confidence at 30%.',
+        // The fallback is the same sentence without the per-component breakdown: a row generated
+        // before migration 0036 has no `components`, but the weights it was scored under are still
+        // the ones to state.
+        weightProse(recommendation.components ?? null, 'CAREER', formula) ??
+          careerWeightSentence(formula),
         facts.length === 0 ? null : `In the catalog it ${facts.join(' and ')}.`,
       ]
         .filter((line): line is string => line !== null)
@@ -1430,8 +1494,8 @@ function whyAnswer(target: Target, set: RecommendationSet | null): ResultsAnswer
     text: [
       `${program.name} at ${college.name} is your #${recommendation.ranking} program match at ${formatScore(recommendation.matchScore)}%.`,
       recommendation.reason,
-      weightProse(recommendation.components ?? null, 'PROGRAM') ??
-        'Program matches weigh RIASEC fit 35%, career alignment with your recommended careers 25%, SCCT confidence 20%, academic fit from your subject grades 10%, and strand alignment 10%.',
+      weightProse(recommendation.components ?? null, 'PROGRAM', formula) ??
+        programWeightSentence(formula),
     ].join(' '),
     sources: RESULTS,
   };

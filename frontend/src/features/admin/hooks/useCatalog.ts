@@ -1,5 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { downloadText, toCsv } from '@/lib/csv';
 import {
   catalogApi,
   type CanonicalProgramListQuery,
@@ -10,6 +11,8 @@ import type {
   CreateCareerPayload,
   CreateCollegePayload,
   CreateProgramPayload,
+  LinkRelationship,
+  MappingImportRow,
   UpdateCanonicalProgramPayload,
   UpdateCareerPayload,
   UpdateCollegePayload,
@@ -38,6 +41,10 @@ export const catalogKeys = {
     ['canonical-programs', 'list', query] as const,
   canonicalProgramOptions: ['canonical-programs', 'options'] as const,
   canonicalProgramColleges: (id: string) => ['canonical-programs', id, 'colleges'] as const,
+  // Under the `canonical-programs` prefix on purpose: every canonical mutation already invalidates
+  // that prefix, so the Careers page's "programs that lead here" can never outlive a link change.
+  careerCanonicalPrograms: (careerId: string) =>
+    ['canonical-programs', 'by-career', careerId] as const,
 };
 
 // --- The canonical program catalog (migration 0018) ------------------------------------------
@@ -92,6 +99,10 @@ export function useCreateCanonicalProgram() {
   });
 }
 
+/**
+ * Also invalidates the colleges: a changed strand is written to every offering of the entry
+ * (backend migration 0040), and the college pages show each offering's strand.
+ */
 export function useUpdateCanonicalProgram() {
   const queryClient = useQueryClient();
 
@@ -100,7 +111,76 @@ export function useUpdateCanonicalProgram() {
       catalogApi.updateCanonicalProgram(id, payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: catalogKeys.canonicalPrograms });
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.colleges });
     },
+  });
+}
+
+/**
+ * What a canonical program leads to (backend migration 0040). A link here is a link on every college
+ * offering of it, so the college pages — which show each offering's careers, inherited ones marked —
+ * go stale along with the canonical list.
+ */
+export function useAttachCanonicalCareer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      id,
+      careerId,
+      relationship,
+    }: {
+      id: string;
+      careerId: string;
+      relationship?: LinkRelationship;
+    }) => catalogApi.attachCanonicalCareer(id, careerId, relationship),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.canonicalPrograms });
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.colleges });
+    },
+  });
+}
+
+/** Re-grade a canonical link (backend migration 0041) — every offering of it follows. */
+export function useSetCanonicalCareerRelationship() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      id,
+      careerId,
+      relationship,
+    }: {
+      id: string;
+      careerId: string;
+      relationship: LinkRelationship;
+    }) => catalogApi.setCanonicalCareerRelationship(id, careerId, relationship),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.canonicalPrograms });
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.colleges });
+    },
+  });
+}
+
+export function useDetachCanonicalCareer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, careerId }: { id: string; careerId: string }) =>
+      catalogApi.detachCanonicalCareer(id, careerId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.canonicalPrograms });
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.colleges });
+    },
+  });
+}
+
+/** The canonical programs leading to one career — fetched when its row is expanded, not on mount. */
+export function useCareerCanonicalPrograms(careerId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: catalogKeys.careerCanonicalPrograms(careerId),
+    queryFn: () => catalogApi.careerCanonicalPrograms(careerId),
+    enabled,
   });
 }
 
@@ -300,9 +380,10 @@ export function useUpdateCareer() {
       catalogApi.updateCareer(id, payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: catalogKeys.careers });
-      // A career's title and Holland code are rendered inside the mapping on every college
-      // page, so editing one here goes stale over there.
+      // A career's title and Holland code are rendered inside the mapping on every college page
+      // and on every canonical program (migration 0040), so editing one here goes stale there.
       void queryClient.invalidateQueries({ queryKey: catalogKeys.colleges });
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.canonicalPrograms });
     },
   });
 }
@@ -315,6 +396,7 @@ export function useDeleteCareer() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: catalogKeys.careers });
       void queryClient.invalidateQueries({ queryKey: catalogKeys.colleges });
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.canonicalPrograms });
     },
   });
 }
@@ -329,8 +411,35 @@ export function useAttachCareer(collegeId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ programId, careerId }: { programId: string; careerId: string }) =>
-      catalogApi.attachCareer(programId, careerId),
+    mutationFn: ({
+      programId,
+      careerId,
+      relationship,
+    }: {
+      programId: string;
+      careerId: string;
+      relationship?: LinkRelationship;
+    }) => catalogApi.attachCareer(programId, careerId, relationship),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.college(collegeId) });
+    },
+  });
+}
+
+/** Re-grade one college's own extra link (backend migration 0041). */
+export function useSetCareerRelationship(collegeId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      programId,
+      careerId,
+      relationship,
+    }: {
+      programId: string;
+      careerId: string;
+      relationship: LinkRelationship;
+    }) => catalogApi.setCareerRelationship(programId, careerId, relationship),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: catalogKeys.college(collegeId) });
     },
@@ -345,6 +454,53 @@ export function useDetachCareer(collegeId: string) {
       catalogApi.detachCareer(programId, careerId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: catalogKeys.college(collegeId) });
+    },
+  });
+}
+
+// The mapping as a spreadsheet (backend 2026-09-22) ------------------------------------------
+
+/** Download every canonical link as CSV. A mutation because it is an act — a file lands. */
+export function useExportMapping() {
+  return useMutation({
+    mutationFn: async () => {
+      const rows = await catalogApi.exportMapping();
+
+      downloadText(
+        `program-career-mapping-${new Date().toISOString().slice(0, 10)}.csv`,
+        toCsv(
+          ['program_code', 'program_name', 'career_title', 'career_riasec_code', 'relationship'],
+          rows.map((row) => [
+            row.program_code,
+            row.program_name,
+            row.career_title,
+            row.career_riasec_code,
+            row.relationship,
+          ]),
+        ),
+      );
+
+      return rows.length;
+    },
+  });
+}
+
+/**
+ * Preview (`apply: false`) or apply an imported file. Applying rewrites links across many programs,
+ * so everything that shows a mapping — and the Matching page's stale count — is invalidated.
+ */
+export function useImportMapping() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ rows, apply }: { rows: MappingImportRow[]; apply: boolean }) =>
+      catalogApi.importMapping(rows, apply),
+    onSuccess: (_plan, { apply }) => {
+      if (!apply) return;
+
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.canonicalPrograms });
+      void queryClient.invalidateQueries({ queryKey: catalogKeys.colleges });
+      void queryClient.invalidateQueries({ queryKey: ['matching'] });
     },
   });
 }

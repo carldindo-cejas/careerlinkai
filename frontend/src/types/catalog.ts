@@ -74,10 +74,34 @@ export interface Program {
   /** Resolved where the endpoint joined it. */
   canonical?: CanonicalProgram | null;
   /** Present only where the API loaded the mapping (the nested college view). */
-  careers?: Career[];
+  careers?: LinkedCareer[];
   created_at: string | null;
   updated_at: string | null;
 }
+
+/**
+ * How strongly a program leads to a career (backend migration 0041). `direct` is the natural
+ * destination and counts fully; `related` and `conditional` count for less, per the formula.
+ */
+export type LinkRelationship = 'direct' | 'related' | 'conditional';
+
+export const LINK_RELATIONSHIPS: { value: LinkRelationship; label: string; hint: string }[] = [
+  { value: 'direct', label: 'Direct', hint: "The program's natural destination." },
+  { value: 'related', label: 'Related', hint: 'A common path for its graduates.' },
+  {
+    value: 'conditional',
+    label: 'Conditional',
+    hint: 'Reachable with an extra credential or licence.',
+  },
+];
+
+/**
+ * A career on one college offering's mapping (backend migration 0040). `inherited` is true when the
+ * link comes from the offering's canonical program — it applies to every college offering it and is
+ * removed on the Canonical programs page — and false for this college's own extra. `relationship`
+ * (migration 0041) is how strongly the program leads there.
+ */
+export type LinkedCareer = Career & { inherited?: boolean; relationship?: LinkRelationship };
 
 /**
  * A program as a thing in the world — "BS Computer Science" — of which each `Program` is one
@@ -89,8 +113,15 @@ export interface CanonicalProgram {
   name: string;
   description: string | null;
   status: CatalogStatus;
+  /**
+   * The strand its offerings default to (migration 0040). Changing it writes the new value to every
+   * offering; a campus may still differ afterwards. Null means "no strand requirement".
+   */
+  recommended_strand: Strand | null;
   /** On the admin list only: how many live college offerings point here. */
   offerings_count?: number;
+  /** What it leads to (migration 0040) — on the admin list and the link responses. */
+  careers?: LinkedCareer[];
   created_at: string | null;
   updated_at: string | null;
 }
@@ -99,6 +130,7 @@ export interface CreateCanonicalProgramPayload {
   code: string;
   name: string;
   description?: string | null;
+  recommended_strand?: Strand | null;
 }
 
 export type UpdateCanonicalProgramPayload = Partial<
@@ -225,4 +257,39 @@ export function formatSalaryRange(
   if (min === null || max === null) return null;
 
   return `₱${formatThousands(min)} – ₱${formatThousands(max)} / mo`;
+}
+
+// --- The mapping as a spreadsheet (backend 2026-09-22) ---------------------------------------
+
+/** One canonical link, as exported. */
+export interface MappingExportRow {
+  program_code: string;
+  program_name: string;
+  career_title: string;
+  career_riasec_code: string | null;
+  relationship: LinkRelationship;
+}
+
+/** One spreadsheet line, as imported. Extra columns are ignored; blanks are meaningful. */
+export interface MappingImportRow {
+  program_code: string;
+  career_title: string;
+  relationship: string;
+}
+
+export interface PlannedLink {
+  program_code: string;
+  career_title: string;
+  relationship: LinkRelationship;
+}
+
+/** What an import would do (preview) or did (apply) — to the programs the file names, only. */
+export interface MappingImportPlan {
+  programs_in_file: number;
+  adds: PlannedLink[];
+  removes: PlannedLink[];
+  regrades: (PlannedLink & { from: LinkRelationship })[];
+  unchanged: number;
+  /** `line` is the spreadsheet line — 1 is the header. */
+  errors: { line: number; message: string }[];
 }

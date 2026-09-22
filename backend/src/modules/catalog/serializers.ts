@@ -5,6 +5,7 @@ import type {
   Program,
   ProgramCatalogEntry,
 } from '@/db/schema';
+import type { LinkRelationship } from '@/db/enums';
 import type { ResolvedLocation, ResolvedPlace } from '@/modules/catalog/academic-catalog-service';
 
 /**
@@ -90,10 +91,21 @@ export interface SerializedProgram {
   /** Resolved where the caller joined it — the canonical name a student is shown. */
   canonical?: SerializedCanonicalProgram | null;
   /** Present only where the API loaded the mapping — the frontend types it optional. */
-  careers?: SerializedCareer[];
+  careers?: SerializedLinkedCareer[];
   created_at: string | null;
   updated_at: string | null;
 }
+
+/**
+ * A career on one offering's mapping. `inherited` is present where the caller knew it (migration
+ * 0040): true when the link comes from the canonical program — removed on the canonical page, for
+ * every college at once — and false for this college's own extra.
+ */
+export type SerializedLinkedCareer = SerializedCareer & {
+  inherited?: boolean;
+  /** How strongly the program leads there (migration 0041), where the caller loaded the link. */
+  relationship?: LinkRelationship;
+};
 
 export interface SerializedCanonicalProgram {
   id: string;
@@ -101,15 +113,22 @@ export interface SerializedCanonicalProgram {
   name: string;
   description: string | null;
   status: string;
+  /** The default strand its offerings carry (migration 0040). NULL is "no strand requirement". */
+  recommended_strand: string | null;
   /** How many college offerings point at this entry — the admin page's whole reason to exist. */
   offerings_count?: number;
+  /** What it leads to (migration 0040), where the caller loaded it. Archived careers included. */
+  careers?: SerializedLinkedCareer[];
   created_at: string | null;
   updated_at: string | null;
 }
 
 export function serializeCanonicalProgram(
   entry: ProgramCatalogEntry,
-  context: { offeringsCount?: number } = {},
+  context: {
+    offeringsCount?: number;
+    careers?: (Career & { relationship?: LinkRelationship })[];
+  } = {},
 ): SerializedCanonicalProgram {
   return {
     id: entry.id,
@@ -117,7 +136,16 @@ export function serializeCanonicalProgram(
     name: entry.name,
     description: entry.description,
     status: entry.status,
+    recommended_strand: entry.recommendedStrand,
     ...(context.offeringsCount !== undefined ? { offerings_count: context.offeringsCount } : {}),
+    ...(context.careers !== undefined
+      ? {
+          careers: context.careers.map((career) => ({
+            ...serializeCareer(career),
+            ...(career.relationship !== undefined ? { relationship: career.relationship } : {}),
+          })),
+        }
+      : {}),
     created_at: entry.createdAt,
     updated_at: entry.updatedAt,
   };
@@ -135,7 +163,7 @@ export function serializeCanonicalProgram(
  */
 export function serializeProgram(
   program: Program,
-  careers?: Career[],
+  careers?: (Career & { inherited?: boolean; relationship?: LinkRelationship })[],
   context: { canonical?: ProgramCatalogEntry | null } = {},
 ): SerializedProgram {
   return {
@@ -156,7 +184,15 @@ export function serializeProgram(
       : {}),
     // The mapping chips show a career's title and status, not its salary or outlook, so the careers
     // here are serialized without the outlook lookup (`employment_outlook` comes out null).
-    ...(careers !== undefined ? { careers: careers.map((career) => serializeCareer(career)) } : {}),
+    ...(careers !== undefined
+      ? {
+          careers: careers.map((career) => ({
+            ...serializeCareer(career),
+            ...(career.inherited !== undefined ? { inherited: career.inherited } : {}),
+            ...(career.relationship !== undefined ? { relationship: career.relationship } : {}),
+          })),
+        }
+      : {}),
     created_at: program.createdAt,
     updated_at: program.updatedAt,
   };

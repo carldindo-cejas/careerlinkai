@@ -9,6 +9,10 @@ import type {
   CreateCollegePayload,
   CreateProgramPayload,
   EmploymentOutlook,
+  LinkRelationship,
+  MappingExportRow,
+  MappingImportPlan,
+  MappingImportRow,
   Program,
   ProgramOffering,
   UpdateCanonicalProgramPayload,
@@ -130,10 +134,28 @@ export const catalogApi = {
    * linked to a program to produce that program's own score. Both calls return the updated
    * program with its careers, so the caller never has to refetch to redraw the mapping.
    */
-  attachCareer(programId: string, careerId: string): Promise<Program> {
+  attachCareer(
+    programId: string,
+    careerId: string,
+    relationship: LinkRelationship = 'direct',
+  ): Promise<Program> {
     return unwrap(
       httpClient.post<ApiSuccess<Program>>(`/admin/programs/${programId}/careers`, {
         career_id: careerId,
+        relationship,
+      }),
+    );
+  },
+
+  /** Re-grade one college's own extra link (backend migration 0041). */
+  setCareerRelationship(
+    programId: string,
+    careerId: string,
+    relationship: LinkRelationship,
+  ): Promise<Program> {
+    return unwrap(
+      httpClient.patch<ApiSuccess<Program>>(`/admin/programs/${programId}/careers/${careerId}`, {
+        relationship,
       }),
     );
   },
@@ -202,6 +224,72 @@ export const catalogApi = {
   ): Promise<CanonicalProgram> {
     return unwrap(
       httpClient.patch<ApiSuccess<CanonicalProgram>>(`/admin/canonical-programs/${id}`, payload),
+    );
+  },
+
+  /**
+   * What a canonical program leads to (backend migration 0040). One link here is one link on every
+   * college offering of the program. Both return the entry with its careers.
+   */
+  attachCanonicalCareer(
+    id: string,
+    careerId: string,
+    relationship: LinkRelationship = 'direct',
+  ): Promise<CanonicalProgram> {
+    return unwrap(
+      httpClient.post<ApiSuccess<CanonicalProgram>>(`/admin/canonical-programs/${id}/careers`, {
+        career_id: careerId,
+        relationship,
+      }),
+    );
+  },
+
+  /** Re-grade a canonical link — for every college offering the program (migration 0041). */
+  setCanonicalCareerRelationship(
+    id: string,
+    careerId: string,
+    relationship: LinkRelationship,
+  ): Promise<CanonicalProgram> {
+    return unwrap(
+      httpClient.patch<ApiSuccess<CanonicalProgram>>(
+        `/admin/canonical-programs/${id}/careers/${careerId}`,
+        { relationship },
+      ),
+    );
+  },
+
+  detachCanonicalCareer(id: string, careerId: string): Promise<CanonicalProgram> {
+    return unwrap(
+      httpClient.delete<ApiSuccess<CanonicalProgram>>(
+        `/admin/canonical-programs/${id}/careers/${careerId}`,
+      ),
+    );
+  },
+
+  /** The canonical programs that lead to a career — the same links read from the career's side. */
+  careerCanonicalPrograms(careerId: string): Promise<CanonicalProgram[]> {
+    return unwrap(
+      httpClient.get<ApiSuccess<CanonicalProgram[]>>(
+        `/admin/careers/${careerId}/canonical-programs`,
+      ),
+    );
+  },
+
+  /** Every canonical program → career link, for the spreadsheet (backend 2026-09-22). */
+  exportMapping(): Promise<MappingExportRow[]> {
+    return unwrap(httpClient.get<ApiSuccess<MappingExportRow[]>>('/admin/catalog-mapping/export'));
+  },
+
+  /**
+   * `apply: false` previews the diff and writes nothing; `apply: true` writes it all at once, or
+   * refuses the whole file on any bad line.
+   */
+  importMapping(rows: MappingImportRow[], apply: boolean): Promise<MappingImportPlan> {
+    return unwrap(
+      httpClient.post<ApiSuccess<MappingImportPlan>>('/admin/catalog-mapping/import', {
+        rows,
+        apply,
+      }),
     );
   },
 

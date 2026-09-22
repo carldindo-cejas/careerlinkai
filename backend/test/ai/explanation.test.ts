@@ -506,6 +506,58 @@ describe('POST /student/recommendations/{id}/explain', () => {
     expect(foreign.body).toEqual(unknown.body);
   });
 
+  it('POST /student/chat/explain posts the explanation into the chat as a turn', async () => {
+    await clearExplanationFor(recommendation.id);
+
+    const chunkId = await seedChunk('Content for the chat explain test.');
+    const { service } = pipeline({
+      responses: ['An explanation that should land in the chat, not on the card [1].'],
+      matches: [{ id: chunkId, score: 0.9 }],
+    });
+
+    await service.explain(recommendation, null);
+
+    const response = await api('POST', '/student/chat/explain', {
+      token: studentToken,
+      body: { recommendation_id: recommendation.id },
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.question.role).toBe('user');
+    expect(response.body.data.question.content).toMatch(/^Explain more about /);
+    expect(response.body.data.answer.content).toBe(
+      'An explanation that should land in the chat, not on the card [1].',
+    );
+    expect(response.body.data.failure).toBeNull();
+
+    const transcript = await api('GET', '/student/chat', { token: studentToken });
+    const contents = transcript.body.data.messages.map((message: any) => message.content);
+
+    expect(contents).toContain(response.body.data.question.content);
+  });
+
+  it('POST /student/chat/explain falls back to the computed reason when there is no paragraph', async () => {
+    await clearExplanationFor(recommendation.id);
+
+    const response = await api('POST', '/student/chat/explain', {
+      token: studentToken,
+      body: { recommendation_id: recommendation.id },
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.answer.content).toContain(recommendation.reason);
+    expect(response.body.data.failure).not.toBeNull();
+  });
+
+  it("POST /student/chat/explain 404s a recommendation that is not the caller's", async () => {
+    const response = await api('POST', '/student/chat/explain', {
+      token: studentToken,
+      body: { recommendation_id: uuid() },
+    });
+
+    expect(response.status).toBe(404);
+  });
+
   it('is rate-limited to 10 AI requests per minute per user (§41) — runs last, it locks the student out', async () => {
     await clearExplanationFor(recommendation.id);
 

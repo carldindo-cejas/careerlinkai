@@ -7,8 +7,9 @@ import {
   MapPin,
   RefreshCw,
   School,
+  Sparkles,
 } from 'lucide-react';
-import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useId, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
@@ -19,12 +20,13 @@ import { cn } from '@/components/ui/cn';
 import { Select } from '@/components/ui/select';
 import {
   useCareerPrograms,
-  useExplainRecommendation,
+  useExplainInChat,
   useMyRecommendations,
   useProgramColleges,
   useRegenerateMyRecommendations,
 } from '@/features/student/hooks/useRecommendations';
 import { paths } from '@/routes/paths';
+import { useChatPanelStore } from '@/stores/chatPanelStore';
 import { toast } from '@/stores/toastStore';
 import { formatSalaryRange } from '@/types/catalog';
 import type {
@@ -144,6 +146,18 @@ export function RecommendationPage() {
             </Button>
           ) : null}
         </div>
+
+        {/*
+          Said only when it is true (backend 2026-09-22): the school changed what programs lead to,
+          or how matches are weighted, after these were computed. Quiet, because the results are
+          still the student's own — it is an offer to refresh, not a warning that something broke.
+        */}
+        {set?.stale ? (
+          <Alert tone="info">
+            Your school has updated its programs or matching since these were calculated. Press{' '}
+            <strong>Rebuild</strong> to see your recommendations with the latest information.
+          </Alert>
+        ) : null}
 
         {/*
           `!set` rather than `set === null`: TanStack types `data` as `T | undefined` on top of the
@@ -306,8 +320,8 @@ function ViewSwitch({
  * screen reader lists every match by name and says whether it is open.
  *
  * The details stay mounted but `hidden` while closed. Nothing in them fetches on mount — the two
- * college disclosures only load when pressed — and keeping them mounted means an "Explain more"
- * answer survives closing and reopening the card.
+ * college disclosures only load when pressed — and keeping them mounted means an opened college
+ * list survives closing and reopening the card.
  */
 function RecommendationItem({
   title,
@@ -564,90 +578,48 @@ function MatchScore({ score, rank }: { score: number; rank: number }) {
 }
 
 /**
- * "Explain more" (§30, Phase 5a) — one of the two places on this page a model speaks, and it is
- * visually and verbally separate from the computed numbers above it.
+ * "Explain more" (§30) — the button that hands one match to the assistant (2026-09-22).
  *
- * The fallback is not an error state. When the AI cannot answer — nothing relevant in the
- * knowledge base, the daily quota spent, the model down — the card simply keeps the
- * deterministic reason it already shows, and says so. §29: the paragraph is an enhancement,
- * never a dependency.
+ * It used to print the AI paragraph inline, under the card's own facts, which on a phone pushed
+ * the rest of the card — and the next card — off the screen. Now it opens the chat: the student's
+ * bubble reads "Explain more about <title>", and the server runs the §30 explanation for exactly
+ * this recommendation. The card stays the size it was, and the answer lives with the rest of the
+ * conversation, where a follow-up question can build on it.
  */
-function ExplainMore({ recommendationId }: { recommendationId: string }) {
-  const explain = useExplainRecommendation();
+function ExplainMore({ recommendationId, title }: { recommendationId: string; title: string }) {
+  const explain = useExplainInChat();
+  const openChat = useChatPanelStore((state) => state.setOpen);
 
-  /**
-   * Where focus goes when the button that had it is replaced by the answer.
-   *
-   * Both settled branches below render *instead of* the button, so pressing "Explain more"
-   * removes the element the keyboard was on and focus falls back to `<body>` — the next Tab
-   * restarts from the top of the page, several cards above where the student was. Moving focus
-   * onto the answer keeps them in place and, because the region is where the new text is,
-   * announces it on arrival.
-   */
-  const answerRef = useRef<HTMLDivElement>(null);
-  const settled = explain.isSuccess;
-
-  useEffect(() => {
-    if (settled) answerRef.current?.focus();
-  }, [settled]);
-
-  if (explain.data?.explanation) {
-    return (
-      <div
-        ref={answerRef}
-        tabIndex={-1}
-        className="rounded-none bg-muted p-3 focus-visible:outline-none"
-      >
-        <p className="text-sm text-foreground/80">{explain.data.explanation.explanation_text}</p>
-        {/*
-          Naming the material this paragraph cited is the last line of the grounding contract, and
-          the one a person performs: a student who can see the source can judge the answer.
-        */}
-        {explain.data.explanation.sources.length > 0 ? (
-          <p className="mt-1 text-xs text-muted-foreground">
-            Based on: {explain.data.explanation.sources.join(', ')}
-          </p>
-        ) : null}
-        <p className="mt-1 text-xs text-muted-foreground">
-          AI-generated from the school&apos;s guidance materials — the scores above are computed,
-          not AI.
-        </p>
-      </div>
-    );
-  }
-
-  if (explain.data && explain.data.explanation === null) {
-    return (
-      <div ref={answerRef} tabIndex={-1} className="focus-visible:outline-none">
-        <p className="text-sm text-muted-foreground">
-          An AI explanation isn&apos;t available right now — the reason above is the computed one
-          and still stands.
-        </p>
-      </div>
+  function onExplain() {
+    // Opens the drawer below `xl`; on wider screens the assistant is already a column beside us.
+    openChat(true);
+    explain.mutate(
+      { recommendationId, title },
+      {
+        onError: (cause) =>
+          toast.error(
+            cause instanceof Error ? cause.message : 'We couldn’t reach the explanation service.',
+          ),
+      },
     );
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <div>
-        <Button
-          variant="secondary"
-          disabled={explain.isPending}
-          onClick={() => explain.mutate(recommendationId)}
-        >
-          {explain.isPending ? 'Asking…' : 'Explain more'}
-        </Button>
-      </div>
-      {/*
-        This branch keeps the button, so focus is not lost — but the failure still appears out of
-        nowhere below it and needs announcing. `role="status"` rather than `alert`: a missing AI
-        paragraph is an enhancement that did not arrive (§29), not an error worth interrupting for.
-      */}
-      {explain.isError ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          We couldn&apos;t reach the explanation service. {explain.error.message}
-        </p>
-      ) : null}
+    <div>
+      <button
+        type="button"
+        onClick={onExplain}
+        disabled={explain.isPending}
+        aria-label={`Explain more about ${title}`}
+        className="shine-button inline-flex h-11 items-center justify-center gap-2 rounded-none px-4 text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-60 sm:h-10"
+      >
+        {explain.isPending ? (
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <Sparkles className="size-4 text-[#a351e5]" aria-hidden="true" />
+        )}
+        Explain more
+      </button>
     </div>
   );
 }
@@ -684,7 +656,7 @@ function CareerCard({ recommendation }: { recommendation: CareerRecommendation }
 
         {facts ? <p className="text-sm text-muted-foreground">{facts}</p> : null}
 
-        <ExplainMore recommendationId={recommendation.id} />
+        <ExplainMore recommendationId={recommendation.id} title={career.title} />
 
         <div>
           {/*
@@ -805,7 +777,7 @@ function ProgramCard({ recommendation }: { recommendation: ProgramRecommendation
         </p>
       ) : null}
 
-      <ExplainMore recommendationId={recommendation.id} />
+      <ExplainMore recommendationId={recommendation.id} title={program.name} />
 
       <CollegesOfferingDisclosure programId={program.id} programName={program.name} />
     </RecommendationItem>

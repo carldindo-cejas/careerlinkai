@@ -38,17 +38,66 @@ export interface ChangeEmailPayload {
   current_password: string;
 }
 
+/**
+ * A change that has been asked for and not yet earned (migration 0039).
+ *
+ * Returned by all three of the endpoints that stage or re-stage one, and by the GET that reports
+ * whether anything is outstanding — so the page has one shape to render the code step from,
+ * whether it just submitted the form or has only reloaded into the middle of the flow.
+ */
+export interface PendingEmailChange {
+  pending_email: string;
+  expires_in_minutes: number;
+  /**
+   * **Local development only.** The server echoes the code when `APP_ENV === 'local'`, exactly as
+   * it echoes a password-reset token, so the flow works with no mail channel configured. It is
+   * absent in staging and production, and nothing may depend on it being there.
+   */
+  verification_code?: string;
+}
+
 export const accountApi = {
   /**
-   * Both of these answer with the updated user in the same shape `/auth/me` does, so the caller
-   * replaces the cached user from the response rather than refetching — the name is in the
-   * sidebar, the top bar and the breadcrumb of the screen that submitted the form.
+   * Answers with the updated user in the same shape `/auth/me` does, so the caller replaces the
+   * cached user from the response rather than refetching — the name is in the sidebar, the top bar
+   * and the breadcrumb of the screen that submitted the form.
    */
   updateAccount(payload: UpdateAccountPayload): Promise<User> {
     return unwrap(httpClient.patch<ApiSuccess<User>>('/auth/profile', payload));
   },
 
-  changeEmail(payload: ChangeEmailPayload): Promise<User> {
-    return unwrap(httpClient.post<ApiSuccess<User>>('/auth/change-email', payload));
+  /**
+   * **Step one.** Stages the change and mails a six-digit code to the address being moved to.
+   *
+   * It does not return a `User`, and the type saying so is the point: nothing about the account
+   * has changed yet, and a caller that wrote this into the session would be showing an address
+   * the server does not agree with.
+   */
+  requestEmailChange(payload: ChangeEmailPayload): Promise<PendingEmailChange> {
+    return unwrap(httpClient.post<ApiSuccess<PendingEmailChange>>('/auth/change-email', payload));
+  },
+
+  /** What is waiting on a code, if anything — `null` when nothing is. */
+  pendingEmailChange(): Promise<PendingEmailChange | null> {
+    return unwrap(httpClient.get<ApiSuccess<PendingEmailChange | null>>('/auth/change-email'));
+  },
+
+  /** A new code to the address already staged. The destination cannot be changed here. */
+  resendEmailChangeCode(): Promise<PendingEmailChange> {
+    return unwrap(
+      httpClient.post<ApiSuccess<PendingEmailChange>>('/auth/change-email/resend'),
+    );
+  },
+
+  /** Abandon it — idempotent, and a success even when there was nothing staged. */
+  cancelEmailChange(): Promise<null> {
+    return unwrap(httpClient.delete<ApiSuccess<null>>('/auth/change-email'));
+  },
+
+  /** **Step two.** Spend the code; the address moves and the updated user comes back. */
+  verifyEmailChange(code: string): Promise<User> {
+    return unwrap(
+      httpClient.post<ApiSuccess<User>>('/auth/change-email/verify', { code }),
+    );
   },
 };

@@ -8,30 +8,29 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Pagination } from '@/components/ui/pagination';
 import { AddressCascade, type AddressValue } from '@/features/admin/components/AddressCascade';
-import { CareerMapping } from '@/features/admin/components/CareerMapping';
-import { ProgramForm } from '@/features/admin/components/ProgramForm';
-import {
-  useCollege,
-  useDeleteCollege,
-  useDeleteProgram,
-  useUpdateCollege,
-} from '@/features/admin/hooks/useCatalog';
-import { useClientPagination } from '@/hooks/useClientPagination';
+import { ProgramDialog } from '@/features/admin/components/ProgramDialog';
+import { ProgramTable } from '@/features/admin/components/ProgramTable';
+import { useCollege, useDeleteCollege, useUpdateCollege } from '@/features/admin/hooks/useCatalog';
 import { isGoogleMapsUrl } from '@/lib/googleMaps';
 import { paths } from '@/routes/paths';
 import { ApiRequestError } from '@/types/api';
-import type { College, Program, ProgramStatus } from '@/types/catalog';
-
-/** Each program card carries its own career mapping, so a handful is already a long screen. */
-const PER_PAGE = 8;
+import type { College } from '@/types/catalog';
 
 /**
  * One college, its programs, and where each program leads (FULLPLAN §57, Phase 2).
  *
  * The whole §57 Phase 2 demo happens on this screen except for the careers themselves:
  * programs are added under the college, given a recommended strand, and mapped to careers.
+ *
+ * ## The programs are a table, and the editor floats (2026-09-21)
+ *
+ * They were a paginated stack of cards, each with its own career-mapping picker inline. See
+ * `ProgramTable` for why that shape stopped working, and `ProgramDialog` for where the mapping
+ * went. What matters here is the state this page now keeps: **an id, not a program**. The dialog
+ * re-reads its row out of the college on every render, so attaching a career — which invalidates
+ * the college query — updates the open dialog instead of leaving it showing the snapshot it was
+ * opened with.
  */
 export function CollegeDetailPage() {
   const { collegeId = '' } = useParams();
@@ -41,18 +40,9 @@ export function CollegeDetailPage() {
 
   const updateCollege = useUpdateCollege(collegeId);
   const deleteCollege = useDeleteCollege();
-  const deleteProgram = useDeleteProgram(collegeId);
 
   const [isAddingProgram, setIsAddingProgram] = useState(false);
   const [editingProgramId, setEditingProgramId] = useState<string | null>(null);
-
-  // Above the `isPending` return below, because a hook cannot sit behind one — `college` is simply
-  // undefined until the fetch lands, and an empty list pages to a single empty page.
-  const {
-    pageItems: programPage,
-    pagination,
-    setPage,
-  } = useClientPagination(college?.programs ?? [], PER_PAGE);
 
   if (isPending) {
     return (
@@ -69,14 +59,22 @@ export function CollegeDetailPage() {
 
   const programs = college.programs ?? [];
   const isArchived = college.status === 'archived';
+  // Looked up rather than stored — see the note above. `null` also covers a program archived from
+  // another tab and gone from the list: the dialog closes itself rather than editing a ghost.
+  const editingProgram = programs.find((program) => program.id === editingProgramId) ?? null;
+
+  function closeEditor() {
+    setIsAddingProgram(false);
+    setEditingProgramId(null);
+  }
 
   return (
     <div className="flex flex-col gap-6">
       {/* "All colleges" used to sit here; the shell's back control (AppShell) now stands one step
           above every page, and two of them on one screen is one too many. */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-xl font-semibold text-foreground">{college.name}</h1>
             <Badge tone={isArchived ? 'neutral' : 'success'}>{college.status}</Badge>
           </div>
@@ -85,7 +83,12 @@ export function CollegeDetailPage() {
           ) : null}
         </div>
 
-        <div className="flex gap-2">
+        {/*
+          `shrink-0` and a wrapping header above it: at 320px a name like "Bohol Island State
+          University — Calape Campus" and two buttons cannot share a row, and the flex default was
+          to squeeze the buttons rather than to stack.
+        */}
+        <div className="flex shrink-0 gap-2">
           {/*
             Archiving is the intended way to retire a college (§8) — the row and everything
             pointing at it survives, so a recommendation a student has already seen never
@@ -94,9 +97,7 @@ export function CollegeDetailPage() {
           <Button
             variant="secondary"
             loading={updateCollege.isPending}
-            onClick={() =>
-              updateCollege.mutate({ status: isArchived ? 'active' : 'archived' })
-            }
+            onClick={() => updateCollege.mutate({ status: isArchived ? 'active' : 'archived' })}
           >
             {isArchived ? 'Restore' : 'Archive'}
           </Button>
@@ -126,7 +127,7 @@ export function CollegeDetailPage() {
 
       <CollegeLocation collegeId={collegeId} college={college} />
 
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-base font-semibold text-foreground">
           Programs
           <span className="ml-2 text-sm font-normal text-muted-foreground">
@@ -136,23 +137,13 @@ export function CollegeDetailPage() {
           </span>
         </h2>
 
-        {!isAddingProgram ? (
-          <Button size="sm" onClick={() => setIsAddingProgram(true)}>
-            <Plus className="size-4" aria-hidden="true" />
-            Add program
-          </Button>
-        ) : null}
+        <Button size="sm" onClick={() => setIsAddingProgram(true)}>
+          <Plus className="size-4" aria-hidden="true" />
+          Add program
+        </Button>
       </div>
 
-      {isAddingProgram ? (
-        <ProgramForm
-          collegeId={collegeId}
-          onSaved={() => setIsAddingProgram(false)}
-          onCancel={() => setIsAddingProgram(false)}
-        />
-      ) : null}
-
-      {programs.length === 0 && !isAddingProgram ? (
+      {programs.length === 0 ? (
         <Card>
           <CardHeader>
             <CardTitle>No programs yet</CardTitle>
@@ -162,93 +153,21 @@ export function CollegeDetailPage() {
             </CardDescription>
           </CardHeader>
         </Card>
-      ) : null}
+      ) : (
+        <ProgramTable
+          collegeId={collegeId}
+          programs={programs}
+          onEdit={(program) => setEditingProgramId(program.id)}
+        />
+      )}
 
-      <ul className="flex flex-col gap-4">
-        {programPage.map((program) =>
-          editingProgramId === program.id ? (
-            <li key={program.id}>
-              <ProgramForm
-                collegeId={collegeId}
-                program={program}
-                onSaved={() => setEditingProgramId(null)}
-                onCancel={() => setEditingProgramId(null)}
-              />
-            </li>
-          ) : (
-            <li key={program.id}>
-              <ProgramCard
-                collegeId={collegeId}
-                program={program}
-                onEdit={() => setEditingProgramId(program.id)}
-                onDelete={() => {
-                  if (!window.confirm(`Remove ${program.code} — ${program.name}?`)) return;
-
-                  deleteProgram.mutate(program.id);
-                }}
-              />
-            </li>
-          ),
-        )}
-      </ul>
-
-      <Pagination pagination={pagination} onPageChange={setPage} noun="programs" />
+      <ProgramDialog
+        collegeId={collegeId}
+        program={editingProgram}
+        open={isAddingProgram || editingProgram !== null}
+        onClose={closeEditor}
+      />
     </div>
-  );
-}
-
-interface ProgramCardProps {
-  collegeId: string;
-  program: Program;
-  onEdit: () => void;
-  onDelete: () => void;
-}
-
-function ProgramCard({ collegeId, program, onEdit, onDelete }: ProgramCardProps) {
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <CardTitle>
-              <span className="font-mono text-sm tracking-wide text-muted-foreground">{program.code}</span>
-              <span className="ml-2">{program.name}</span>
-            </CardTitle>
-            <CardDescription>
-              {program.department_name ?? 'No department'}
-              {' · '}
-              {/*
-                Null is not a gap here — it is a claim. §27 scores a program with no strand
-                requirement as a full 100 for every student, so "Open to any strand" is the
-                accurate reading, not "Unknown".
-              */}
-              {program.recommended_strand ?? 'Open to any strand'}
-            </CardDescription>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Badge tone={programStatusTone(program.status)}>{program.status}</Badge>
-
-            <Button variant="ghost" size="sm" onClick={onEdit} aria-label={`Edit ${program.code}`}>
-              <Pencil className="size-4" aria-hidden="true" />
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onDelete}
-              aria-label={`Delete ${program.code}`}
-            >
-              <Trash2 className="size-4" aria-hidden="true" />
-            </Button>
-          </div>
-        </div>
-      </CardHeader>
-
-      <CardContent>
-        <CareerMapping collegeId={collegeId} program={program} />
-      </CardContent>
-    </Card>
   );
 }
 
@@ -348,7 +267,7 @@ function CollegeLocation({ collegeId, college }: { collegeId: string; college: C
               <Alert>{serverError.message}</Alert>
             ) : null}
 
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button onClick={save} loading={updateCollege.isPending} disabled={mapInvalid}>
                 Save location
               </Button>
@@ -391,19 +310,4 @@ function toAddressValue(college: College): AddressValue {
     town_id: college.town?.id ?? null,
     barangay_id: college.barangay?.id ?? null,
   };
-}
-
-/**
- * Only an active program is ever recommended (§27) — status is the difference between a
- * program students can be matched to and one that merely exists.
- */
-function programStatusTone(status: ProgramStatus): 'success' | 'warning' | 'neutral' {
-  switch (status) {
-    case 'active':
-      return 'success';
-    case 'draft':
-      return 'warning';
-    case 'archived':
-      return 'neutral';
-  }
 }

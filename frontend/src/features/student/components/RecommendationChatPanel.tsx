@@ -1,3 +1,4 @@
+import { useIsMutating } from '@tanstack/react-query';
 import { Bot, Loader2, MapPin, Send, Trash2, User, X } from 'lucide-react';
 import {
   type CSSProperties,
@@ -14,6 +15,7 @@ import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/components/ui/cn';
 import {
+  chatTurnMutationKey,
   useAskChat,
   useChatTranscript,
   useClearChat,
@@ -22,6 +24,7 @@ import {
 } from '@/features/student/hooks/useRecommendations';
 import { useStudentBrief } from '@/features/student/hooks/useStudentBrief';
 import { stopFor } from '@/features/student/tour/stops';
+import { useChatPanelStore } from '@/stores/chatPanelStore';
 import { toast } from '@/stores/toastStore';
 import { useTourStore } from '@/stores/tourStore';
 import type { ChatMessage } from '@/types/recommendation';
@@ -58,7 +61,9 @@ import type { ChatMessage } from '@/types/recommendation';
  * uses (prompt §9).
  */
 export function RecommendationChatPanel({ hasRecommendations }: { hasRecommendations: boolean }) {
-  const [open, setOpen] = useState(false);
+  // In a store rather than local state so a card's "Explain more" can open the drawer (2026-09-22).
+  const open = useChatPanelStore((state) => state.open);
+  const setOpen = useChatPanelStore((state) => state.setOpen);
   const asideRef = useRef<HTMLElement>(null);
   const height = useViewportFill(asideRef);
 
@@ -211,6 +216,18 @@ function ChatLauncherButton({ open, onOpen }: { open: boolean; onOpen: () => voi
     >
       <img src={chatLogoUrl} alt="" aria-hidden="true" className="size-8 object-contain" />
       {/*
+        Two glowing orbs riding the launcher's ring, opposite each other, with fading tails (2026-09-22). Two nested rings: the outer
+        always turns, the inner turns only on hover — so hovering speeds the orbit up without the
+        jump that changing one animation's duration mid-flight would cause. Decorative only.
+      */}
+      <span className="chat-orbit" aria-hidden="true">
+        <span className="chat-orbit-boost">
+          <span className="chat-orbit-tail" />
+          <span className="chat-orbit-dot chat-orbit-dot--one" />
+          <span className="chat-orbit-dot chat-orbit-dot--two" />
+        </span>
+      </span>
+      {/*
         The label, on hover and focus, from `sm` up. `pointer-events-none` so it can never sit
         between a pointer and the button it describes; hidden below `sm` because a tooltip anchored
         to the right edge of a 320 px screen has nowhere to go.
@@ -292,6 +309,8 @@ function ChatSurface({
   const { data: transcript, isLoading } = useChatTranscript();
   const ask = useAskChat();
   const clear = useClearChat();
+  // Any turn in flight — a typed question or a card's "Explain more" (2026-09-22).
+  const thinking = useIsMutating({ mutationKey: chatTurnMutationKey }) > 0;
 
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -314,7 +333,7 @@ function ChatSurface({
     } else {
       node.scrollTop = node.scrollHeight;
     }
-  }, [messages.length, ask.isPending]);
+  }, [messages.length, thinking]);
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -399,7 +418,7 @@ function ChatSurface({
           </ul>
         )}
 
-        {ask.isPending ? (
+        {thinking ? (
           <p className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             Thinking…

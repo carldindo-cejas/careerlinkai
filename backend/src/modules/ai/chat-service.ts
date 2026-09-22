@@ -346,6 +346,40 @@ export class ChatService {
     };
   }
 
+  /**
+   * A turn whose answer was produced somewhere else — the recommendation page's "Explain more"
+   * (2026-09-22). The card used to print the §30 paragraph inline, which pushed the card's own
+   * facts off the screen; now the paragraph lands here, as a turn in the conversation.
+   *
+   * No gate runs: the question was written by the server, not typed, and the answer comes from
+   * `ExplanationService`, which already enforces its own grounding contract.
+   */
+  async recordTurn(
+    studentId: string,
+    recommendations: RecommendationSet | null,
+    question: string,
+    answer: { text: string; sources: string[]; kind: ChatAnswerKind },
+  ): Promise<ChatTurn> {
+    const conversation = await this.openConversation(studentId, recommendations);
+    const questionMessage = await this.appendMessage(conversation.id, 'user', question, null);
+    const answerMessage = await this.appendMessage(
+      conversation.id,
+      'assistant',
+      answer.text,
+      null,
+      answer.sources,
+      null,
+      answer.kind,
+    );
+
+    await this.db
+      .update(chatConversations)
+      .set({ updatedAt: now() })
+      .where(eq(chatConversations.id, conversation.id));
+
+    return { conversation, question: questionMessage, answer: answerMessage, failure: null };
+  }
+
   // --- generation ------------------------------------------------------------------------
 
   private async answer(

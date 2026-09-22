@@ -49,6 +49,16 @@ export type AuditAction =
   // start answering to a different address" has to be answerable by filtering on the action
   // rather than by reading every profile edit's diff. Both rows carry the old and new values.
   | 'STAFF_PROFILE_UPDATED'
+  // Two rows for one email change (migration 0039): the request, written when a code is mailed to
+  // the new address, and the change itself, written only if that code comes back. Keeping the
+  // first is what makes an *abandoned* change visible — "somebody tried to move this account to
+  // an address they could not open" leaves no trace in `users`, and it is the shape an attempted
+  // takeover of a staffroom session has.
+  | 'STAFF_EMAIL_CHANGE_REQUESTED'
+  // And the third outcome: they looked at the code step and abandoned it. Recorded because a
+  // cancelled change and a stalled one are indistinguishable in `users` — both leave the account
+  // exactly as it was — and only this row says which of the two happened.
+  | 'STAFF_EMAIL_CHANGE_CANCELLED'
   | 'STAFF_EMAIL_CHANGED'
   | 'STAFF_PASSWORD_RESET_REQUESTED'
   | 'STAFF_PASSWORD_RESET_COMPLETED'
@@ -93,6 +103,17 @@ export type AuditAction =
   // a grade change is — someone will one day ask why a program's ranking moved.
   | 'PROGRAM_CAREER_LINKED'
   | 'PROGRAM_CAREER_UNLINKED'
+  // The same, one level up (migration 0040): a link on a canonical program is a link on every
+  // college offering of it, so one of these rows can move the ranking of twenty programs at once.
+  | 'CANONICAL_PROGRAM_CAREER_LINKED'
+  | 'CANONICAL_PROGRAM_CAREER_UNLINKED'
+  // Migration 0041: how strongly a link counts (direct / related / conditional) was changed. Its
+  // own action because it moves scores without adding or removing anything a list would show.
+  | 'CANONICAL_PROGRAM_CAREER_REGRADED'
+  | 'PROGRAM_CAREER_REGRADED'
+  // A spreadsheet import of the canonical mapping (2026-09-22): one row for the whole file, carrying
+  // the counts — one administrative act, as the address bulk imports below are recorded.
+  | 'CANONICAL_MAPPING_IMPORTED'
   // Address hierarchy (v1.5, migration 0011). Bulk imports are recorded as a single row carrying
   // the count and the names, not one row per inserted place — a paste of forty barangays is one
   // administrative act, and forty audit rows would bury the log rather than document it. A delete
@@ -167,6 +188,10 @@ export type AuditAction =
   // moment the curated content forks: the row names who started the edit and which version they
   // started it from, which is what makes "who changed RIASEC, and from what" answerable at all.
   | 'ASSESSMENT_VERSION_DUPLICATED'
+  // Re-weighting a DRAFT's composite (SCCT's weights and bands). No student is scored under a draft,
+  // but these numbers decide every career-confidence score the version will ever produce, so the row
+  // keeps both the old and new values — "who changed SE from 40% to 50%" must be answerable.
+  | 'VERSION_SCORING_CONFIG_UPDATED'
   | 'ASSESSMENT_PUBLISHED'
   | 'ASSESSMENT_ASSIGNED'
   | 'ASSESSMENT_ASSIGNMENT_CLOSED'
@@ -186,6 +211,7 @@ export type AuditAction =
   | 'KNOWLEDGE_DOCUMENT_UPLOADED'
   | 'KNOWLEDGE_DOCUMENT_UPDATED'
   | 'KNOWLEDGE_DOCUMENT_ARCHIVED'
+  | 'KNOWLEDGE_DOCUMENT_UNARCHIVED'
   // Prompt-driven: the entry was destroyed, not retired. Its own action rather than an ARCHIVED
   // with a flag, because this is the one act in the knowledge module that cannot be undone — and
   // the audit row is the only surviving record that the entry ever existed.
@@ -219,7 +245,11 @@ export type AuditAction =
   // An operator flag changed (migration 0034). Recorded because the only flag today decides whether
   // strangers may create accounts that read student results — "who opened registration, and when"
   // is not a question the current value of a row can answer.
-  | 'APP_SETTING_UPDATED';
+  | 'APP_SETTING_UPDATED'
+  // The §27 match formula was re-weighted (2026-09-21). Recorded with the *previous* weights in
+  // `old_values`, because "every score moved on the 14th — what was it before?" is the question
+  // this row exists to answer, and the row that replaced them cannot answer it.
+  | 'RECOMMENDATION_FORMULA_UPDATED';
 
 /**
  * Why a join attempt failed. Never sent to the client — the API answers every failure
@@ -287,6 +317,10 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   // Credential lifecycle — changes to an account, not sign-ins.
   STAFF_PASSWORD_CHANGED: 'UPDATE',
   STAFF_PROFILE_UPDATED: 'UPDATE',
+  // OTHER, not UPDATE: nothing in the database changed — a code was mailed.
+  STAFF_EMAIL_CHANGE_REQUESTED: 'OTHER',
+  // Same reasoning: abandoning a staged change modifies nothing.
+  STAFF_EMAIL_CHANGE_CANCELLED: 'OTHER',
   STAFF_EMAIL_CHANGED: 'UPDATE',
   STAFF_PASSWORD_RESET_REQUESTED: 'UPDATE',
   STAFF_PASSWORD_RESET_COMPLETED: 'UPDATE',
@@ -315,6 +349,11 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   CAREER_DELETED: 'DELETE',
   PROGRAM_CAREER_LINKED: 'CREATE',
   PROGRAM_CAREER_UNLINKED: 'DELETE',
+  CANONICAL_PROGRAM_CAREER_LINKED: 'CREATE',
+  CANONICAL_PROGRAM_CAREER_UNLINKED: 'DELETE',
+  CANONICAL_PROGRAM_CAREER_REGRADED: 'UPDATE',
+  PROGRAM_CAREER_REGRADED: 'UPDATE',
+  CANONICAL_MAPPING_IMPORTED: 'UPDATE',
   // Address hierarchy.
   REGIONS_BULK_IMPORTED: 'CREATE',
   PROVINCES_BULK_IMPORTED: 'CREATE',
@@ -342,6 +381,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   QUESTION_DIMENSION_CONFIRMED: 'UPDATE',
   ASSESSMENT_QUESTION_DELETED: 'DELETE',
   ASSESSMENT_VERSION_DUPLICATED: 'CREATE',
+  VERSION_SCORING_CONFIG_UPDATED: 'UPDATE',
   ASSESSMENT_PUBLISHED: 'PUBLISH',
   ASSESSMENT_ASSIGNED: 'ASSIGN',
   /** Closing an assignment retires it without deleting it — the same shape as archiving. */
@@ -354,6 +394,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   KNOWLEDGE_DOCUMENT_UPLOADED: 'CREATE',
   KNOWLEDGE_DOCUMENT_UPDATED: 'UPDATE',
   KNOWLEDGE_DOCUMENT_ARCHIVED: 'ARCHIVE',
+  KNOWLEDGE_DOCUMENT_UNARCHIVED: 'RESTORE',
   KNOWLEDGE_DOCUMENT_DELETED: 'DELETE',
   KNOWLEDGE_DOCUMENT_REPROCESSED: 'UPDATE',
   /** A resolution row comes into existence, and a backlog item stops being reported. */
@@ -378,6 +419,7 @@ const ACTION_TYPES: Record<AuditAction, AuditActionType> = {
   COUNSELOR_SIGNUP_REQUESTED: 'OTHER',
   COUNSELOR_SIGNUP_COMPLETED: 'CREATE',
   APP_SETTING_UPDATED: 'UPDATE',
+  RECOMMENDATION_FORMULA_UPDATED: 'UPDATE',
 };
 
 /** Every action in one group — what the filter turns into, resolved once per module load. */

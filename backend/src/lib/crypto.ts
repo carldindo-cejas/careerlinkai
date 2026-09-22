@@ -38,6 +38,35 @@ export async function generateToken(): Promise<{ plaintext: string; hash: string
   return { plaintext, hash: await hashToken(plaintext) };
 }
 
+/**
+ * A uniformly random numeric code — the six-digit kind mailed to prove a mailbox is somebody's
+ * (counselor signup, migration 0034; staff email change, migration 0039).
+ *
+ * Rejection sampling, the same rule as the temporary-password and join-code generators: `byte % 10`
+ * would make 0–5 more likely than 6–9, which costs roughly a third of a digit of entropy per
+ * position. It is a small loss and an entirely free one to avoid.
+ *
+ * Six digits is 10^6, which is only ever safe next to a lockout that stops at five wrong guesses.
+ * Neither number means anything without the other, so every caller of this function must name the
+ * guard that caps attempts against the code it produces.
+ */
+export function generateNumericCode(digits = 6): string {
+  const out: string[] = [];
+  const byte = new Uint8Array(1);
+  // 250 = floor(256/10)*10. Bytes at or above it are discarded rather than folded.
+  const cap = 250;
+
+  while (out.length < digits) {
+    crypto.getRandomValues(byte);
+
+    if (byte[0]! < cap) {
+      out.push(String(byte[0]! % 10));
+    }
+  }
+
+  return out.join('');
+}
+
 /** SHA-256, hex-encoded — the lookup key for `api_tokens.token_hash`. */
 export async function hashToken(plaintext: string): Promise<string> {
   return toHex(await crypto.subtle.digest('SHA-256', encoder.encode(plaintext)));

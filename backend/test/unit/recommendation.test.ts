@@ -6,6 +6,7 @@ import {
   academicFit,
   careerAlignment,
   careerMatchScore,
+  linkWeightsOf,
   programRiasecCompatibility,
   rankTop,
   rankTopDistinct,
@@ -14,9 +15,11 @@ import {
   scoreProgram,
   strandAlignment,
   topDimension,
+  weightedCareerScore,
   type RiasecProfile,
   type StudentSignals,
 } from '@/lib/recommendation';
+import { DEFAULT_FORMULA } from '@/lib/scoring-formula';
 
 /**
  * The §27 engine in isolation — and above all, **§28's worked example**.
@@ -656,8 +659,8 @@ describe('the composite weights', () => {
    * and nothing else in the codebase would notice.
    */
   it('each sum to 1.00', () => {
-    const sum = (weights: Record<string, number>) =>
-      Object.values(weights).reduce((total, weight) => total + weight, 0);
+    const sum = (weights: object) =>
+      Object.values(weights).reduce<number>((total, weight) => total + (weight as number), 0);
 
     expect(sum(CAREER_WEIGHTS)).toBeCloseTo(1.0, 10);
     expect(sum(PROGRAM_WEIGHTS)).toBeCloseTo(1.0, 10);
@@ -688,5 +691,179 @@ describe('the composite weights', () => {
     expect(
       scoreCareer(empty, { id: 'c', title: 'X', typicalRiasecCode: 'IEC' }).matchScore,
     ).toBeGreaterThanOrEqual(0);
+  });
+});
+
+/**
+ * **The engine takes a formula** (2026-09-21).
+ *
+ * `lib/scoring-formula.ts` moved the §27 constants into an object and every function here grew an
+ * optional parameter for it, so an administrator can re-weight the composite without a deploy
+ * (`FormulaService`). Two things have to be true for that to be safe, and they pull in opposite
+ * directions:
+ *
+ *   * a call that names no formula must compute **exactly** what it computed before — which is
+ *     what the whole §28 worked example above already asserts, on every function, and is why
+ *     nothing here repeats it; and
+ *   * a call that names one must actually use it, **everywhere it reaches** — including the
+ *     neutral values and the anchors, not only the two headline weight sets.
+ *
+ * The second is what this block is for. Each case picks a formula whose effect can be computed by
+ * hand in one line, so a failure says which term was ignored rather than only that a number moved.
+ */
+describe('a custom formula', () => {
+  const student: StudentSignals = {
+    riasec: profile({ I: 100 }),
+    careerConfidenceIndex: 50,
+    academicAverage: null,
+    strand: null,
+  };
+
+  it('re-weights the career composite', () => {
+    // I=100 against a code that leads with I: 100 × 0.5 = 50 compatibility. Under a formula that
+    // spends everything on confidence, the score is the confidence index and nothing else.
+    const allConfidence = {
+      ...DEFAULT_FORMULA,
+      career: { riasecCompatibility: 0, careerConfidence: 1, studentPreference: 0 },
+    };
+
+    expect(careerMatchScore(student, 'IEC', allConfidence)).toBeCloseTo(50, 10);
+    expect(careerMatchScore(student, 'IEC')).toBeCloseTo(50 * 0.6 + 50 * 0.3 + 70 * 0.1, 10);
+  });
+
+  it('moves the Holland position weights', () => {
+    // Flat weights read all three letters equally, so a profile with only its first letter filled
+    // in scores a third rather than a half.
+    const flat = {
+      ...DEFAULT_FORMULA,
+      positionWeights: [1 / 3, 1 / 3, 1 / 3] as [number, number, number],
+    };
+
+    expect(riasecCompatibility(student.riasec, 'IEC', flat)).toBeCloseTo(100 / 3, 10);
+    expect(riasecCompatibility(student.riasec, 'IEC')).toBeCloseTo(50, 10);
+  });
+
+  it('moves the neutral values, which are the part a re-weighting is most likely to forget', () => {
+    const neutrals = {
+      ...DEFAULT_FORMULA,
+      neutrals: { ...DEFAULT_FORMULA.neutrals, riasec: 80, strandUnknown: 55, academicUnknown: 20 },
+    };
+
+    // A career with no code at all: the no-signal value, straight through.
+    expect(riasecCompatibility(student.riasec, null, neutrals)).toBe(80);
+    // A student with no strand against a program that wants one: unknown, not mismatched.
+    expect(strandAlignment(null, 'Academic', neutrals)).toBe(55);
+    // A student who filled in none of the three subject grades.
+    expect(academicFit(null, neutrals)).toBe(20);
+  });
+
+  it('moves the academic anchors', () => {
+    // Halfway between the floor and the ceiling is 50, wherever the two anchors are put.
+    const wide = { ...DEFAULT_FORMULA, academic: { floor: 60, ceiling: 100 } };
+
+    expect(academicFit(80, wide)).toBeCloseTo(50, 10);
+    // And the shipped band still runs 75 → 95, so the same grade reads far higher on it.
+    expect(academicFit(80)).toBeCloseTo(25, 10);
+  });
+
+  it('reaches every term of the program composite at once', () => {
+    const program = { id: 'p', name: 'BS Computer Science', recommendedStrand: 'Academic' as const };
+    const linked = [{ title: 'Software Engineer', typicalRiasecCode: 'IEC' }];
+    const strandOnly = {
+      ...DEFAULT_FORMULA,
+      program: {
+        riasecCompatibility: 0,
+        careerAlignment: 0,
+        careerConfidence: 0,
+        academicFit: 0,
+        strandAlignment: 1,
+      },
+    };
+
+    // The student has no strand, so the whole score is `neutrals.strandUnknown` — 70 by default,
+    // and the composite is that one term.
+    expect(scoreProgram(student, program, linked, strandOnly).matchScore).toBe(70);
+  });
+
+  it('is carried down into careerAlignment, which scores through the career formula', () => {
+    // `careerAlignment` calls `careerMatchScore` per linked career. A formula that stopped at the
+    // program composite would leave these inner calls on the shipped weights — silently, because
+    // the outer number would still move.
+    const allConfidence = {
+      ...DEFAULT_FORMULA,
+      career: { riasecCompatibility: 0, careerConfidence: 1, studentPreference: 0 },
+    };
+
+    expect(careerAlignment(student, ['IEC', 'RIA'], allConfidence)).toBeCloseTo(50, 10);
+  });
+});
+
+/**
+ * Link strength (migration 0041). A program's links are graded direct / related / conditional, and
+ * the formula's `linkWeights` say how much each counts. Every link made before 0041 is `direct`,
+ * weight 1 — so the first test is the one that matters most: nothing moves until someone grades.
+ */
+describe('link weights', () => {
+  const student = WORKED_EXAMPLE_STUDENT;
+
+  it('changes nothing when every link is direct', () => {
+    const program = { id: 'p', name: 'Program', recommendedStrand: null };
+    const plain = scoreProgram(student, program, [
+      { title: 'A', typicalRiasecCode: 'IEC' },
+      { title: 'B', typicalRiasecCode: 'RCE' },
+    ]);
+    const graded = scoreProgram(student, program, [
+      { title: 'A', typicalRiasecCode: 'IEC', relationship: 'direct' },
+      { title: 'B', typicalRiasecCode: 'RCE', relationship: 'direct' },
+    ]);
+
+    expect(graded).toEqual(plain);
+  });
+
+  it('gives a related career a smaller say in the breadth average', () => {
+    const direct = riasecCompatibility(student.riasec, 'IEC');
+    const related = riasecCompatibility(student.riasec, 'RCE');
+    const weights = linkWeightsOf(
+      [
+        { title: 'A', typicalRiasecCode: 'IEC', relationship: 'direct' },
+        { title: 'B', typicalRiasecCode: 'RCE', relationship: 'related' },
+      ],
+      DEFAULT_FORMULA,
+    );
+
+    expect(weights).toEqual([1, DEFAULT_FORMULA.linkWeights.related]);
+    expect(programRiasecCompatibility(student.riasec, ['IEC', 'RCE'], DEFAULT_FORMULA, weights)).toBeCloseTo(
+      (direct + related * DEFAULT_FORMULA.linkWeights.related) /
+        (1 + DEFAULT_FORMULA.linkWeights.related),
+      10,
+    );
+  });
+
+  /** Weaker evidence, not evidence against: the pull is toward neutral, never toward zero. */
+  it('pulls a lighter link toward the neutral career score, not toward zero', () => {
+    const full = weightedCareerScore(student, 'IEC', 1);
+    const neutral = weightedCareerScore(student, null, 1);
+    const half = weightedCareerScore(student, 'IEC', 0.5);
+
+    expect(half).toBeCloseTo(neutral + (full - neutral) * 0.5, 10);
+    expect(half).toBeGreaterThan(Math.min(full, neutral) - 1e-9);
+    expect(half).toBeLessThan(Math.max(full, neutral) + 1e-9);
+  });
+
+  it('ranks a program lower when its only strong career is merely related', () => {
+    const program = { id: 'p', name: 'Program', recommendedStrand: null };
+    const asDirect = scoreProgram(student, program, [
+      { title: 'A', typicalRiasecCode: 'IEC', relationship: 'direct' },
+    ]);
+    const asConditional = scoreProgram(student, program, [
+      { title: 'A', typicalRiasecCode: 'IEC', relationship: 'conditional' },
+    ]);
+
+    // Breadth is a weighted *average* of one career, so it cannot move; depth can.
+    expect(asConditional.components.riasecCompatibility).toBeCloseTo(
+      asDirect.components.riasecCompatibility,
+      10,
+    );
+    expect(asConditional.components.careerAlignment).toBeLessThan(asDirect.components.careerAlignment);
   });
 });

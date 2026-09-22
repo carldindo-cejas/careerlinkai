@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SIGNUP_STATUS_QUERY_KEY } from '@/features/auth/hooks/useAuth';
 import { classApi } from '@/services/classApi';
 import { counselorManagementApi } from '@/services/counselorManagementApi';
-import { platformApi, type AppSettings } from '@/services/platformApi';
+import { formulaApi, platformApi, type AppSettings } from '@/services/platformApi';
+import type { ScoringFormula } from '@/types/formula';
 import type {
   AuditLogFilters,
   CreateCounselorPayload,
@@ -24,6 +25,7 @@ export const platformAdminKeys = {
   counselorClasses: (id: string) => ['admin', 'counselors', id, 'classes'] as const,
   platformUsage: ['admin', 'platform-usage'] as const,
   settings: ['admin', 'settings'] as const,
+  formula: ['admin', 'recommendation-formula'] as const,
 };
 
 /** The operator flags (migration 0034). Admin-only, like every other hook in this file. */
@@ -228,5 +230,50 @@ export function useResetCounselorPassword() {
   return useMutation({
     mutationFn: (id: string) => counselorManagementApi.resetPassword(id),
     onSuccess: invalidate,
+  });
+}
+
+/**
+ * The §27 match formula (2026-09-21).
+ *
+ * `staleTime: 0` and no `placeholderData`: this screen is the only writer, and a stale read here is
+ * not a cosmetic flicker — it is an administrator editing weights that are no longer the ones in
+ * force, then saving them back over whatever changed underneath.
+ */
+export function useScoringFormula() {
+  return useQuery({
+    queryKey: platformAdminKeys.formula,
+    queryFn: () => formulaApi.get(),
+  });
+}
+
+/**
+ * Save, or restore the defaults.
+ *
+ * Both invalidate rather than writing the response into the cache, because the response is the
+ * *formula* while the screen also renders `is_default`, `updated_by_name` and the timestamp — a
+ * `setQueryData` with the formula alone would leave the page claiming the shipped weights were
+ * never touched a second after somebody touched them.
+ */
+export function useSaveScoringFormula() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ formula, currentPassword }: { formula: ScoringFormula; currentPassword: string }) =>
+      formulaApi.save(formula, currentPassword),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: platformAdminKeys.formula });
+    },
+  });
+}
+
+export function useResetScoringFormula() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (currentPassword: string) => formulaApi.reset(currentPassword),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: platformAdminKeys.formula });
+    },
   });
 }

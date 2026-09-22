@@ -1,6 +1,7 @@
 import { DECISION_GUIDANCE } from '@/knowledge/guidance-decisions';
 import { PROGRAM_GUIDANCE } from '@/knowledge/guidance-programs';
-import { RESULTS_GUIDANCE } from '@/knowledge/guidance-topics';
+import { RESULTS_GUIDANCE, resultsGuidance } from '@/knowledge/guidance-topics';
+import { DEFAULT_FORMULA, type ScoringFormula } from '@/lib/scoring-formula';
 
 /**
  * **The Guidance corpus** — the school's general knowledge, written once and retrieved per turn
@@ -44,6 +45,18 @@ export interface GuidanceQa {
   slug: string;
   question: string;
   answer: string;
+}
+
+/**
+ * The corpus written against one formula (2026-09-21).
+ *
+ * Three of the results passages state the weights §27 multiplies by, and an administrator can
+ * change those (`FormulaService`). Everything else in the corpus is prose about the world and takes
+ * no argument. `syncGuidanceKnowledge` passes the stored formula; callers who mean "what this
+ * release ships" use `GUIDANCE_ENTRIES` below.
+ */
+export function guidanceEntries(formula: ScoringFormula = DEFAULT_FORMULA): GuidanceEntry[] {
+  return [...resultsGuidance(formula), ...PROGRAM_GUIDANCE, ...DECISION_GUIDANCE];
 }
 
 export const GUIDANCE_ENTRIES: GuidanceEntry[] = [

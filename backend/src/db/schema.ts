@@ -4,6 +4,7 @@ import {
   integer,
   real,
   sqliteTable,
+  sqliteView,
   text,
   uniqueIndex,
   type AnySQLiteColumn,
@@ -27,6 +28,7 @@ import type {
   KnowledgeRequestState,
   KnowledgeSourceType,
   KnowledgeVisibility,
+  LinkRelationship,
   MatchType,
   NotificationCategory,
   PresentationMode,
@@ -293,6 +295,34 @@ export const counselorSignupRequests = sqliteTable(
 );
 
 /**
+ * A staff email change that has been asked for but not yet proven (migration 0039).
+ *
+ * `users.email` is the login identifier *and* the password-reset destination, so moving it on a
+ * password check alone lets one typo take both away with no undo. The change is staged here, a
+ * six-digit code goes to the **new** address, and the `users` row moves only when that code comes
+ * back — so a mistyped address costs a code that never arrives instead of an account.
+ *
+ * One row per user, upserted: a second request replaces the first, so there is never a question of
+ * which code is live. `new_email` carries no unique index on purpose — see the migration.
+ */
+export const staffEmailChangeRequests = sqliteTable(
+  'staff_email_change_requests',
+  {
+    userId: text('user_id')
+      .primaryKey()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Already trimmed and lowercased by the service that wrote it. */
+    newEmail: text('new_email').notNull(),
+    /** SHA-256 of the six-digit code, via `hashToken` — never the code itself. */
+    codeHash: text('code_hash').notNull(),
+    /** Moves on a resend: the TTL belongs to the code, not to the request. */
+    createdAt: createdAt(),
+  },
+  (table) => [index('staff_email_change_requests_created_at_index').on(table.createdAt)],
+);
+
+/**
  * Operator-controlled flags (migration 0034). Generic key/value, with the keys themselves declared
  * as a registry in `modules/platform/settings-service.ts` — so a new flag costs a constant rather
  * than a migration, and a mistyped key is a type error rather than a setting that silently reads
@@ -433,6 +463,12 @@ export const programCatalog = sqliteTable(
     description: text('description'),
     /** `active` / `archived` — no `draft`, which belongs to an *offering*, not to the thing itself. */
     status: text('status').$type<CatalogStatus>().notNull().default('active'),
+    /**
+     * The strand this program expects (migration 0040) — the **default** its offerings carry, not a
+     * lock. Saving a change here writes it to every offering; an offering may still differ, because
+     * admission requirements genuinely vary by campus. NULL is "no strand requirement".
+     */
+    recommendedStrand: text('recommended_strand').$type<Strand>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: timestamp('deleted_at'),
@@ -537,6 +573,11 @@ export const careers = sqliteTable(
  *
  * The unique index is a *scoring* invariant, not a bookkeeping one: §27 averages over every
  * linked career, so a duplicate link would give one career two votes.
+ *
+ * **Since migration 0040 these are college-specific extras.** What a program leads to lives on
+ * `programCatalogCareers` and every offering inherits it; a row here adds a destination one
+ * campus's offering has on top of that. Read an offering's careers through `programCareerLinks`,
+ * never from this table alone — this table is half the answer.
  */
 export const programCareers = sqliteTable(
   'program_careers',
@@ -548,6 +589,8 @@ export const programCareers = sqliteTable(
     careerId: text('career_id')
       .notNull()
       .references(() => careers.id, { onDelete: 'cascade' }),
+    /** How strongly the program leads there (migration 0041). `direct` counts fully. */
+    relationship: text('relationship').$type<LinkRelationship>().notNull().default('direct'),
   },
   (table) => [
     uniqueIndex('program_careers_program_career_unique').on(table.programId, table.careerId),
@@ -555,6 +598,54 @@ export const programCareers = sqliteTable(
     index('program_careers_career_id_index').on(table.careerId),
   ],
 );
+
+/**
+ * What a **canonical** program leads to (migration 0040) — "BS Computer Science leads to Software
+ * Developer", once, for every college that offers it. The same shape and the same set invariant as
+ * `programCareers`, one level up.
+ */
+export const programCatalogCareers = sqliteTable(
+  'program_catalog_careers',
+  {
+    id: text('id').primaryKey().notNull(),
+    programCatalogId: text('program_catalog_id')
+      .notNull()
+      .references(() => programCatalog.id, { onDelete: 'cascade' }),
+    careerId: text('career_id')
+      .notNull()
+      .references(() => careers.id, { onDelete: 'cascade' }),
+    /** How strongly the program leads there (migration 0041). `direct` counts fully. */
+    relationship: text('relationship').$type<LinkRelationship>().notNull().default('direct'),
+  },
+  (table) => [
+    uniqueIndex('program_catalog_careers_catalog_career_unique').on(
+      table.programCatalogId,
+      table.careerId,
+    ),
+    index('program_catalog_careers_program_catalog_id_index').on(table.programCatalogId),
+    index('program_catalog_careers_career_id_index').on(table.careerId),
+  ],
+);
+
+/** Where an offering's link to a career comes from — its canonical program, or the offering itself. */
+export type CareerLinkSource = 'canonical' | 'offering';
+
+/**
+ * **Every offering's careers, as one relation** (migration 0040): the careers its canonical program
+ * leads to, plus the offering's own extras, with an extra that duplicates an inherited link left out
+ * so no career is ever counted twice.
+ *
+ * Every reader of the program ↔ career relationship selects from this — the scorer, the career →
+ * programs lookup, the admin view, the knowledge sync, the assistant. The union is defined in SQL
+ * exactly once so that none of them can drift from the others by forgetting half of it. `.existing()`
+ * because the migration creates it; Drizzle only needs to know its columns.
+ */
+export const programCareerLinks = sqliteView('program_career_links', {
+  programId: text('program_id').notNull(),
+  careerId: text('career_id').notNull(),
+  source: text('source').$type<CareerLinkSource>().notNull(),
+  relationship: text('relationship').$type<LinkRelationship>().notNull(),
+}).existing();
 
 // --- Philippine Addresses (v1.5, prompt-driven — migration 0011) ----------------------
 
@@ -1628,6 +1719,7 @@ export type CounselorProfile = typeof counselorProfiles.$inferSelect;
 export type StudentProfile = typeof studentProfiles.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
 export type CounselorSignupRequest = typeof counselorSignupRequests.$inferSelect;
+export type StaffEmailChangeRequest = typeof staffEmailChangeRequests.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type ClassRoom = typeof classes.$inferSelect;
@@ -1640,6 +1732,7 @@ export type Program = typeof programs.$inferSelect;
 export type Career = typeof careers.$inferSelect;
 export type EmploymentOutlook = typeof employmentOutlooks.$inferSelect;
 export type ProgramCareer = typeof programCareers.$inferSelect;
+export type ProgramCatalogCareer = typeof programCatalogCareers.$inferSelect;
 export type Region = typeof regions.$inferSelect;
 export type Province = typeof provinces.$inferSelect;
 export type Town = typeof towns.$inferSelect;

@@ -19,6 +19,7 @@ import {
   useKnowledgeScope,
   useRemoveKnowledgeDocument,
   useReprocessKnowledgeDocument,
+  useUnarchiveKnowledgeDocument,
   useSyncCatalogKnowledge,
   useUpdateKnowledgeEntry,
   useUploadKnowledgeDocument,
@@ -785,6 +786,7 @@ function DocumentRow({ document }: { document: KnowledgeDocument }) {
   const archive = useArchiveKnowledgeDocument();
   const remove = useRemoveKnowledgeDocument();
   const reprocess = useReprocessKnowledgeDocument();
+  const unarchive = useUnarchiveKnowledgeDocument();
   const [editing, setEditing] = useState(false);
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
   const archived = document.archived_at !== null;
@@ -813,7 +815,7 @@ function DocumentRow({ document }: { document: KnowledgeDocument }) {
     }
   }
 
-  const busy = archive.isPending || remove.isPending;
+  const busy = archive.isPending || remove.isPending || unarchive.isPending;
 
   return (
     <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b border-border px-5 py-3 last:border-0">
@@ -885,7 +887,23 @@ function DocumentRow({ document }: { document: KnowledgeDocument }) {
               Archive
             </Button>
           </>
-        ) : null}
+        ) : (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            loading={unarchive.isPending}
+            onClick={() =>
+              unarchive.mutate(document.id, {
+                onSuccess: () =>
+                  toast.success('Entry restored. The AI can use it again once processing finishes.'),
+                onError: (error) => toast.error(error.message),
+              })
+            }
+          >
+            Unarchive
+          </Button>
+        )}
 
         {/*
           Two presses rather than a confirm dialog — this list already opens modals for the things

@@ -17,6 +17,12 @@ export interface BuilderDimension {
   description: string | null;
 }
 
+export interface CompositeRange {
+  min: number;
+  max: number;
+  label: string;
+}
+
 export interface BuilderVersionSummary {
   id: string;
   version_number: number;
@@ -24,11 +30,17 @@ export interface BuilderVersionSummary {
   instructions: string | null;
   duration_minutes: number | null;
   scoring_algorithm: 'HOLLAND_CODE_TOP3' | 'WEIGHTED_COMPOSITE';
+  /** The composite's weights as fractions (SCCT: `{ SE: 0.4, OE: 0.3, GO: 0.3 }`). WEIGHTED_COMPOSITE only. */
+  composite_weights?: Record<string, number> | null;
+  /** The bands that name the composite ("High Career Confidence"), highest first. */
+  composite_ranges?: CompositeRange[] | null;
   created_at: string;
   /** Migration 0016 — NULL for a draft, and for a version archived before it ever published. */
   published_at: string | null;
   /** Migration 0037 — the version this one's questions were copied from, by either copy path. */
   source_version_id?: string | null;
+  /** Distinct students holding a scored result on this version. */
+  scored_student_count?: number;
 }
 
 /** The three item types the builder's type selector offers. */

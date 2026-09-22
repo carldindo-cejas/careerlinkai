@@ -4,6 +4,7 @@ import type { Database } from '@/db/client';
 import {
   counselorProfiles,
   passwordResetTokens,
+  staffEmailChangeRequests,
   users,
   type CounselorProfile,
   type User,
@@ -11,6 +12,12 @@ import {
 import type { AuthGuardDO } from '@/do/auth-guard';
 import type { Env } from '@/env';
 import {
+  EMAIL_CHANGE_LIMIT,
+  EMAIL_CHANGE_VERIFY_LIMIT,
+  EMAIL_CHANGE_VERIFY_WINDOW_SECONDS,
+  EMAIL_CHANGE_WINDOW_SECONDS,
+  emailChangeGuard,
+  emailChangeVerifyGuard,
   FORGOT_PASSWORD_LIMIT,
   FORGOT_PASSWORD_WINDOW_SECONDS,
   forgotPasswordGuard,
@@ -19,7 +26,12 @@ import {
   staffAuthGuard,
 } from '@/lib/auth-guard';
 import { staffTokenTtlHours } from '@/lib/config';
-import { generateToken, hashToken, timingSafeEqualString } from '@/lib/crypto';
+import {
+  generateNumericCode,
+  generateToken,
+  hashToken,
+  timingSafeEqualString,
+} from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { ApiError } from '@/lib/envelope';
 import { translateUniqueViolation } from '@/lib/db-errors';
@@ -32,7 +44,11 @@ import type {
   UpdateAccountInput,
 } from '@/modules/identity/schemas';
 import { AuditService } from '@/modules/platform/audit-service';
-import { sendPasswordResetEmail } from '@/modules/platform/email-service';
+import {
+  sendEmailChangeCodeEmail,
+  sendPasswordResetEmail,
+} from '@/modules/platform/email-service';
+import { NotificationService } from '@/modules/platform/notification-service';
 
 /**
  * Staff authentication — email + password (FULLPLAN §38).
@@ -50,6 +66,14 @@ import { sendPasswordResetEmail } from '@/modules/platform/email-service';
 
 const MODULE = 'Identity';
 
+/**
+ * An email-change code is short-lived for the same reason the signup code is: long enough to
+ * switch to a mail app and back, short enough that a code read over somebody's shoulder or left on
+ * a shared screen is not a standing key to their login identifier. The same number reaches the
+ * email copy and the UI, so neither can drift from the check that enforces it.
+ */
+export const EMAIL_CHANGE_CODE_TTL_MINUTES = 15;
+
 /** A password reset link is short-lived — an hour is long enough to read an email. */
 const RESET_TOKEN_TTL_MINUTES = 60;
 
@@ -63,6 +87,25 @@ const RESET_TOKEN_TTL_MINUTES = 60;
  */
 const DUMMY_PASSWORD_HASH =
   'pbkdf2$600000$dZreIrS9fIjHOYU91CWU6g==$EDb7oRae4IDjyuI3UNA93ZRoclko0iNFhyAbwQJhdfI=';
+
+/**
+ * A code was issued and mailed. Nothing here is a secret except `code`, which exists **only so
+ * the route can decide whether it may ever be shown** — it does so exclusively when
+ * `APP_ENV === 'local'`, exactly as `forgotPassword` treats its reset token, which is what lets
+ * the flow be exercised end to end in development and by the suite with no mail channel.
+ */
+export interface EmailChangeCodeIssued {
+  /** The address the code went to — echoed back so the UI can name it without trusting its own. */
+  email: string;
+  code: string;
+  expiresInMinutes: number;
+}
+
+/** A staged change, as the account page needs it after a reload. Never carries the code. */
+export interface PendingEmailChange {
+  email: string;
+  expiresInMinutes: number;
+}
 
 export interface LoginResult {
   user: User;
@@ -280,38 +323,41 @@ export class StaffAuthenticationService {
   }
 
   /**
-   * Change the address this account signs in with.
+   * **Step one of two.** Ask to change the address this account signs in with: prove the password,
+   * stage the change, and mail a six-digit code to the **new** address. Nothing about the account
+   * moves here.
    *
-   * Four things happen, and each one closes something the others would leave open:
+   * ## Why this is two steps (migration 0039)
    *
-   *   1. **The current password is verified**, on the DO, exactly as `changePassword` does — the
-   *      email is the login identifier *and* the reset destination, so changing it is a credential
-   *      change wearing a settings-field costume. An unattended session on a staffroom machine is
-   *      otherwise one form submission away from becoming somebody else's account.
-   *   2. **The new address is checked against every row, soft-deleted ones included**, because
-   *      `users_email_unique` covers them and a pre-check that did not would report success and
-   *      then 500. The index is still what actually holds the invariant — two requests can both
-   *      pass the pre-check — so the write is translated on the way out too.
-   *   3. **`email_verified_at` is cleared.** Nothing in this deployment gates on it, but it is the
-   *      record of an address having been proven, and this one has not been.
-   *   4. **Any pending reset token for the old address is deleted.** A link already mailed to the
-   *      mailbox this account just stopped using must not still open it.
+   * It used to be one, and the one it was did everything except the thing that matters. A password
+   * check answers "is this the account holder"; it cannot answer "does this mailbox exist and does
+   * this person read it". Since the address is the login identifier *and* the reset destination
+   * (§38), a single mistyped character used to cost the login, the recovery path and the account —
+   * irreversibly, since the old address stops working the moment the new one is written. Now a
+   * typo costs a code that never arrives, and the account stays exactly where it was.
    *
-   * What deliberately does *not* happen is a session revocation. Nothing the caller holds became
-   * less trustworthy — they proved the password a line ago — and signing them out of the tab they
-   * are reading the confirmation in is a punishment, not a protection.
+   * ## The checks, in the order they run and why that order
    *
-   * One consequence is worth naming: the §38 lockout counter is a Durable Object named after the
-   * email (`staffAuthGuard`), so the failed-login count starts fresh under the new address. That
-   * is the honest behaviour — the counter belongs to the address being attacked, not to the
-   * account — and every hash carries its own salt and iteration count, so nothing about
-   * verification depends on which instance derived it.
+   *   1. **The password, first.** Everything after it costs mail, database writes, or both, and
+   *      none of it should be reachable by somebody sitting at an unattended session.
+   *   2. **The throttle, before anything is mailed.** Five codes an hour per account, charged
+   *      whether or not the request succeeds — the Resend free tier is a hundred messages a day
+   *      shared with password resets, and this endpoint is authenticated but not therefore trusted.
+   *   3. **The address is not the current one**, which would otherwise mail a code to confirm a
+   *      change to nothing.
+   *   4. **The address is free**, soft-deleted rows included, because `users_email_unique` covers
+   *      them. Re-checked at commit: this is a courtesy so somebody is not told at step two that
+   *      the code they just fetched was pointless, not the thing that holds the invariant.
+   *
+   * What deliberately does *not* happen: no session is revoked (nothing the caller holds became
+   * less trustworthy) and `users.email` is not touched. The account signs in with its old address
+   * for as long as this stays unverified, which is what makes abandoning the flow free.
    */
-  async changeEmail(
+  async requestEmailChange(
     user: User,
     input: ChangeEmailInput,
     ipAddress: string | null,
-  ): Promise<{ user: User; counselorProfile: CounselorProfile | null }> {
+  ): Promise<EmailChangeCodeIssued> {
     const guard = this.guardFor(user);
 
     if (!(await guard.verify(input.current_password, user.password))) {
@@ -322,29 +368,239 @@ export class StaffAuthenticationService {
 
     const email = input.email.trim().toLowerCase();
 
+    await this.chargeEmailChangeThrottle(user);
+
     if (email === (user.email ?? '').toLowerCase()) {
       throw ApiError.validation({
         email: ['That is already the address on this account.'],
       });
     }
 
-    const taken = await this.db.query.users.findFirst({ where: eq(users.email, email) });
+    await this.assertEmailFree(email);
 
-    if (taken) {
-      throw ApiError.validation({ email: ['This email address is already in use.'] });
+    const code = await this.stageEmailChange(user, email);
+
+    await this.audit.write({
+      action: 'STAFF_EMAIL_CHANGE_REQUESTED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'user',
+      targetId: user.id,
+      oldValues: { email: user.email },
+      newValues: { email },
+      ipAddress,
+    });
+
+    await this.mailEmailChangeCode(user, email, code);
+
+    return { email, code, expiresInMinutes: EMAIL_CHANGE_CODE_TTL_MINUTES };
+  }
+
+  /**
+   * Issue a **new** code for a change already staged, leaving the destination alone.
+   *
+   * New rather than re-mailed, because the stored code is a hash and cannot be read back — which
+   * is the right property and not an inconvenience. The password is not asked for again: it was
+   * proven when the row was staged, the destination cannot be changed here, and re-asking would
+   * mean the one action that recovers "the mail never arrived" is also the one that needs the
+   * password typed into a page somebody may have walked away from.
+   *
+   * Returns `null` when nothing is staged (or what is staged has expired), so the route can say so
+   * instead of pretending a code is on its way. There is no enumeration concern to balance here:
+   * the caller is authenticated and the only account they can ask about is their own.
+   */
+  async resendEmailChangeCode(
+    user: User,
+    ipAddress: string | null,
+  ): Promise<EmailChangeCodeIssued | null> {
+    const staged = await this.liveEmailChange(user);
+
+    if (staged === null) {
+      return null;
     }
 
+    await this.chargeEmailChangeThrottle(user);
+
+    // Re-checked, because the address may have been taken by somebody else between the two steps.
+    // Better to say so now than to have them fetch a code that cannot be spent.
+    await this.assertEmailFree(staged.newEmail);
+
+    const code = await this.stageEmailChange(user, staged.newEmail);
+
+    await this.audit.write({
+      action: 'STAFF_EMAIL_CHANGE_REQUESTED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'user',
+      targetId: user.id,
+      oldValues: { email: user.email },
+      newValues: { email: staged.newEmail, resend: true },
+      ipAddress,
+    });
+
+    await this.mailEmailChangeCode(user, staged.newEmail, code);
+
+    return {
+      email: staged.newEmail,
+      code,
+      expiresInMinutes: EMAIL_CHANGE_CODE_TTL_MINUTES,
+    };
+  }
+
+  /**
+   * What is waiting on a code, if anything — so the account page can come back to the code step
+   * after a reload rather than silently forgetting a change that is still live.
+   *
+   * That reload is the normal case, not an edge one: the code arrives in a mail client, often on a
+   * different device, and coming back to the tab is how people read it.
+   *
+   * Expired rows are deleted here rather than reported. A code past its TTL is not a pending
+   * change, and leaving the row would make the page offer a resend for something the verify step
+   * would refuse anyway.
+   */
+  async pendingEmailChange(user: User): Promise<PendingEmailChange | null> {
+    const staged = await this.liveEmailChange(user);
+
+    if (staged === null) {
+      return null;
+    }
+
+    const elapsed = (Date.now() - new Date(staged.createdAt).getTime()) / 60_000;
+
+    return {
+      email: staged.newEmail,
+      // Rounded up, so "expires in 1 minute" is never shown for something with seconds left.
+      expiresInMinutes: Math.max(1, Math.ceil(EMAIL_CHANGE_CODE_TTL_MINUTES - elapsed)),
+    };
+  }
+
+  /**
+   * Abandon a staged change — the "wrong address, start again" path.
+   *
+   * Idempotent, and deliberately not an error when there is nothing staged: the button that calls
+   * this exists to make the page stop asking for a code, and a 404 in that situation would leave it
+   * asking. The failed-guess counter is cleared with the row, because it counted guesses against a
+   * code that no longer exists.
+   */
+  async cancelEmailChange(user: User, ipAddress: string | null): Promise<void> {
+    const staged = await this.db.query.staffEmailChangeRequests.findFirst({
+      where: eq(staffEmailChangeRequests.userId, user.id),
+    });
+
+    if (staged === undefined) {
+      return;
+    }
+
+    await this.db
+      .delete(staffEmailChangeRequests)
+      .where(eq(staffEmailChangeRequests.userId, user.id));
+    await emailChangeVerifyGuard(this.env, user.id).clear();
+
+    await this.audit.write({
+      action: 'STAFF_EMAIL_CHANGE_CANCELLED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'user',
+      targetId: user.id,
+      oldValues: { email: staged.newEmail },
+      ipAddress,
+    });
+  }
+
+  /**
+   * **Step two of two.** Spend the code and move the address.
+   *
+   * Four things happen here, and each one closes something the others would leave open:
+   *
+   *   1. **The guess is capped before the code is compared** (`emailChangeVerifyGuard`, five
+   *      failures then fifteen minutes), because six digits is 10^6 and that is not a credential
+   *      without a lockout. Checked *before* the comparison, so a locked account cannot be probed
+   *      at all — the same ordering as the staff login lockout.
+   *   2. **The new address is re-checked against every row, soft-deleted ones included.** The
+   *      pre-check at step one can be minutes old and `users_email_unique` covers deleted rows, so
+   *      the write is translated on the way out too — the index is what actually holds this.
+   *   3. **`email_verified_at` is set**, and this is the one line where the whole feature pays off.
+   *      The old single-step flow cleared it, honestly, because nothing had proven the address. A
+   *      code that came back from that mailbox is exactly that proof.
+   *   4. **Any pending reset token for the old address is deleted.** A link already mailed to the
+   *      mailbox this account just stopped using must not still open it.
+   *
+   * No session is revoked, for the same reason step one revokes none: the caller proved their
+   * password at step one and their mailbox at step two, so nothing they hold became less
+   * trustworthy, and signing them out of the tab showing the confirmation is a punishment rather
+   * than a protection.
+   *
+   * One consequence is worth naming: the §38 lockout counter is a Durable Object named after the
+   * email (`staffAuthGuard`), so the failed-login count starts fresh under the new address. That is
+   * the honest behaviour — the counter belongs to the address being attacked, not to the account —
+   * and every hash carries its own salt and iteration count, so nothing about verification depends
+   * on which instance derived it.
+   */
+  async verifyEmailChange(
+    user: User,
+    code: string,
+    ipAddress: string | null,
+  ): Promise<{ user: User; counselorProfile: CounselorProfile | null }> {
+    const guard = emailChangeVerifyGuard(this.env, user.id);
+    const lockout = await guard.check(EMAIL_CHANGE_VERIFY_LIMIT);
+
+    if (lockout.locked) {
+      throw this.codeLockoutError(lockout.retryAfterSeconds);
+    }
+
+    const staged = await this.db.query.staffEmailChangeRequests.findFirst({
+      where: eq(staffEmailChangeRequests.userId, user.id),
+    });
+
+    const invalid = ApiError.validation({
+      code: ['That code is invalid or has expired. Ask for a new one.'],
+    });
+
+    // Hashed unconditionally, before the row is known to exist: doing it inside the comparison
+    // would skip the derivation when nothing is staged, and the resulting timing difference is a
+    // (small) oracle for free — the same reasoning as `resetPassword`.
+    const presentedHash = await hashToken(code.trim());
+
+    if (
+      staged === undefined ||
+      // Constant-time over two hex digests, never `!==`.
+      !timingSafeEqualString(staged.codeHash, presentedHash)
+    ) {
+      return this.rejectEmailChangeCode(guard, invalid);
+    }
+
+    const ageMinutes = (Date.now() - new Date(staged.createdAt).getTime()) / 60_000;
+
+    if (ageMinutes > EMAIL_CHANGE_CODE_TTL_MINUTES) {
+      await this.db
+        .delete(staffEmailChangeRequests)
+        .where(eq(staffEmailChangeRequests.userId, user.id));
+
+      // Not charged against the guard: an expired code is the clock's doing, not a guess, and
+      // charging it would let somebody lock themselves out by leaving the tab open over lunch.
+      throw invalid;
+    }
+
+    const email = staged.newEmail;
+
+    await this.assertEmailFree(email);
+
     const timestamp = now();
-    const nextUser: User = { ...user, email, emailVerifiedAt: null, updatedAt: timestamp };
+    const nextUser: User = { ...user, email, emailVerifiedAt: timestamp, updatedAt: timestamp };
 
     try {
       await this.db
         .update(users)
-        .set({ email, emailVerifiedAt: null, updatedAt: timestamp })
+        .set({ email, emailVerifiedAt: timestamp, updatedAt: timestamp })
         .where(eq(users.id, user.id));
     } catch (error) {
       translateUniqueViolation(error, 'email', 'This email address is already in use.');
     }
+
+    await this.db
+      .delete(staffEmailChangeRequests)
+      .where(eq(staffEmailChangeRequests.userId, user.id));
+    await guard.clear();
 
     if (user.email !== null) {
       await this.db
@@ -362,6 +618,8 @@ export class StaffAuthenticationService {
       newValues: { email },
       ipAddress,
     });
+
+    await this.notifyAdministratorsOfEmailChange(user, email);
 
     return { user: nextUser, counselorProfile: await this.counselorProfileFor(user) };
   }
@@ -545,6 +803,181 @@ export class StaffAuthenticationService {
    * hypothetical email-less row still resolves to *some* stable instance rather than
    * crashing the derivation.
    */
+  /**
+   * Charge one email-change request against the account's hourly allowance.
+   *
+   * A **usage** limiter, charged whether or not the request goes on to succeed, because what it
+   * protects is the shared mail allowance rather than a secret — a caller who spends five attempts
+   * on refused addresses has still spent them. Unlike a wrong password, being told "too many
+   * attempts" here reveals nothing: it is a fact about the caller's own recent requests, on their
+   * own authenticated account.
+   */
+  private async chargeEmailChangeThrottle(user: User): Promise<void> {
+    const throttle = await emailChangeGuard(this.env, user.id).charge(
+      EMAIL_CHANGE_LIMIT,
+      EMAIL_CHANGE_WINDOW_SECONDS,
+    );
+
+    if (throttle.locked) {
+      throw ApiError.tooManyRequests({
+        email: [
+          `Too many email change requests. Try again in ${throttle.retryAfterSeconds} seconds.`,
+        ],
+      });
+    }
+  }
+
+  /**
+   * Soft-deleted rows count. `users_email_unique` covers them, so an address belonging to a deleted
+   * account is genuinely still taken, and a pre-check that ignored them would report success and
+   * then fail on the write.
+   */
+  private async assertEmailFree(email: string): Promise<void> {
+    const taken = await this.db.query.users.findFirst({ where: eq(users.email, email) });
+
+    if (taken) {
+      throw ApiError.validation({ email: ['This email address is already in use.'] });
+    }
+  }
+
+  /**
+   * Write (or replace) the staged change and return the plaintext code.
+   *
+   * One row per user, upserted: a second request replaces the first, so there is never a question
+   * of which of two codes is live. `createdAt` moves with the code because the TTL belongs to the
+   * code — leaving it would hand out a code that expires in whatever was left of the last one.
+   *
+   * The failed-guess counter is cleared alongside, for the reason `resend` exists at all: a fresh
+   * code deserves a fresh allowance, and carrying a previous code's failures onto it would let a
+   * resend inherit a lockout that no longer refers to anything.
+   */
+  private async stageEmailChange(user: User, email: string): Promise<string> {
+    // Six digits — only safe because `emailChangeVerifyGuard` stops at five wrong guesses.
+    const code = generateNumericCode(6);
+    const codeHash = await hashToken(code);
+    const createdAt = now();
+
+    await this.db
+      .insert(staffEmailChangeRequests)
+      .values({ userId: user.id, newEmail: email, codeHash, createdAt })
+      .onConflictDoUpdate({
+        target: staffEmailChangeRequests.userId,
+        set: { newEmail: email, codeHash, createdAt },
+      });
+
+    await emailChangeVerifyGuard(this.env, user.id).clear();
+
+    return code;
+  }
+
+  /**
+   * The staged change, if there is one that has not expired — and the expired one deleted on the
+   * way past, so a dead row cannot make the page offer a resend for something verify would refuse.
+   */
+  private async liveEmailChange(user: User) {
+    const staged = await this.db.query.staffEmailChangeRequests.findFirst({
+      where: eq(staffEmailChangeRequests.userId, user.id),
+    });
+
+    if (staged === undefined) {
+      return null;
+    }
+
+    const ageMinutes = (Date.now() - new Date(staged.createdAt).getTime()) / 60_000;
+
+    if (ageMinutes > EMAIL_CHANGE_CODE_TTL_MINUTES) {
+      await this.db
+        .delete(staffEmailChangeRequests)
+        .where(eq(staffEmailChangeRequests.userId, user.id));
+
+      return null;
+    }
+
+    return staged;
+  }
+
+  /**
+   * Awaited rather than fired into `waitUntil`, and its outcome deliberately unused: the sender
+   * cannot reject (see its contract in `email-service.ts`), and branching the response on whether
+   * the mail was delivered would tell the caller whether an address accepted mail, which is not
+   * theirs to learn from an endpoint they can aim anywhere.
+   */
+  private async mailEmailChangeCode(user: User, email: string, code: string): Promise<void> {
+    await sendEmailChangeCodeEmail(this.env, {
+      to: email,
+      code,
+      userId: user.id,
+      expiresInMinutes: EMAIL_CHANGE_CODE_TTL_MINUTES,
+    });
+  }
+
+  /** Charge one wrong guess and throw — the 429 replaces the 422 once the counter trips. */
+  private async rejectEmailChangeCode(
+    guard: DurableObjectStub<AuthGuardDO>,
+    invalid: ApiError,
+  ): Promise<never> {
+    const failure = await guard.recordFailure(
+      EMAIL_CHANGE_VERIFY_LIMIT,
+      EMAIL_CHANGE_VERIFY_WINDOW_SECONDS,
+    );
+
+    if (failure.locked) {
+      throw this.codeLockoutError(failure.retryAfterSeconds);
+    }
+
+    throw invalid;
+  }
+
+  private codeLockoutError(retryAfterSeconds: number): ApiError {
+    return ApiError.tooManyRequests({
+      code: [`Too many incorrect codes. Try again in ${retryAfterSeconds} seconds.`],
+    });
+  }
+
+  /**
+   * Tell every administrator that a staff account now answers to a different address (§44's
+   * in-app channel, category `ACCOUNT`).
+   *
+   * **Why this notification exists.** An administrator's picture of who works at the school is the
+   * counselor list, and that list is keyed by a name while the thing that actually identifies the
+   * account is the email. Before this, a counselor could change theirs and the only trace was an
+   * audit row nobody reads until something has already gone wrong. Both addresses are in the
+   * message because the old one is what an administrator recognises and the new one is what they
+   * will see from now on — a message carrying only the new address would be unreadable to the
+   * person it is for.
+   *
+   * It is sent **after** the commit and its failure cannot undo one. `NotificationService.send`
+   * inserts a row and nothing more, but a notification that threw here would roll a completed,
+   * audited identity change back into a 500 for the counselor — the same rule §11 applies to every
+   * listener, applied by hand because this is a direct call rather than an event.
+   */
+  private async notifyAdministratorsOfEmailChange(user: User, email: string): Promise<void> {
+    try {
+      const admins = await this.db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.role, 'admin'), eq(users.status, 'active'), isNull(users.deletedAt)));
+
+      if (admins.length === 0) {
+        return;
+      }
+
+      await new NotificationService(this.db).sendToMany(
+        admins.map((admin) => admin.id),
+        {
+          title: 'A staff sign-in email changed',
+          message: `${user.name} now signs in as ${email}${
+            user.email === null ? '' : ` (previously ${user.email})`
+          }. They confirmed the new address with a code sent to it.`,
+          category: 'ACCOUNT',
+        },
+      );
+    } catch {
+      // Swallowed on purpose — see the doc above. The audit row is the durable record of the
+      // change; this is the courtesy that rides on top of it.
+    }
+  }
+
   private guardFor(user: User): DurableObjectStub<AuthGuardDO> {
     return staffAuthGuard(this.env, user.email ?? user.id);
   }

@@ -12,8 +12,10 @@ import {
   MapPin,
   ScrollText,
   Settings,
+  SlidersHorizontal,
   Sparkles,
   Users,
+  RefreshCw,
 } from 'lucide-react';
 
 import { AppShell, type AppNavEntry } from '@/layouts/AppShell';
@@ -63,6 +65,11 @@ const nav: AppNavEntry[] = [
     items: [
       { to: paths.adminAssessmentTemplates, label: 'Assessments', icon: BookOpen },
       { to: paths.adminCounselors, label: 'Counselors', icon: Users },
+      // The §27 weights (2026-09-21). Administration rather than Catalog: the catalog rows are the
+      // things a recommendation is drawn *from*, and this is the arithmetic that draws them.
+      { to: paths.adminFormula, label: 'Formula', icon: SlidersHorizontal },
+      // Recompute saved recommendations after a catalog or formula change, and preview a student.
+      { to: paths.adminMatching, label: 'Matching', icon: RefreshCw },
       { to: paths.adminPlatformUsage, label: 'Platform health', icon: Activity },
       { to: paths.adminAuditLog, label: 'Audit log', icon: ScrollText },
     ],

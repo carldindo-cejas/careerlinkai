@@ -1,4 +1,15 @@
-import { ChevronDown, GitMerge, Loader2, MapPin, Pencil, Plus, X } from 'lucide-react';
+import {
+  ChevronDown,
+  Download,
+  GitMerge,
+  Link2,
+  Loader2,
+  MapPin,
+  Pencil,
+  Plus,
+  Upload,
+  X,
+} from 'lucide-react';
 import { type FormEvent, useMemo, useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
@@ -16,17 +27,20 @@ import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue
 import { useListFilters } from '@/hooks/useListFilters';
 import type { CanonicalProgramListQuery } from '@/services/catalogApi';
 import { toast } from '@/stores/toastStore';
+import { CanonicalCareerMapping } from '@/features/admin/components/CanonicalCareerMapping';
+import { MappingImportPanel } from '@/features/admin/components/MappingImportPanel';
 import {
   CANONICAL_OPTION_LIMIT,
   useCanonicalProgramColleges,
   useCanonicalProgramOptions,
   useCanonicalPrograms,
   useCreateCanonicalProgram,
+  useExportMapping,
   useMergeCanonicalPrograms,
   useUpdateCanonicalProgram,
 } from '@/features/admin/hooks/useCatalog';
 import { ApiRequestError } from '@/types/api';
-import type { CanonicalProgram } from '@/types/catalog';
+import { STRANDS, type CanonicalProgram, type Strand } from '@/types/catalog';
 
 /**
  * The canonical program catalog (backend migration 0018).
@@ -48,14 +62,22 @@ import type { CanonicalProgram } from '@/types/catalog';
  * ## Merge is the important control
  *
  * Editing a name is cosmetic. **Merge** re-points every college offering that named the absorbed
- * entry and retires it, which is the one operation that changes what students are shown. It
- * confirms first, and it is audited as its own action (`CANONICAL_PROGRAM_MERGED`) rather than as
- * an update, because the row it writes records how many offerings moved — the only trace of a
- * change nothing else logs.
+ * entry and retires it. It confirms first, and it is audited as its own action
+ * (`CANONICAL_PROGRAM_MERGED`) rather than as an update, because the row it writes records how many
+ * offerings moved — the only trace of a change nothing else logs.
+ *
+ * ## And this is where a program's careers live (backend migration 0040)
+ *
+ * What a program leads to used to be linked on each college's offering, one campus at a time. It is
+ * now linked here, once, and every offering inherits it — which makes this page, not the college
+ * pages, the place that decides which programs a student's RIASEC profile is matched to. The strand
+ * works the same way, as a default: changing it here writes it to every offering.
  */
 export function CanonicalProgramPage() {
   const [isAdding, setIsAdding] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [editing, setEditing] = useState<CanonicalProgram | null>(null);
+  const exportMapping = useExportMapping();
   const [merging, setMerging] = useState<CanonicalProgram | null>(null);
 
   const filters = useListFilters<'active' | 'archived'>();
@@ -84,23 +106,47 @@ export function CanonicalProgramPage() {
           <h1 className="text-xl font-semibold text-foreground">Canonical programs</h1>
           <p className="text-sm text-muted-foreground">
             One entry per program as a thing in the world — &ldquo;BS Computer Science&rdquo; —
-            of which each college&apos;s program is one offering. This is what makes{' '}
-            <em>&ldquo;which colleges offer this?&rdquo;</em> answerable for a student.
+            of which each college&apos;s program is one offering. The careers linked here are what
+            every offering of it is matched to a student&apos;s results on.
           </p>
         </div>
 
-        {!isAdding ? (
-          <Button onClick={() => setIsAdding(true)}>
-            <Plus className="size-4" aria-hidden="true" />
-            Add canonical program
+        <div className="flex flex-wrap items-center gap-2">
+          {/*
+            The mapping as a spreadsheet: export it (also the backup to take before a big change),
+            edit it anywhere, import it back after a preview.
+          */}
+          <Button
+            variant="secondary"
+            loading={exportMapping.isPending}
+            onClick={() =>
+              exportMapping.mutate(undefined, {
+                onSuccess: (count) => toast.success(`Exported ${count} links.`),
+              })
+            }
+          >
+            <Download className="size-4" aria-hidden="true" />
+            Export CSV
           </Button>
-        ) : null}
+          <Button variant="secondary" onClick={() => setIsImporting(true)}>
+            <Upload className="size-4" aria-hidden="true" />
+            Import CSV
+          </Button>
+          {!isAdding ? (
+            <Button onClick={() => setIsAdding(true)}>
+              <Plus className="size-4" aria-hidden="true" />
+              Add canonical program
+            </Button>
+          ) : null}
+        </div>
       </div>
 
+      {isImporting ? <MappingImportPanel onDone={() => setIsImporting(false)} /> : null}
+
       <Alert tone="info">
-        Existing programs were grouped automatically by their code when this feature was added. That
-        is a starting point, not a verdict — use <strong>Merge</strong> where two entries are really
-        the same program.
+        Link a career here once and every college offering the program leads to it. A college page
+        can still add an extra career for that campus alone. Where two entries are really the same
+        program, use <strong>Merge</strong>.
       </Alert>
 
       {isAdding ? <CanonicalForm onDone={() => setIsAdding(false)} /> : null}
@@ -207,9 +253,12 @@ function CanonicalRow({
   onMerge: () => void;
 }) {
   const [showColleges, setShowColleges] = useState(false);
+  const [showCareers, setShowCareers] = useState(false);
   const { data, isLoading } = useCanonicalProgramColleges(entry.id, showColleges);
 
   const count = entry.offerings_count ?? 0;
+  const careers = entry.careers ?? [];
+  const scoring = careers.filter((career) => career.status === 'active').length;
 
   return (
     <Card>
@@ -220,6 +269,12 @@ function CanonicalRow({
               {entry.name}
               <Badge>{entry.code}</Badge>
               {entry.status === 'archived' ? <Badge tone="warning">Archived</Badge> : null}
+              {/*
+                Said on the row, not only inside the editor: an entry with no active career is one
+                every student's program list scores at a flat neutral, and it should be findable by
+                scanning the page rather than by opening forty editors.
+              */}
+              {scoring === 0 ? <Badge tone="warning">No careers — not matched</Badge> : null}
             </p>
             <p className="mt-0.5 text-sm text-muted-foreground">
               {/*
@@ -229,6 +284,8 @@ function CanonicalRow({
               {count === 0
                 ? 'No college currently offers this'
                 : `${count} college ${count === 1 ? 'offering' : 'offerings'}`}
+              {` · leads to ${careers.length} ${careers.length === 1 ? 'career' : 'careers'}`}
+              {` · ${entry.recommended_strand ?? 'no strand requirement'}`}
               {entry.description ? ` · ${entry.description}` : null}
             </p>
           </div>
@@ -241,6 +298,16 @@ function CanonicalRow({
             undone from this screen (P2-3's rule, applied to the row actions).
           */}
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowCareers((c) => !c)}
+              aria-expanded={showCareers}
+              aria-label={`${showCareers ? 'Hide' : 'Edit'} careers ${entry.code} leads to`}
+            >
+              <Link2 className="size-4" aria-hidden="true" />
+              {showCareers ? 'Hide careers' : 'Careers'}
+            </Button>
             <Button
               variant="secondary"
               size="sm"
@@ -265,6 +332,8 @@ function CanonicalRow({
             </Button>
           </div>
         </div>
+
+        {showCareers ? <CanonicalCareerMapping entry={entry} /> : null}
 
         {showColleges ? (
           isLoading ? (
@@ -308,6 +377,9 @@ function CanonicalRow({
   );
 }
 
+/** A native select's value is always a string; this keeps "no requirement" distinguishable. */
+const NO_STRAND = '__none__';
+
 function CanonicalForm({ entry, onDone }: { entry?: CanonicalProgram; onDone: () => void }) {
   const create = useCreateCanonicalProgram();
   const update = useUpdateCanonicalProgram();
@@ -316,18 +388,31 @@ function CanonicalForm({ entry, onDone }: { entry?: CanonicalProgram; onDone: ()
   const [code, setCode] = useState(entry?.code ?? '');
   const [name, setName] = useState(entry?.name ?? '');
   const [description, setDescription] = useState(entry?.description ?? '');
+  const initialStrand = entry?.recommended_strand ?? NO_STRAND;
+  const [strand, setStrand] = useState<string>(initialStrand);
 
   const serverError = mutation.error instanceof ApiRequestError ? mutation.error : null;
+  const strandChanged = strand !== initialStrand;
+  const offerings = entry?.offerings_count ?? 0;
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
 
     if (mutation.isPending) return;
 
+    const recommendedStrand = strand === NO_STRAND ? null : (strand as Strand);
+
     const payload = {
       code: code.trim(),
       name: name.trim(),
       description: description.trim() === '' ? null : description.trim(),
+      /*
+        On an edit, sent **only when changed**. The server writes a changed strand to every
+        offering of the program, and a campus may deliberately differ — so a rename that happened
+        to resend the unchanged value must not be able to flatten it. (The server also compares
+        against what is stored; this keeps the request saying what the admin actually did.)
+      */
+      ...(entry === undefined || strandChanged ? { recommended_strand: recommendedStrand } : {}),
     };
 
     if (entry) {
@@ -335,7 +420,11 @@ function CanonicalForm({ entry, onDone }: { entry?: CanonicalProgram; onDone: ()
         { id: entry.id, payload },
         {
           onSuccess: (saved) => {
-            toast.success(`Saved ${saved.name}.`);
+            toast.success(
+              strandChanged && offerings > 0
+                ? `Saved ${saved.name}. The strand now applies to all ${offerings} college ${offerings === 1 ? 'offering' : 'offerings'}.`
+                : `Saved ${saved.name}.`,
+            );
             onDone();
           },
         },
@@ -395,7 +484,7 @@ function CanonicalForm({ entry, onDone }: { entry?: CanonicalProgram; onDone: ()
               ) : null}
             </div>
 
-            <div className="flex flex-col gap-1.5 sm:col-span-3">
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
               <Label htmlFor="canonical-description">Description (optional)</Label>
               <Input
                 id="canonical-description"
@@ -403,7 +492,41 @@ function CanonicalForm({ entry, onDone }: { entry?: CanonicalProgram; onDone: ()
                 onChange={(event) => setDescription(event.target.value)}
               />
             </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="canonical-strand">Recommended strand</Label>
+              <Select
+                id="canonical-strand"
+                value={strand}
+                aria-invalid={Boolean(serverError?.fieldError('recommended_strand'))}
+                onChange={(event) => setStrand(event.target.value)}
+              >
+                <option value={NO_STRAND}>No strand requirement</option>
+                {STRANDS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </Select>
+              {serverError?.fieldError('recommended_strand') ? (
+                <p className="text-sm text-destructive">
+                  {serverError.fieldError('recommended_strand')}
+                </p>
+              ) : null}
+            </div>
           </div>
+
+          {/*
+            Said before saving, because it is the one field here whose effect reaches past this row:
+            every college's offering is rewritten, including any campus that had been set apart.
+          */}
+          {entry && strandChanged && offerings > 0 ? (
+            <Alert tone="warning">
+              Saving applies this strand to all {offerings} college{' '}
+              {offerings === 1 ? 'offering' : 'offerings'} of {entry.code}, replacing any campus
+              that was set differently. A campus can be set apart again on its college page.
+            </Alert>
+          ) : null}
 
           <div className="flex gap-2">
             <Button type="submit" loading={mutation.isPending}>

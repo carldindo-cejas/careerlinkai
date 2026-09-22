@@ -268,3 +268,116 @@ export function interpret(
 
   return band?.label ?? null;
 }
+
+// --- Editing the composite (the Scoring panel) ------------------------------------------------
+
+/** How far a weight total may drift from 1 and still count as 100% — float slack, nothing more. */
+const WEIGHT_SUM_TOLERANCE = 0.001;
+
+/**
+ * Check a `WEIGHTED_COMPOSITE` config an author is about to save or publish, returning the 422's
+ * field errors (or `null` when it is sound).
+ *
+ * The scorer is deliberately forgiving — an unknown key is skipped, weights are renormalized, a
+ * score no band covers gets no label — because a *published* instrument must degrade rather than
+ * fail a student mid-result. That forgiveness is exactly why the checks live here instead: every
+ * one of those quiet fallbacks is a mistake an author could make, and the place to catch it is
+ * before publish, when it can still be fixed.
+ *
+ * Bands follow the seeded convention: adjacent bands **share** their edge (`68–84`, `84–100`), and
+ * `interpret()` takes the first match, so a boundary score belongs to the band listed first. The
+ * editor may send the rows in any order; `normalizeCompositeRanges` sorts them highest-first so a
+ * score of exactly 84 always reads as the higher band, matching the seed.
+ */
+export function compositeConfigErrors(
+  weights: Record<string, number> | undefined,
+  ranges: InterpretationRange[] | undefined,
+  dimensionCodes: string[],
+): Record<string, string[]> | null {
+  const errors: Record<string, string[]> = {};
+  const weightErrors: string[] = [];
+  const known = new Set(dimensionCodes);
+  const entries = Object.entries(weights ?? {});
+
+  if (entries.length === 0) {
+    weightErrors.push('Give at least one dimension a weight.');
+  }
+
+  for (const [code, weight] of entries) {
+    if (!known.has(code)) {
+      weightErrors.push(`"${code}" is not a dimension of this assessment.`);
+    } else if (!Number.isFinite(weight) || weight <= 0 || weight > 1) {
+      weightErrors.push(`${code} must be more than 0% and at most 100%.`);
+    }
+  }
+
+  const sum = entries.reduce((total, [, weight]) => total + weight, 0);
+
+  if (entries.length > 0 && Math.abs(sum - 1) > WEIGHT_SUM_TOLERANCE) {
+    weightErrors.push(`The weights add up to ${Math.round(sum * 1000) / 10}%, not 100%.`);
+  }
+
+  if (weightErrors.length > 0) {
+    errors.composite_weights = weightErrors;
+  }
+
+  const rangeErrors = bandErrors(ranges ?? []);
+
+  if (rangeErrors.length > 0) {
+    errors.composite_ranges = rangeErrors;
+  }
+
+  return Object.keys(errors).length === 0 ? null : errors;
+}
+
+function bandErrors(ranges: InterpretationRange[]): string[] {
+  if (ranges.length === 0) {
+    return ['Add at least one band.'];
+  }
+
+  const errors: string[] = [];
+
+  for (const range of ranges) {
+    if (range.label.trim() === '') {
+      errors.push(`The ${range.min}–${range.max} band needs a label.`);
+    }
+
+    if (range.min >= range.max) {
+      errors.push(`The ${range.min}–${range.max} band must start below where it ends.`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return errors;
+  }
+
+  const ascending = [...ranges].sort((a, b) => a.min - b.min);
+
+  if (ascending[0]!.min !== 0) {
+    errors.push('The lowest band must start at 0.');
+  }
+
+  if (ascending[ascending.length - 1]!.max !== 100) {
+    errors.push('The highest band must end at 100.');
+  }
+
+  for (let i = 1; i < ascending.length; i++) {
+    const previous = ascending[i - 1]!;
+    const current = ascending[i]!;
+
+    if (current.min > previous.max) {
+      errors.push(`Nothing covers ${previous.max}–${current.min}.`);
+    } else if (current.min < previous.max) {
+      errors.push(`"${previous.label}" and "${current.label}" overlap.`);
+    }
+  }
+
+  return errors;
+}
+
+/** Highest band first, labels trimmed — the order `interpret()` relies on for shared edges. */
+export function normalizeCompositeRanges(ranges: InterpretationRange[]): InterpretationRange[] {
+  return [...ranges]
+    .sort((a, b) => b.min - a.min)
+    .map((range) => ({ min: range.min, max: range.max, label: range.label.trim() }));
+}

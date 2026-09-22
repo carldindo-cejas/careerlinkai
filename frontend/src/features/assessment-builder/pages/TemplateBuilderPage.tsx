@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { QuestionWorkspace } from '@/features/assessment-builder/components/QuestionWorkspace';
+import { ScoringPanel } from '@/features/assessment-builder/components/ScoringPanel';
 import {
   useAddDimensions,
   useArchiveVersion,
@@ -316,6 +317,9 @@ function VersionsCard({
                   onClick={() => onSelect(version.id)}
                 >
                   v{version.version_number} · {version.status}
+                  {version.scored_student_count === undefined
+                    ? null
+                    : ` · ${studentsScored(version.scored_student_count)}`}
                 </Button>
                 {/* Only on a frozen version, and only for someone who may write to this template.
                     A DRAFT is already editable in place, and offering to copy it there would invite
@@ -508,6 +512,22 @@ function VersionWorkspace({
         dimensions={dimensions}
         editable={draft}
       />
+
+      {/*
+        The composite's weights and bands (SCCT's 40/30/30). Only a weighted composite has any, and
+        only with dimensions to weight. A published version without weights has nothing to show.
+        Keyed on the saved config so a save re-seeds the fields from what the server stored.
+      */}
+      {review.scoring_algorithm === 'WEIGHTED_COMPOSITE' &&
+      dimensions.length > 0 &&
+      (draft || review.composite_weights) ? (
+        <ScoringPanel
+          key={`${review.id}:${JSON.stringify(review.composite_weights ?? null)}:${JSON.stringify(review.composite_ranges ?? null)}`}
+          review={review}
+          dimensions={dimensions}
+          editable={draft}
+        />
+      ) : null}
 
       {draft ? <PublishCard review={review} templateId={templateId} /> : null}
     </>
@@ -772,4 +792,9 @@ function PublishCard({ review, templateId }: { review: VersionReview; templateId
       ) : null}
     </Card>
   );
+}
+
+/** "1 student scored", "12 students scored" — how many results a version already stands behind. */
+function studentsScored(count: number): string {
+  return `${count} ${count === 1 ? 'student' : 'students'} scored`;
 }

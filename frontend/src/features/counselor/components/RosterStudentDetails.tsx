@@ -244,7 +244,9 @@ function Recommendations({ studentId, name }: { studentId: string; name: string 
         */}
         <span className="text-xs text-muted-foreground">
           {set
-            ? `Computed ${new Date(set.generated_at).toLocaleString()}. Rebuild to include catalog entries added since.`
+            ? set.stale
+              ? `Computed ${new Date(set.generated_at).toLocaleString()}, before the latest catalog or formula change. Rebuild to see what this student would be recommended today.`
+              : `Computed ${new Date(set.generated_at).toLocaleString()}. Rebuild to include catalog entries added since.`
             : 'Rebuilding is safe to press at any time — it replaces the set rather than adding to it.'}
         </span>
       </div>
