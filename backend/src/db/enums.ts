@@ -28,6 +28,15 @@ export type EnrollmentStatus = (typeof ENROLLMENT_STATUSES)[number];
  * yet offered" state, so `draft` is deliberately absent: it belongs to programs alone.
  */
 export const CATALOG_STATUSES = ['active', 'archived'] as const;
+
+/**
+ * How strongly a program leads to a career (migration 0041) — the source catalog's own taxonomy.
+ * `direct`: the program's natural destination. `related`: a common path for its graduates.
+ * `conditional`: reachable with an extra credential or licence. The formula's `linkWeights` say how
+ * much each counts; `direct` counts fully, so every link made before 0041 scores exactly as before.
+ */
+export const LINK_RELATIONSHIPS = ['direct', 'related', 'conditional'] as const;
+export type LinkRelationship = (typeof LINK_RELATIONSHIPS)[number];
 export type CatalogStatus = (typeof CATALOG_STATUSES)[number];
 
 /**

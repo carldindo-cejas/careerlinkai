@@ -256,6 +256,65 @@ export async function sendCounselorSignupCodeEmail(
   });
 }
 
+const EMAIL_CHANGE_PIPELINE = 'staff_email_change_email';
+
+export interface EmailChangeCodeEmailInput {
+  /** **The address being moved to** — never the one on the account today. See below. */
+  to: string;
+  /** The six-digit code, in plaintext. **Never logged**, same rule as every other credential here. */
+  code: string;
+  /** For the log line, so an operator can correlate without either address being written down. */
+  userId: string;
+  /** Mirrors `EMAIL_CHANGE_CODE_TTL_MINUTES`, so the copy cannot drift from the check. */
+  expiresInMinutes: number;
+}
+
+/**
+ * The code that proves a staff member can actually open the address they are moving to
+ * (migration 0039).
+ *
+ * **It goes to the new address, and that is the entire mechanism.** A code sent to the address on
+ * the account today would prove only what the password already proved; sending it to the
+ * destination is what turns a typo into "no code arrived" instead of a locked-out account with no
+ * reset path. Everything else here is copy.
+ *
+ * The body says what is being changed and what happens if the reader was not expecting it. That
+ * matters more than in the signup code: this message can land in the mailbox of somebody who has
+ * nothing to do with CareerLinkAI, because a mistyped address is a real address belonging to a
+ * stranger. "Ignore this and nothing happens" has to be true and has to be said.
+ */
+export async function sendEmailChangeCodeEmail(
+  env: Env,
+  input: EmailChangeCodeEmailInput,
+): Promise<EmailOutcome> {
+  const logger = pipelineLogger(EMAIL_CHANGE_PIPELINE, { user_id: input.userId, kind: 'code' });
+
+  return deliver(env, logger, {
+    to: input.to,
+    subject: 'Confirm your new CareerLinkAI email address',
+    text: [
+      'Confirm your new CareerLinkAI email address',
+      '',
+      'Someone asked to move a CareerLinkAI staff account to this email address.',
+      `Enter this code on the account page within ${input.expiresInMinutes} minutes:`,
+      '',
+      input.code,
+      '',
+      'Until that code is entered, nothing changes — the account still signs in with its old',
+      'address. If you were not expecting this, you can ignore this email.',
+    ].join('\n'),
+    html: [
+      '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.5;color:#111">',
+      '<h1 style="font-size:20px;margin:0 0 16px">Confirm your new email address</h1>',
+      '<p style="margin:0 0 16px">Someone asked to move a CareerLinkAI staff account to this email address.</p>',
+      `<p style="margin:0 0 8px">Enter this code on the account page within ${input.expiresInMinutes} minutes:</p>`,
+      `<p style="margin:0 0 24px;font-size:32px;font-weight:700;letter-spacing:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(input.code)}</p>`,
+      '<p style="margin:0;font-size:13px;color:#555">Until that code is entered nothing changes \u2014 the account still signs in with its old address. If you were not expecting this, ignore this email.</p>',
+      '</div>',
+    ].join(''),
+  });
+}
+
 /**
  * Sent instead of a code when the address **already has an account** (migration 0034).
  *

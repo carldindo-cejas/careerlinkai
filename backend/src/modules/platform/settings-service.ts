@@ -43,6 +43,27 @@ export type AppSettingKey = keyof typeof APP_SETTINGS;
 
 export const APP_SETTING_KEYS = Object.keys(APP_SETTINGS) as AppSettingKey[];
 
+/**
+ * Keys in `app_settings` that are **not flags**, and are owned by another service.
+ *
+ * The table is generic; this registry is not. A second kind of setting therefore needs somewhere to
+ * declare itself, or the two owners find out they share a key the first time one of them overwrites
+ * the other. Listed here, `test/platform/settings.test.ts` can assert the two registries are
+ * disjoint, and a reader of this file can see that `app_settings` holds more than these flags.
+ *
+ * Nothing here is readable or writable through `SettingsService` or `PATCH /admin/settings`: `all()`
+ * only ever returns `APP_SETTING_KEYS`, and the PATCH body is `.strict()` over the same list.
+ *
+ *   * `recommendation_formula` — the §27 match weights, JSON, owned by
+ *     `modules/recommendation/formula-service.ts` (2026-09-21).
+ *   * `recommendation_inputs_changed_at` — an ISO timestamp of the last change to anything §27
+ *     scores against, owned by `modules/recommendation/freshness-service.ts` (2026-09-22).
+ */
+export const NON_FLAG_SETTING_KEYS = [
+  'recommendation_formula',
+  'recommendation_inputs_changed_at',
+] as const;
+
 const MODULE = 'Platform';
 
 /** The stored representation. `'true'` and nothing else is true — see `get`. */

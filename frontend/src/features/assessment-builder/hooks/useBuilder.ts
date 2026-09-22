@@ -259,6 +259,17 @@ export function useConfirmMapping(versionId: string) {
   });
 }
 
+/** Save a draft's composite weights and bands; the version refetches so the panel re-seeds. */
+export function useUpdateScoringConfig(versionId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload: Parameters<typeof builderApi.updateScoringConfig>[1]) =>
+      builderApi.updateScoringConfig(versionId, payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: builderKeys.version(versionId) }),
+  });
+}
+
 export function usePublishVersion(versionId: string, templateId: string) {
   const queryClient = useQueryClient();
 

@@ -111,6 +111,33 @@ export const SIGNUP_VERIFY_LIMIT = 5;
 export const SIGNUP_VERIFY_WINDOW_SECONDS = 15 * 60;
 
 /**
+ * Migration 0039: 5 email-change codes per account per hour. A **usage** limiter — every request
+ * is charged, allowed or not, because what it protects is the mail allowance rather than a secret.
+ *
+ * Keyed on the user id rather than on an address, and that is the whole point: the address a code
+ * is sent to is chosen by the caller, so a per-address counter would be a counter an attacker
+ * resets by typing a different destination. Five leaves room for the honest sequence (mistype the
+ * address, ask again, ask for a resend) inside a hundred-a-day Resend allowance shared with
+ * password resets.
+ */
+export const EMAIL_CHANGE_LIMIT = 5;
+export const EMAIL_CHANGE_WINDOW_SECONDS = 60 * 60;
+
+/**
+ * Migration 0039: 5 **failed** code attempts per account → 15 minutes. The same numbers as the
+ * signup-code lockout and the login lockout, because it is the same instrument guarding the same
+ * kind of thing — a six-digit credential, which is 10^6 and therefore not a credential at all
+ * without a cap on guesses.
+ *
+ * Failures only: a correct code calls `clear()`, so mistyping twice and then getting it right
+ * leaves a clean counter. A separate instance from `emailChangeGuard` above, for the reason every
+ * prefix in this file exists — running out of guesses must not also stop you asking for a new code,
+ * which is the one action that recovers the situation.
+ */
+export const EMAIL_CHANGE_VERIFY_LIMIT = 5;
+export const EMAIL_CHANGE_VERIFY_WINDOW_SECONDS = 15 * 60;
+
+/**
  * Audit C4: 5 recommendation regenerations per student per 10 minutes. A usage limiter — every
  * attempt is charged, allowed or not.
  *
@@ -254,6 +281,24 @@ export function signupThrottleGuard(env: Env, ip: string | null): DurableObjectS
  */
 export function signupVerifyGuard(env: Env, email: string): DurableObjectStub<AuthGuardDO> {
   return env.AUTH_DO.get(env.AUTH_DO.idFromName(`signup-verify:${email.trim().toLowerCase()}`));
+}
+
+/**
+ * One instance per **account** for the email-change code throttle (migration 0039), and a second
+ * for its failed-guess counter.
+ *
+ * Keyed on the user id, unlike every other guard in this file that deals with an email: the
+ * addresses involved are the one being left (which would let a change *away* from an address be
+ * throttled by activity against it) and the one being requested (which the caller picks, and can
+ * pick differently). The account is the thing that is constant across the flow and the thing whose
+ * mail spend is being capped.
+ */
+export function emailChangeGuard(env: Env, userId: string): DurableObjectStub<AuthGuardDO> {
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`email-change:${userId}`));
+}
+
+export function emailChangeVerifyGuard(env: Env, userId: string): DurableObjectStub<AuthGuardDO> {
+  return env.AUTH_DO.get(env.AUTH_DO.idFromName(`email-change-verify:${userId}`));
 }
 
 /**

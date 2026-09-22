@@ -16,6 +16,7 @@ import {
   assessmentQuestions,
   assessmentTemplates,
   assessmentVersions,
+  classes,
   questionDimensions,
   questionOptions,
   type AssessmentDimension,
@@ -32,6 +33,7 @@ import { chunkForInsert } from '@/lib/d1-batching';
 import { now } from '@/lib/datetime';
 import { translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError } from '@/lib/envelope';
+import { compositeConfigErrors, normalizeCompositeRanges } from '@/lib/scoring';
 import { AssessmentTaxonomyService } from '@/modules/assessment/assessment-taxonomy-service';
 import { AuditService } from '@/modules/platform/audit-service';
 
@@ -1279,6 +1281,102 @@ export class AssessmentBuilderService {
     return { ...version, status };
   }
 
+  /**
+   * **Re-weight a draft's composite** — the SCCT weights and the bands that name its result.
+   *
+   * Draft-only, by the same rule as every question edit: a published version's weights are what its
+   * students' scores were computed under, and `compositeIndexFor` recomputes from them on every
+   * read, so changing them in place would silently rewrite results already shown to students. The
+   * edit path for a published instrument is Duplicate, which carries the weights into the new draft.
+   *
+   * The algorithm itself is not editable here; only the two numbers-as-data fields it reads.
+   */
+  async updateScoringConfig(
+    user: User,
+    version: AssessmentVersion,
+    input: { compositeWeights: Record<string, number>; compositeRanges: InterpretationRange[] },
+  ): Promise<AssessmentVersion> {
+    this.assertVersionEditable(version);
+
+    if (version.scoringConfig.algorithm !== 'WEIGHTED_COMPOSITE') {
+      throw ApiError.validation(
+        { scoring_config: ['Only a weighted-composite assessment has weights to edit.'] },
+        'This assessment is not scored by a weighted composite.',
+      );
+    }
+
+    const codes = (await this.dimensionsFor(version.assessmentTemplateId)).map((d) => d.code);
+    const errors = compositeConfigErrors(input.compositeWeights, input.compositeRanges, codes);
+
+    if (errors !== null) {
+      throw ApiError.validation(errors, 'These weights or bands cannot be saved.');
+    }
+
+    const scoringConfig: ScoringConfig = {
+      ...version.scoringConfig,
+      composite_weights: { ...input.compositeWeights },
+      composite_ranges: normalizeCompositeRanges(input.compositeRanges),
+    };
+
+    await this.db
+      .update(assessmentVersions)
+      .set({ scoringConfig })
+      .where(eq(assessmentVersions.id, version.id));
+
+    await this.audit.write({
+      userId: user.id,
+      action: 'VERSION_SCORING_CONFIG_UPDATED',
+      module: MODULE,
+      targetType: 'assessment_version',
+      targetId: version.id,
+      oldValues: {
+        composite_weights: version.scoringConfig.composite_weights ?? null,
+        composite_ranges: version.scoringConfig.composite_ranges ?? null,
+      },
+      newValues: {
+        composite_weights: scoringConfig.composite_weights,
+        composite_ranges: scoringConfig.composite_ranges,
+        version_number: version.versionNumber,
+      },
+    });
+
+    return { ...version, scoringConfig };
+  }
+
+  /**
+   * Publish-time check on the composite. The scorer's fallbacks (skip an unknown key, average when
+   * no weight matches) are right for a student's result and wrong for an author's mistake, so a
+   * version must not go out relying on them.
+   *
+   * SCCT must carry weights. A CUSTOM weighted-composite survey with *no* weights at all is left
+   * alone: an equal-weight mean is what it has always been scored as, and is a legitimate choice.
+   * Once weights are set, though, they must be sound.
+   */
+  private async assertCompositeConfigSound(version: AssessmentVersion): Promise<void> {
+    const config = version.scoringConfig;
+
+    if (config.algorithm !== 'WEIGHTED_COMPOSITE') {
+      return;
+    }
+
+    const template = await this.findTemplate(version.assessmentTemplateId);
+    const configured = config.composite_weights !== undefined || config.composite_ranges !== undefined;
+
+    if (template?.category !== 'SCCT' && !configured) {
+      return;
+    }
+
+    const codes = (await this.dimensionsFor(version.assessmentTemplateId)).map((d) => d.code);
+    const errors = compositeConfigErrors(config.composite_weights, config.composite_ranges, codes);
+
+    if (errors !== null) {
+      throw ApiError.validation(
+        errors,
+        'Fix the scoring weights and bands before this version can be published.',
+      );
+    }
+  }
+
   async findVersion(versionId: string): Promise<AssessmentVersion | undefined> {
     const [version] = await this.db
       .select()
@@ -1287,6 +1385,54 @@ export class AssessmentBuilderService {
       .limit(1);
 
     return version;
+  }
+
+  /**
+   * How many **students** hold a scored result on each version — one query for the whole list.
+   *
+   * Distinct students, not attempts, and SCORED only: a reset expires the old attempt (it is never
+   * deleted), so counting rows would double-count every retake. This is the number an author needs
+   * before re-weighting: these students keep the scores this version gave them.
+   *
+   * `counselorId` narrows the count to students sat through **that counselor's classes**. RIASEC
+   * and SCCT are shared by every school, so an unscoped number would tell one counselor how many
+   * students other counselors have — not theirs to see, even as a total.
+   */
+  async scoredStudentCounts(
+    versionIds: string[],
+    counselorId?: string,
+  ): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+
+    if (versionIds.length === 0) {
+      return counts;
+    }
+
+    const rows = await this.db
+      .select({
+        versionId: assessmentAttempts.assessmentVersionId,
+        students: sql<number>`COUNT(DISTINCT ${assessmentAttempts.studentId})`,
+      })
+      .from(assessmentAttempts)
+      .innerJoin(
+        assessmentAssignments,
+        eq(assessmentAttempts.assignmentId, assessmentAssignments.id),
+      )
+      .innerJoin(classes, eq(assessmentAssignments.classId, classes.id))
+      .where(
+        and(
+          inArray(assessmentAttempts.assessmentVersionId, versionIds),
+          eq(assessmentAttempts.status, 'SCORED'),
+          counselorId === undefined ? undefined : eq(classes.counselorId, counselorId),
+        ),
+      )
+      .groupBy(assessmentAttempts.assessmentVersionId);
+
+    for (const row of rows) {
+      counts.set(row.versionId, Number(row.students));
+    }
+
+    return counts;
   }
 
   /** Every version of one template, newest first — the builder's version list. */
@@ -1566,6 +1712,7 @@ export class AssessmentBuilderService {
     }
 
     await this.assertEveryQuestionIsFinished(version, questions);
+    await this.assertCompositeConfigSound(version);
 
     const readiness = await this.publishReadiness(versionId);
 

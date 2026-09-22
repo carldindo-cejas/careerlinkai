@@ -28,6 +28,7 @@ import {
   studentPlatformRoutes,
 } from '@/modules/platform/routes';
 import {
+  adminRecommendationRoutes,
   counselorRecommendationRoutes,
   studentRecommendationRoutes,
 } from '@/modules/recommendation/routes';
@@ -104,6 +105,9 @@ export function createApp() {
   // same reason: the alternative is one god-router that imports every service in the system.
   api.route('/student', studentRecommendationRoutes);
   api.route('/counselor', counselorRecommendationRoutes);
+  // …and an /admin one (2026-09-21): the §27 match formula is a configuration a school owns, so
+  // the module that computes with it also owns the screen that edits it.
+  api.route('/admin', adminRecommendationRoutes);
   api.route('/admin', adminRoutes);
   // v1.5 (migration 0011): the Philippine address hierarchy — its own /admin router, same
   // one-module-one-router rule as everything else on this prefix.

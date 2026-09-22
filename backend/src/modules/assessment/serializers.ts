@@ -616,7 +616,7 @@ export function serializeAuthorQuestion(
   };
 }
 
-export function serializeVersionSummary(version: AssessmentVersion) {
+export function serializeVersionSummary(version: AssessmentVersion, scoredStudentCount?: number) {
   return {
     id: version.id,
     version_number: version.versionNumber,
@@ -624,6 +624,9 @@ export function serializeVersionSummary(version: AssessmentVersion) {
     instructions: version.instructions,
     duration_minutes: version.durationMinutes,
     scoring_algorithm: version.scoringConfig.algorithm,
+    /** The composite's weights and bands (WEIGHTED_COMPOSITE only) — the Scoring panel reads them. */
+    composite_weights: version.scoringConfig.composite_weights ?? null,
+    composite_ranges: version.scoringConfig.composite_ranges ?? null,
     created_at: version.createdAt,
     /** Migration 0016. NULL for a draft, and for a version archived before it ever published. */
     published_at: version.publishedAt,
@@ -633,5 +636,7 @@ export function serializeVersionSummary(version: AssessmentVersion) {
      * version drafted from nothing.
      */
     source_version_id: version.sourceVersionId,
+    /** Distinct students with a scored result on this version. Present only where the caller counted. */
+    ...(scoredStudentCount === undefined ? {} : { scored_student_count: scoredStudentCount }),
   };
 }

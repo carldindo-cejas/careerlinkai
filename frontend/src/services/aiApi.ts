@@ -165,6 +165,15 @@ export const aiApi = {
     );
   },
 
+  /** Undo an archive: the entry returns to the live list and is re-embedded. */
+  unarchiveKnowledgeDocument(scope: KnowledgeScope, id: string): Promise<KnowledgeDocument> {
+    return unwrap(
+      httpClient.post<ApiSuccess<KnowledgeDocument>>(
+        `/${scope}/knowledge-documents/${id}/unarchive`,
+      ),
+    );
+  },
+
   /**
    * The report header: corpus health, the tab counts, and what this caller may do.
    *

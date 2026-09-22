@@ -271,6 +271,16 @@ export const askChatSchema = z
 export type AskChatInput = z.infer<typeof askChatSchema>;
 
 /**
+ * "Explain more" as a chat turn (2026-09-22). Only the id travels: the question the student sees
+ * and the recommendation it is about are both resolved server-side, scoped to the caller.
+ */
+export const explainInChatSchema = z
+  .object({
+    recommendation_id: z.string().trim().min(1, 'Choose a recommendation to explain.'),
+  })
+  .strict();
+
+/**
  * The AI-gaps report's paging.
  *
  * Two revisions on from where it started. It was a fixed 25 rows with no indication there were more

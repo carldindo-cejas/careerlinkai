@@ -861,6 +861,43 @@ export class KnowledgeIngestionService {
   }
 
   /**
+   * Undo an archive. Archiving removed the vectors (the chunk rows stayed), so bringing an entry
+   * back means clearing `archived_at` and re-running processing — the same queue path as
+   * `reprocess`, which rebuilds the chunks and puts fresh vectors in the index.
+   */
+  async unarchive(
+    admin: User,
+    documentId: string,
+    ipAddress: string | null,
+  ): Promise<KnowledgeDocument> {
+    const document = await this.findFor(admin, documentId, 'manage');
+
+    if (document.archivedAt === null) {
+      return document; // Unarchiving a live entry is a no-op, not an error.
+    }
+
+    const timestamp = now();
+
+    await this.db
+      .update(knowledgeDocuments)
+      .set({ archivedAt: null, processingStatus: 'UPLOADED', updatedAt: timestamp })
+      .where(eq(knowledgeDocuments.id, documentId));
+
+    await this.enqueueProcessing(documentId);
+
+    await this.audit.write({
+      action: 'KNOWLEDGE_DOCUMENT_UNARCHIVED',
+      module: MODULE,
+      userId: admin.id,
+      targetType: 'knowledge_document',
+      targetId: documentId,
+      ipAddress,
+    });
+
+    return { ...document, archivedAt: null, processingStatus: 'UPLOADED', updatedAt: timestamp };
+  }
+
+  /**
    * The §42 v1.5 re-run path: Free-plan queues retain messages for 24 hours, so a job that
    * was never consumed is simply gone — an admin needs a button, not just automatic retries.
    */

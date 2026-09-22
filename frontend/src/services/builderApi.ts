@@ -5,6 +5,7 @@ import type {
   BuilderDimension,
   BuilderTemplate,
   BuilderVersionSummary,
+  CompositeRange,
   GenerationStatusResponse,
   PublishReadiness,
   QuestionOptionDraft,
@@ -93,6 +94,22 @@ export const builderApi = {
     return unwrap(
       httpClient.post<ApiSuccess<BuilderVersionSummary>>(
         `/assessment-versions/${versionId}/restore`,
+      ),
+    );
+  },
+
+  /**
+   * A DRAFT's composite weights (fractions) and bands. A published version 422s — its students were
+   * scored under its weights, so it is re-weighted by duplicating it.
+   */
+  updateScoringConfig(
+    versionId: string,
+    payload: { composite_weights: Record<string, number>; composite_ranges: CompositeRange[] },
+  ): Promise<BuilderVersionSummary> {
+    return unwrap(
+      httpClient.patch<ApiSuccess<BuilderVersionSummary>>(
+        `/assessment-versions/${versionId}/scoring-config`,
+        payload,
       ),
     );
   },

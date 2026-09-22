@@ -9,15 +9,21 @@ import { ensurePasswordChanged } from '@/middleware/ensure-password-changed';
 import { ensureRole } from '@/middleware/ensure-role';
 import { AcademicCatalogService } from '@/modules/catalog/academic-catalog-service';
 import {
+  MappingTransferService,
+  type PlannedLink,
+} from '@/modules/catalog/mapping-transfer-service';
+import {
   attachCareerSchema,
   createCanonicalProgramSchema,
   createCareerSchema,
   createCollegeSchema,
   createProgramSchema,
+  importMappingSchema,
   listCanonicalProgramQuerySchema,
   listCatalogQuerySchema,
   LIST_CATALOG_QUERY_KEYS,
   mergeCanonicalProgramSchema,
+  setRelationshipSchema,
   updateCanonicalProgramSchema,
   updateCareerSchema,
   updateCollegeSchema,
@@ -32,6 +38,7 @@ import {
 } from '@/modules/catalog/serializers';
 import type { Career } from '@/db/schema';
 import { requestCatalogResync } from '@/jobs/ai-jobs';
+import { RecommendationFreshnessService } from '@/modules/recommendation/freshness-service';
 
 /**
  * The `/admin` route group (FULLPLAN §20) — its first mount, and for now the academic catalog
@@ -77,6 +84,19 @@ function catalog(c: { env: AppEnv['Bindings'] }): AcademicCatalogService {
  */
 function resyncKnowledge(c: Context<AppEnv>): void {
   c.executionCtx.waitUntil(requestCatalogResync(c.env));
+}
+
+/**
+ * A write that can move a student's scores (2026-09-22): resync the corpus as above, **and** stamp
+ * the time so every recommendation set generated before now reads as stale — on the counselor's
+ * screen, and in the admin Matching page's "recompute" count. See `RecommendationFreshnessService`.
+ *
+ * Awaited, unlike the resync: it is one upsert, and a stale marker that could be lost would let the
+ * Matching page report "everything is current" straight after the change that made it untrue.
+ */
+async function scoringInputsChanged(c: Context<AppEnv>): Promise<void> {
+  await new RecommendationFreshnessService(createDatabase(c.env.DB)).touch(requireUser(c).id);
+  resyncKnowledge(c);
 }
 
 /**
@@ -183,7 +203,7 @@ adminRoutes.patch('/colleges/:id', async (c) => {
   const college = await service.updateCollege(requireUser(c), c.req.param('id'), input, clientIp(c));
   const location = await service.resolveLocation(college);
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.json(
     successEnvelope(serializeCollege(college, { location }), 'College updated successfully.'),
@@ -194,7 +214,7 @@ adminRoutes.patch('/colleges/:id', async (c) => {
 adminRoutes.delete('/colleges/:id', async (c) => {
   await catalog(c).removeCollege(requireUser(c), c.req.param('id'), clientIp(c));
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.body(null, 204);
 });
@@ -226,7 +246,7 @@ adminRoutes.post('/colleges/:collegeId/programs', async (c) => {
     clientIp(c),
   );
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.json(successEnvelope(serializeProgram(program, []), 'Program created successfully.'), 201);
 });
@@ -240,7 +260,7 @@ adminRoutes.patch('/programs/:id', async (c) => {
     clientIp(c),
   );
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.json(successEnvelope(serializeProgram(program), 'Program updated successfully.'));
 });
@@ -248,7 +268,7 @@ adminRoutes.patch('/programs/:id', async (c) => {
 adminRoutes.delete('/programs/:id', async (c) => {
   await catalog(c).removeProgram(requireUser(c), c.req.param('id'), clientIp(c));
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.body(null, 204);
 });
@@ -303,7 +323,7 @@ adminRoutes.post('/careers', async (c) => {
   const service = catalog(c);
   const career = await service.createCareer(requireUser(c), input, clientIp(c));
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.json(
     successEnvelope(await serializeCareerWithOutlook(service, career), 'Career created successfully.'),
@@ -316,7 +336,7 @@ adminRoutes.patch('/careers/:id', async (c) => {
   const service = catalog(c);
   const career = await service.updateCareer(requireUser(c), c.req.param('id'), input, clientIp(c));
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.json(
     successEnvelope(await serializeCareerWithOutlook(service, career), 'Career updated successfully.'),
@@ -326,7 +346,7 @@ adminRoutes.patch('/careers/:id', async (c) => {
 adminRoutes.delete('/careers/:id', async (c) => {
   await catalog(c).removeCareer(requireUser(c), c.req.param('id'), clientIp(c));
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.body(null, 204);
 });
@@ -344,14 +364,31 @@ adminRoutes.post('/programs/:id/careers', async (c) => {
     c.req.param('id'),
     input.career_id,
     clientIp(c),
+    input.relationship,
   );
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.json(
     successEnvelope(serializeProgram(program, careers), 'Career linked successfully.'),
     201,
   );
+});
+
+/** Re-grade one college's own extra link (migration 0041). Inherited links are re-graded canonically. */
+adminRoutes.patch('/programs/:id/careers/:careerId', async (c) => {
+  const input = await parseBody(c, setRelationshipSchema);
+  const { program, careers } = await catalog(c).setCareerRelationship(
+    requireUser(c),
+    c.req.param('id'),
+    c.req.param('careerId'),
+    input.relationship,
+    clientIp(c),
+  );
+
+  await scoringInputsChanged(c);
+
+  return c.json(successEnvelope(serializeProgram(program, careers), 'Link updated successfully.'));
 });
 
 /** A **real** delete, not a soft one — and a 200 with the updated program, not a 204 (§20). */
@@ -363,7 +400,7 @@ adminRoutes.delete('/programs/:id/careers/:careerId', async (c) => {
     clientIp(c),
   );
 
-  resyncKnowledge(c);
+  await scoringInputsChanged(c);
 
   return c.json(successEnvelope(serializeProgram(program, careers), 'Career unlinked successfully.'));
 });
@@ -380,15 +417,21 @@ adminRoutes.get('/canonical-programs', async (c) => {
   const service = catalog(c);
   const page = await service.listCanonicalPrograms(query);
 
-  // The offering counts, in one query for the whole page rather than one per row — the same
-  // N+1 rule the college list follows (§45's subrequest budget counts every D1 call).
-  const counts = await service.offeringCountsFor(page.items.map((entry) => entry.id));
+  // The offering counts and each entry's careers, in one query each for the whole page rather than
+  // one per row — the same N+1 rule the college list follows (§45's subrequest budget counts every
+  // D1 call). The careers travel because this page is now where they are edited (migration 0040).
+  const ids = page.items.map((entry) => entry.id);
+  const counts = await service.offeringCountsFor(ids);
+  const careersByEntry = await service.canonicalCareersFor(ids);
 
   return c.json(
     successEnvelope(
       {
         items: page.items.map((entry) =>
-          serializeCanonicalProgram(entry, { offeringsCount: counts.get(entry.id) ?? 0 }),
+          serializeCanonicalProgram(entry, {
+            offeringsCount: counts.get(entry.id) ?? 0,
+            careers: careersByEntry.get(entry.id) ?? [],
+          }),
         ),
         pagination: page.pagination,
       },
@@ -458,17 +501,102 @@ adminRoutes.post('/canonical-programs', async (c) => {
   );
 });
 
+/**
+ * A changed `recommended_strand` is written to every offering of the entry (migration 0040), and the
+ * message says how many — it is the one edit on this form whose effect reaches past the row itself.
+ */
 adminRoutes.patch('/canonical-programs/:id', async (c) => {
   const input = await parseBody(c, updateCanonicalProgramSchema);
-  const entry = await catalog(c).updateCanonicalProgram(
+  const { entry, offeringsUpdated } = await catalog(c).updateCanonicalProgram(
     requireUser(c),
     c.req.param('id'),
     input,
     clientIp(c),
   );
 
+  if (offeringsUpdated > 0) {
+    await scoringInputsChanged(c);
+  }
+
   return c.json(
-    successEnvelope(serializeCanonicalProgram(entry), 'Canonical program updated successfully.'),
+    successEnvelope(
+      serializeCanonicalProgram(entry),
+      offeringsUpdated > 0
+        ? `Canonical program updated. The strand was applied to ${offeringsUpdated} college ${offeringsUpdated === 1 ? 'offering' : 'offerings'}.`
+        : 'Canonical program updated successfully.',
+    ),
+  );
+});
+
+// --- What a canonical program leads to (migration 0040) ----------------------------------------
+//
+// One link here is one link on every college offering of the program — the edit that used to be
+// repeated campus by campus. Both calls return the entry with its careers, so the page redraws the
+// chips without a refetch, exactly as the per-offering mapping calls do.
+
+adminRoutes.post('/canonical-programs/:id/careers', async (c) => {
+  const input = await parseBody(c, attachCareerSchema);
+  const { entry, careers } = await catalog(c).attachCanonicalCareer(
+    requireUser(c),
+    c.req.param('id'),
+    input.career_id,
+    clientIp(c),
+    input.relationship,
+  );
+
+  await scoringInputsChanged(c);
+
+  return c.json(
+    successEnvelope(serializeCanonicalProgram(entry, { careers }), 'Career linked successfully.'),
+    201,
+  );
+});
+
+/**
+ * Re-grade a link — direct, related or conditional (migration 0041). One change here re-weights the
+ * career for every college offering of the program.
+ */
+adminRoutes.patch('/canonical-programs/:id/careers/:careerId', async (c) => {
+  const input = await parseBody(c, setRelationshipSchema);
+  const { entry, careers } = await catalog(c).setCanonicalCareerRelationship(
+    requireUser(c),
+    c.req.param('id'),
+    c.req.param('careerId'),
+    input.relationship,
+    clientIp(c),
+  );
+
+  await scoringInputsChanged(c);
+
+  return c.json(
+    successEnvelope(serializeCanonicalProgram(entry, { careers }), 'Link updated successfully.'),
+  );
+});
+
+adminRoutes.delete('/canonical-programs/:id/careers/:careerId', async (c) => {
+  const { entry, careers } = await catalog(c).detachCanonicalCareer(
+    requireUser(c),
+    c.req.param('id'),
+    c.req.param('careerId'),
+    clientIp(c),
+  );
+
+  await scoringInputsChanged(c);
+
+  return c.json(
+    successEnvelope(serializeCanonicalProgram(entry, { careers }), 'Career unlinked successfully.'),
+  );
+});
+
+/** The same links read from the career's side — the Careers page's "programs that lead here". */
+adminRoutes.get('/careers/:id/canonical-programs', async (c) => {
+  const entries = await catalog(c).canonicalProgramsForCareer(c.req.param('id'));
+
+  return c.json(
+    successEnvelope(
+      entries.map((entry) => serializeCanonicalProgram(entry)),
+      'Canonical programs retrieved successfully.',
+    ),
   );
 });
 
@@ -485,6 +613,10 @@ adminRoutes.post('/canonical-programs/:id/merge', async (c) => {
     input.target_id,
     clientIp(c),
   );
+
+  // The moved offerings now inherit the target's careers (migration 0040), which changes what the
+  // assistant should say they lead to.
+  await scoringInputsChanged(c);
 
   return c.json(
     successEnvelope(
@@ -604,3 +736,64 @@ publicCatalogRoutes.get('/employment-outlooks/public', async (c) => {
     ),
   );
 });
+
+// --- The mapping as a spreadsheet (2026-09-22) -------------------------------------------------
+//
+// Export the canonical program → career links; import an edited copy back after a preview. See
+// `MappingTransferService` for what an import means (the programs it names, and only those).
+
+adminRoutes.get('/catalog-mapping/export', async (c) => {
+  const rows = await new MappingTransferService(createDatabase(c.env.DB)).exportRows();
+
+  return c.json(
+    successEnvelope(
+      rows.map((row) => ({
+        program_code: row.programCode,
+        program_name: row.programName,
+        career_title: row.careerTitle,
+        career_riasec_code: row.careerRiasecCode,
+        relationship: row.relationship,
+      })),
+      'Mapping exported.',
+    ),
+  );
+});
+
+/**
+ * `apply: false` is the preview — resolve and diff, write nothing. `apply: true` re-plans against the
+ * database as it is now and writes it all in one batch, or refuses the whole file on any error.
+ */
+adminRoutes.post('/catalog-mapping/import', async (c) => {
+  const input = await parseBody(c, importMappingSchema);
+  const service = new MappingTransferService(createDatabase(c.env.DB));
+
+  const plan = input.apply
+    ? await service.apply(requireUser(c), input.rows, clientIp(c))
+    : await service.plan(input.rows);
+
+  if (input.apply) {
+    await scoringInputsChanged(c);
+  }
+
+  return c.json(
+    successEnvelope(
+      {
+        programs_in_file: plan.programsInFile,
+        adds: plan.adds.map(serializePlannedLink),
+        removes: plan.removes.map(serializePlannedLink),
+        regrades: plan.regrades.map((link) => ({ ...serializePlannedLink(link), from: link.from })),
+        unchanged: plan.unchanged,
+        errors: plan.errors,
+      },
+      input.apply ? 'Mapping imported.' : 'Preview only. Nothing was changed.',
+    ),
+  );
+});
+
+function serializePlannedLink(link: PlannedLink) {
+  return {
+    program_code: link.programCode,
+    career_title: link.careerTitle,
+    relationship: link.relationship,
+  };
+}

@@ -15,6 +15,8 @@ import { uuid } from '@/lib/crypto';
 import { now } from '@/lib/datetime';
 import { AssessmentAttemptService } from '@/modules/assessment/assessment-attempt-service';
 import { AssessmentBuilderService } from '@/modules/assessment/assessment-builder-service';
+import { RecommendationFreshnessService } from '@/modules/recommendation/freshness-service';
+import { RecommendationService } from '@/modules/recommendation/recommendation-service';
 import {
   answerAll,
   api,
@@ -182,6 +184,41 @@ describe('the Free-plan 50-subrequest ceiling (§45)', () => {
     expect(view.attempt.status).toBe('SCORED');
     expect(counter.calls).toBeGreaterThan(0);
     expect(counter.calls).toBeLessThanOrEqual(27);
+  });
+
+  /**
+   * The admin "recompute stale sets" page (2026-09-22) runs `RECOMPUTE_PAGE_SIZE` = 3 students per
+   * request. Seeding three fully assessed students here would cost ~270 HTTP calls, so the page is
+   * measured the way it is built: one page of one (the shared context plus one student), and one
+   * more student against an already-loaded context — the marginal cost. Three students are the
+   * first plus two marginals, and that has to leave room under 50 for the request's own auth reads.
+   */
+  it('a recompute page of three stale sets stays within the cap (≤ 40 D1 calls projected)', async () => {
+    // Runs after the submit above, so this student has a set. Mark it stale.
+    await new RecommendationFreshnessService(createDatabase(env.DB)).touch();
+
+    const pageCounter: SubrequestCounter = { calls: 0 };
+    const pageDb = createDatabase(countingD1(env.DB, pageCounter));
+    const page = await new RecommendationService(pageDb).recomputeStale(1);
+
+    expect(page.regenerated).toBe(1);
+
+    const marginalCounter: SubrequestCounter = { calls: 0 };
+    const marginalDb = createDatabase(countingD1(env.DB, marginalCounter));
+    const service = new RecommendationService(marginalDb);
+    const context = await service.loadScoringContext();
+    marginalCounter.calls = 0;
+
+    await service.generateFor(studentId, context);
+
+    const projected = pageCounter.calls + 2 * marginalCounter.calls;
+
+    console.info(
+      `recompute page: ${pageCounter.calls} for one student, +${marginalCounter.calls} each after — ${projected} for three (budget 40, platform cap 50)`,
+    );
+
+    expect(marginalCounter.calls).toBeGreaterThan(0);
+    expect(projected).toBeLessThanOrEqual(40);
   });
 });
 

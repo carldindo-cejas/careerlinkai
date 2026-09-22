@@ -49,6 +49,12 @@ export interface RecommendationSet {
   /** The RIASEC result the ranking was computed over. */
   assessment_result_id: string;
   generated_at: string;
+  /**
+   * Computed before the last change to the catalog or the formula (backend 2026-09-22). Still the
+   * student's real results — just not what the system would say today. Optional because older
+   * fixtures and the demo tour predate it.
+   */
+  stale?: boolean;
   careers: CareerRecommendation[];
   programs: ProgramRecommendation[];
 }

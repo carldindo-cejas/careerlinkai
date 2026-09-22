@@ -3,10 +3,12 @@ import { eq } from 'drizzle-orm';
 import type { Database } from '@/db/client';
 import { knowledgeDocuments } from '@/db/schema';
 import type { Env } from '@/env';
-import { GUIDANCE_ENTRIES, GUIDANCE_QA } from '@/knowledge/guidance';
+import { guidanceEntries, GUIDANCE_QA } from '@/knowledge/guidance';
+import { DEFAULT_FORMULA, type ScoringFormula } from '@/lib/scoring-formula';
 import { log } from '@/lib/logger';
 import { firstAdminId, sha256 } from '@/modules/ai/catalog-knowledge-service';
 import { ingestionFrom } from '@/modules/ai/factory';
+import { FormulaService } from '@/modules/recommendation/formula-service';
 
 /**
  * **Guidance sync** — puts the Guidance corpus (`src/knowledge/guidance.ts`) into the index
@@ -48,10 +50,18 @@ interface GuidanceDocument {
   sourceType: 'catalog' | 'qa';
 }
 
-/** Every document the corpus should hold, in a stable order. */
-export function guidanceDocuments(): GuidanceDocument[] {
+/**
+ * Every document the corpus should hold, in a stable order.
+ *
+ * The formula is an argument because three of the results passages quote the weights the engine
+ * scores with, and those are operator-set (2026-09-21). Defaulted so the corpus tests — which check
+ * chunking and slugs, not arithmetic — need no database.
+ */
+export function guidanceDocuments(
+  formula: ScoringFormula = DEFAULT_FORMULA,
+): GuidanceDocument[] {
   return [
-    ...GUIDANCE_ENTRIES.map((entry) => ({
+    ...guidanceEntries(formula).map((entry) => ({
       entityId: entry.slug,
       title: entry.title,
       body: entry.body,
@@ -74,7 +84,10 @@ export async function syncGuidanceKnowledge(
   actorId?: string,
   options: { limit?: number } = {},
 ): Promise<GuidanceSyncResult> {
-  const desired = guidanceDocuments();
+  // The stored weights, so the scoring passages say what this deployment actually computes. A
+  // re-weighting asks for a sync (`PUT /admin/recommendation-formula`), and `content_hash` means
+  // the three passages that moved are rewritten and the other forty are left alone.
+  const desired = guidanceDocuments(await new FormulaService(db).get());
 
   try {
     const uploadedBy = actorId ?? (await firstAdminId(db));

@@ -228,6 +228,10 @@ export const updateAccountSchema = z
  * password reset is delivered to, so an unattended session left open on a shared staffroom
  * machine is one form submission away from being someone else's account — re-proving the password
  * is what makes that a thing only the account holder can do.
+ *
+ * This body **stages** the change; it does not make it (migration 0039). A six-digit code goes to
+ * the address named here and `users.email` moves only when `verifyEmailChangeSchema` brings it
+ * back — the password says who is asking, the code says the destination is real.
  */
 export const changeEmailSchema = z
   .object({
@@ -236,5 +240,27 @@ export const changeEmailSchema = z
   })
   .strict();
 
+/**
+ * Step two of the same change: the six-digit code that came back from the new mailbox
+ * (migration 0039).
+ *
+ * The address is **not** in this body, and that is deliberate. It is read from the staged row,
+ * which is keyed by the authenticated user — so the code can only ever complete the change that
+ * account asked for, and a caller cannot pair a code that reached one mailbox with a different
+ * destination.
+ *
+ * Length rather than a regex on the digits: `\d{6}` and this differ only in the message, and
+ * "that code is invalid" is what the service says for a wrong code anyway.
+ */
+export const verifyEmailChangeSchema = z
+  .object({
+    code: z
+      .string()
+      .trim()
+      .regex(/^\d{6}$/, 'Enter the six-digit code from your email.'),
+  })
+  .strict();
+
 export type UpdateAccountInput = z.infer<typeof updateAccountSchema>;
 export type ChangeEmailInput = z.infer<typeof changeEmailSchema>;
+export type VerifyEmailChangeInput = z.infer<typeof verifyEmailChangeSchema>;

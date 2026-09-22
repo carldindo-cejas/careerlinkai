@@ -6,7 +6,7 @@ import {
   colleges,
   employmentOutlooks,
   knowledgeDocuments,
-  programCareers,
+  programCareerLinks,
   programs,
   regions,
   towns,
@@ -373,7 +373,9 @@ export async function syncCatalogKnowledge(
     .orderBy(asc(colleges.id));
 
   /**
-   * Both directions of `program_careers` in **one** query.
+   * Both directions of the mapping in **one** query — through `program_career_links` (migration
+   * 0040), so an offering's careers are its canonical program's plus its own extras, the same set
+   * the scorer ranks it on.
    *
    * A program needs its careers and a career needs its offerings, and reading the join twice
    * would spend a second subrequest to learn the same rows. The active chain is applied here too:
@@ -381,15 +383,15 @@ export async function syncCatalogKnowledge(
    */
   const linkRows = await db
     .select({
-      programId: programCareers.programId,
-      careerId: programCareers.careerId,
+      programId: programCareerLinks.programId,
+      careerId: programCareerLinks.careerId,
       careerTitle: careers.title,
       programName: programs.name,
       collegeName: colleges.name,
     })
-    .from(programCareers)
-    .innerJoin(careers, eq(programCareers.careerId, careers.id))
-    .innerJoin(programs, eq(programCareers.programId, programs.id))
+    .from(programCareerLinks)
+    .innerJoin(careers, eq(programCareerLinks.careerId, careers.id))
+    .innerJoin(programs, eq(programCareerLinks.programId, programs.id))
     .innerJoin(colleges, eq(programs.collegeId, colleges.id))
     .where(
       and(

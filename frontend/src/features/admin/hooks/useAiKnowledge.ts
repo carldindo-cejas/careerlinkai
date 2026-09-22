@@ -280,6 +280,19 @@ export function useReprocessKnowledgeDocument() {
   });
 }
 
+export function useUnarchiveKnowledgeDocument() {
+  const queryClient = useQueryClient();
+  const scope = useKnowledgeScope();
+
+  return useMutation({
+    mutationFn: (id: string) => aiApi.unarchiveKnowledgeDocument(scope, id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: aiKeys.knowledgeDocuments(scope) });
+      void queryClient.invalidateQueries({ queryKey: aiKeys.insights(scope) });
+    },
+  });
+}
+
 /** Dismiss a question nobody will ever write an entry for (migration 0031). Admin-only. */
 export function useDismissQuestion() {
   const queryClient = useQueryClient();

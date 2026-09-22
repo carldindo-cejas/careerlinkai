@@ -1,20 +1,32 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { AtSign, KeyRound, ShieldCheck, UserRound } from 'lucide-react';
+import { AtSign, KeyRound, MailCheck, ShieldCheck, UserRound } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { useForm, type UseFormRegisterReturn } from 'react-hook-form';
 import { z } from 'zod';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { describedBy, FieldError } from '@/components/ui/field-error';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useChangePassword } from '@/features/auth/hooks/useAuth';
-import { useChangeEmail, useUpdateAccount } from '@/features/counselor/hooks/useAccount';
+import {
+  PENDING_EMAIL_CHANGE_QUERY_KEY,
+  useCancelEmailChange,
+  usePendingEmailChange,
+  useRequestEmailChange,
+  useResendEmailChangeCode,
+  useUpdateAccount,
+  useVerifyEmailChange,
+} from '@/features/counselor/hooks/useAccount';
 import { useAuthStore } from '@/stores/authStore';
 import { toast } from '@/stores/toastStore';
 import { ApiRequestError } from '@/types/api';
+import type { PendingEmailChange } from '@/services/accountApi';
 import type { CounselorProfile } from '@/types/user';
 
 /**
@@ -46,8 +58,10 @@ import type { CounselorProfile } from '@/types/user';
  *     into it.
  *   * Changing the email **re-proves the current password**, because the address is the login
  *     identifier *and* where a password reset is delivered — an unattended session in a staffroom
- *     is otherwise one form submission away from becoming somebody else's account. It does not
- *     sign you out: nothing you hold became less trustworthy.
+ *     is otherwise one form submission away from becoming somebody else's account. The card asks
+ *     for the address alone and puts the password in a prompt after Update email, so a browser has
+ *     no login-shaped pair to autofill. It does not sign you out: nothing you hold became less
+ *     trustworthy.
  *   * Changing the password **does** sign you out, everywhere, because §38 revokes every token
  *     when a credential rotates. The card says so before it is submitted rather than after.
  *
@@ -73,8 +87,36 @@ const adminDetailsSchema = z.object({
 
 const emailSchema = z.object({
   email: z.email('Enter a valid email address.'),
+});
+
+const emailConfirmSchema = z.object({
   current_password: z.string().min(1, 'Your current password is required.'),
 });
+
+/** Mirrors `verifyEmailChangeSchema` on the server — six digits, nothing else to get wrong. */
+const emailCodeSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, 'Enter the six-digit code from your email.'),
+});
+
+/**
+ * What it takes to keep a browser out of a box.
+ *
+ * `autoComplete="off"` alone is advisory — Chrome overrides it for anything that smells like a
+ * credential, and the password managers ignore it outright. These are the vendor opt-outs each one
+ * actually honours: 1Password (`data-1p-ignore`), LastPass (`data-lpignore`), Bitwarden
+ * (`data-bwignore`) and Dashlane (`data-form-type="other"`). Used only on the sign-in email card,
+ * where a pre-filled address and password are what made changing the address risky in the first
+ * place.
+ */
+const NO_AUTOFILL = {
+  'data-1p-ignore': true,
+  'data-lpignore': 'true',
+  'data-bwignore': true,
+  'data-form-type': 'other',
+} as const;
 
 /** Mirrors `staffPassword` on the server exactly — the control is there, this is the convenience. */
 const passwordSchema = z
@@ -116,7 +158,7 @@ export function CounselorProfilePage() {
           ) : (
             <AdminDetailsCard key={user.id} name={user.name} />
           )}
-          <EmailCard currentEmail={user.email} />
+          <EmailSection currentEmail={user.email} />
           <PasswordCard />
         </>
       ) : (
@@ -335,15 +377,72 @@ function AdminDetailsCard({ name }: { name: string }) {
 }
 
 /**
- * The address this account signs in with.
+ * The sign-in address, which is **two cards in one slot** rather than one form.
  *
- * The warning is the point of the card, not decoration: there is no email channel that can undo a
- * typo here (§5, D7), so a counselor who moves their account to an address they cannot open has
- * locked themselves out of the reset flow as well as the login. Saying it above the field is the
- * only place it can still change what somebody types.
+ * ## Why the address does not move when the form is submitted (migration 0039)
+ *
+ * A password check answers "is this the account holder". It cannot answer the question that
+ * actually decides whether this change is survivable: *does this mailbox exist, and does this
+ * person read it?* Since the address is the login identifier **and** where a password reset is
+ * delivered (§5, D7), a single mistyped character used to cost the login, the recovery path and
+ * the account, irreversibly, in one submission.
+ *
+ * So the form stages the change and the server mails a six-digit code to the address typed into
+ * it; this slot then shows the code card until that code comes back. A typo now costs a code that
+ * never arrives, and the account stays exactly where it was — the failure mode becomes "nothing
+ * happened", which is the correct failure mode for an irreversible identity change.
+ *
+ * ## Why the pending state is asked for on mount, not remembered
+ *
+ * The code arrives in a mail client, usually on a phone, while the form is on a desktop — and the
+ * tab gets reloaded on the way back. Local state would forget a live change and offer to start a
+ * second one; `usePendingEmailChange` asks the server what is outstanding, so a reload lands back
+ * on the code card.
+ */
+function EmailSection({ currentEmail }: { currentEmail: string | null }) {
+  const pending = usePendingEmailChange();
+
+  // The first load is the one moment this genuinely does not know which card belongs here. It
+  // renders neither rather than guessing at the form — a form that appears and is replaced a
+  // heartbeat later invites somebody to start typing into something about to vanish.
+  if (pending.isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <AtSign className="size-4 text-muted-foreground" aria-hidden="true" />
+            <CardTitle>Sign-in email</CardTitle>
+          </div>
+          <CardDescription>Checking your account…</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  return pending.data ? (
+    <EmailCodeCard pending={pending.data} currentEmail={currentEmail} />
+  ) : (
+    <EmailCard currentEmail={currentEmail} />
+  );
+}
+
+/**
+ * Step one: the address to move to, and nothing else on the card.
+ *
+ * The card used to carry a password box beside the address, and a browser reads that pair as a
+ * login form: a counselor opening their own account was met with their saved address and saved
+ * password already typed into it, one stray click from moving the account somewhere. So the
+ * password is asked for *after* Update email, in a modal, about something specific — and autofill
+ * is refused on both boxes (`autoComplete="off"` plus the password managers' own opt-outs) so
+ * neither arrives pre-filled.
+ *
+ * A rejected password keeps the prompt open with the message against the box, while a rejected
+ * *address* ("already in use") closes it — that mistake is fixed on the card, not in the prompt.
  */
 function EmailCard({ currentEmail }: { currentEmail: string | null }) {
-  const changeEmail = useChangeEmail();
+  const requestChange = useRequestEmailChange();
+  /** The address waiting on a password — non-null is also what holds the prompt open. */
+  const [pendingEmail, setPendingEmail] = useState<string | null>(null);
 
   const {
     register,
@@ -352,19 +451,46 @@ function EmailCard({ currentEmail }: { currentEmail: string | null }) {
     reset,
   } = useForm<z.infer<typeof emailSchema>>({
     resolver: zodResolver(emailSchema),
-    defaultValues: { email: '', current_password: '' },
+    defaultValues: { email: '' },
   });
 
-  const serverError = changeEmail.error instanceof ApiRequestError ? changeEmail.error : null;
+  const serverError = requestChange.error instanceof ApiRequestError ? requestChange.error : null;
+
+  const closePrompt = () => {
+    setPendingEmail(null);
+    requestChange.reset();
+  };
 
   const onSubmit = handleSubmit((values) => {
-    changeEmail.mutate(values, {
-      onSuccess: (next) => {
-        toast.success(`You will sign in as ${next.email} from now on.`);
-        reset({ email: '', current_password: '' });
-      },
-    });
+    // Drop whatever the last attempt was rejected for: the prompt is about to ask again, and a
+    // stale "that password was wrong" over an empty box is an accusation about nothing.
+    requestChange.reset();
+    setPendingEmail(values.email);
   });
+
+  const onConfirm = (currentPassword: string) => {
+    if (pendingEmail === null) return;
+
+    requestChange.mutate(
+      { email: pendingEmail, current_password: currentPassword },
+      {
+        onSuccess: (staged) => {
+          toast.success(`We sent a six-digit code to ${staged.pending_email}.`);
+          // Both are cleared even though this card is about to be replaced by the code card:
+          // cancelling that step brings this one back, and it must come back empty.
+          setPendingEmail(null);
+          reset({ email: '' });
+        },
+        onError: (error) => {
+          // The address is the problem, not the password — close the prompt so the message
+          // lands next to the box that has to change.
+          if (error instanceof ApiRequestError && error.fieldError('email')) {
+            setPendingEmail(null);
+          }
+        },
+      },
+    );
+  };
 
   return (
     <Card>
@@ -375,15 +501,18 @@ function EmailCard({ currentEmail }: { currentEmail: string | null }) {
         </div>
         <CardDescription>
           You currently sign in as{' '}
-          <span className="font-medium text-foreground">{currentEmail ?? 'no address'}</span>.
+          <span className="break-all font-medium text-foreground">
+            {currentEmail ?? 'no address'}
+          </span>
+          .
         </CardDescription>
       </CardHeader>
 
       <CardContent>
-        <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+        <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate autoComplete="off">
           <p className="border-l-2 border-primary/40 pl-3 text-sm text-muted-foreground">
-            This is the address you sign in with and the one a password reset is sent to. Use one
-            you can actually open — nobody can undo a typo here for you.
+            We will send a six-digit code to the new address and ask for it here. Nothing changes
+            until that code is entered, so a typo costs you nothing.
           </p>
 
           {serverError && Object.keys(serverError.errors).length === 0 ? (
@@ -394,27 +523,276 @@ function EmailCard({ currentEmail }: { currentEmail: string | null }) {
             id="new_email"
             label="New email address"
             type="email"
+            hint="You will be asked for your password, then for the code we email you."
             error={errors.email?.message ?? serverError?.fieldError('email')}
             register={register('email')}
-            autoComplete="email"
-          />
-
-          <Field
-            id="email_current_password"
-            label="Your current password"
-            type="password"
-            hint="Asked for because this changes how you sign in."
-            error={
-              errors.current_password?.message ?? serverError?.fieldError('current_password')
-            }
-            register={register('current_password')}
-            autoComplete="current-password"
+            autoComplete="off"
+            inputProps={NO_AUTOFILL}
           />
 
           <div className="flex justify-end">
-            <Button type="submit" loading={changeEmail.isPending}>
-              {changeEmail.isPending ? 'Updating…' : 'Update email'}
+            <Button type="submit" loading={requestChange.isPending} className="w-full sm:w-auto">
+              {requestChange.isPending ? 'Sending…' : 'Update email'}
             </Button>
+          </div>
+        </form>
+      </CardContent>
+
+      <Dialog
+        open={pendingEmail !== null}
+        onOpenChange={(next) => (next ? undefined : closePrompt())}
+      >
+        {/* Mounted only while open, so the box is empty every time it is asked for and no typed
+            password is left sitting in React state after the prompt is dismissed. */}
+        {pendingEmail !== null ? (
+          <ConfirmEmailPasswordDialog
+            email={pendingEmail}
+            pending={requestChange.isPending}
+            error={serverError}
+            onConfirm={onConfirm}
+            onCancel={closePrompt}
+          />
+        ) : null}
+      </Dialog>
+    </Card>
+  );
+}
+
+/**
+ * The password prompt that stands between Update email and the request.
+ *
+ * It makes the re-authentication an answer to a specific question — "move this account to *that*
+ * address?" — rather than a box sitting on a page all day for a browser to fill in. It names the
+ * address for the same reason: this is the last chance to notice a typo before a code is sent to
+ * a mailbox that may not exist.
+ */
+function ConfirmEmailPasswordDialog({
+  email,
+  pending,
+  error,
+  onConfirm,
+  onCancel,
+}: {
+  email: string;
+  pending: boolean;
+  error: ApiRequestError | null;
+  onConfirm: (currentPassword: string) => void;
+  onCancel: () => void;
+}) {
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<z.infer<typeof emailConfirmSchema>>({
+    resolver: zodResolver(emailConfirmSchema),
+    defaultValues: { current_password: '' },
+  });
+
+  const onSubmit = handleSubmit((values) => onConfirm(values.current_password));
+
+  return (
+    <DialogContent
+      title="Confirm your password"
+      description={`We will send a code to ${email} to finish moving this account.`}
+      className="max-w-md"
+    >
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate autoComplete="off">
+        {error && Object.keys(error.errors).length === 0 ? <Alert>{error.message}</Alert> : null}
+
+        <Field
+          id="email_current_password"
+          label="Your current password"
+          type="password"
+          error={errors.current_password?.message ?? error?.fieldError('current_password')}
+          register={register('current_password')}
+          autoComplete="off"
+          inputProps={NO_AUTOFILL}
+        />
+
+        {/* Reversed on a phone so the affirmative button is the one under the thumb, and both are
+            full width there — two 44px targets side by side do not fit at 320px. */}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onCancel}
+            disabled={pending}
+            className="w-full sm:w-auto"
+          >
+            Cancel
+          </Button>
+          <Button type="submit" loading={pending} className="w-full sm:w-auto">
+            {pending ? 'Sending…' : 'Send code'}
+          </Button>
+        </div>
+      </form>
+    </DialogContent>
+  );
+}
+
+/**
+ * Step two: the code card — the one thing standing between a staged change and a moved account.
+ *
+ * It replaces the address form rather than sitting under it, because two inputs that both look
+ * like "the thing to fill in next" is how somebody ends up typing a new address into a card that
+ * is asking for a code. The address being moved to is printed here in full: it is the last place
+ * a typo can still be caught, and catching it costs one click on "Use a different address".
+ *
+ * Three ways out, in the order they are needed: enter the code, ask for another one (the first
+ * mail can be slow, filtered, or read on a device that is not to hand), or abandon the change and
+ * get the form back. The last one is why cancelling is a button and not a link — a counselor who
+ * mistyped the address is *stuck* on this card until something ends it.
+ */
+function EmailCodeCard({
+  pending,
+  currentEmail,
+}: {
+  pending: PendingEmailChange;
+  currentEmail: string | null;
+}) {
+  const queryClient = useQueryClient();
+  const verify = useVerifyEmailChange();
+  const resend = useResendEmailChangeCode();
+  const cancel = useCancelEmailChange();
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+    reset,
+  } = useForm<z.infer<typeof emailCodeSchema>>({
+    resolver: zodResolver(emailCodeSchema),
+    defaultValues: { code: '' },
+  });
+
+  const serverError = verify.error instanceof ApiRequestError ? verify.error : null;
+  const resendError = resend.error instanceof ApiRequestError ? resend.error : null;
+  const busy = verify.isPending || resend.isPending || cancel.isPending;
+
+  const onSubmit = handleSubmit((values) => {
+    verify.mutate(values.code, {
+      onSuccess: (user) => {
+        toast.success(`You will sign in as ${user.email} from now on.`);
+      },
+    });
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <MailCheck className="size-4 text-muted-foreground" aria-hidden="true" />
+          <CardTitle>Confirm your new email</CardTitle>
+        </div>
+        <CardDescription>
+          You still sign in as{' '}
+          <span className="break-all font-medium text-foreground">
+            {currentEmail ?? 'no address'}
+          </span>{' '}
+          until this is finished.
+        </CardDescription>
+      </CardHeader>
+
+      <CardContent>
+        <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate autoComplete="off">
+          <p className="border-l-2 border-primary/40 pl-3 text-sm text-muted-foreground">
+            We sent a six-digit code to{' '}
+            <span className="break-all font-medium text-foreground">{pending.pending_email}</span>
+            . It expires in {pending.expires_in_minutes}{' '}
+            {pending.expires_in_minutes === 1 ? 'minute' : 'minutes'}. Not your address? Use a
+            different one below — nothing has changed yet.
+          </p>
+
+          {/* Only ever present in local development, where the API echoes the code — the same
+              affordance the signup page has, so the flow is testable with no mail channel. */}
+          {pending.verification_code ? (
+            <Alert tone="info">
+              Local development: your code is{' '}
+              <code className="font-mono text-sm">{pending.verification_code}</code>
+            </Alert>
+          ) : null}
+
+          {serverError && Object.keys(serverError.errors).length === 0 ? (
+            <Alert>{serverError.message}</Alert>
+          ) : null}
+          {resendError ? (
+            <Alert>{resendError.fieldError('email') ?? resendError.message}</Alert>
+          ) : null}
+
+          <Field
+            id="email_code"
+            label="Six-digit code"
+            hint="From the email we just sent. Check the spam folder if it has not arrived."
+            error={errors.code?.message ?? serverError?.fieldError('code')}
+            register={register('code')}
+            /* `one-time-code` is the one autofill worth having: it is what lets a phone offer the
+               code straight from the notification, and it cannot leak a stored credential. */
+            autoComplete="one-time-code"
+            inputProps={{
+              inputMode: 'numeric',
+              maxLength: 6,
+              placeholder: '000000',
+              // Wide tracking on a six-character field, capped so it does not stretch across a
+              // desktop card; full width on a phone, where it is the only thing on the row.
+              className:
+                'w-full font-mono text-lg tracking-[0.4em] sm:max-w-[14rem]',
+            }}
+          />
+
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={busy}
+              className="w-full sm:w-auto"
+              onClick={() =>
+                cancel.mutate(undefined, {
+                  onSuccess: () => {
+                    reset({ code: '' });
+                    toast.success('The email change was cancelled.');
+                  },
+                })
+              }
+            >
+              Use a different address
+            </Button>
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
+              <Button
+                type="button"
+                variant="secondary"
+                loading={resend.isPending}
+                disabled={busy}
+                className="w-full sm:w-auto"
+                onClick={() =>
+                  resend.mutate(undefined, {
+                    onSuccess: (next) => {
+                      reset({ code: '' });
+                      toast.success(`A new code is on its way to ${next.pending_email}.`);
+                    },
+                    onError: (error) => {
+                      // 404: nothing is staged any more — it expired, or was finished or cancelled
+                      // in another tab. Offering "send a new code" for a change that no longer
+                      // exists would leave this card stuck, so hand the form back instead.
+                      if (error instanceof ApiRequestError && error.status === 404) {
+                        toast.error('That email change has expired. Start again.');
+                        queryClient.setQueryData(PENDING_EMAIL_CHANGE_QUERY_KEY, null);
+                      }
+                    },
+                  })
+                }
+              >
+                {resend.isPending ? 'Sending…' : 'Send a new code'}
+              </Button>
+              <Button
+                type="submit"
+                loading={verify.isPending}
+                disabled={busy}
+                className="w-full sm:w-auto"
+              >
+                {verify.isPending ? 'Confirming…' : 'Confirm email'}
+              </Button>
+            </div>
           </div>
         </form>
       </CardContent>
@@ -530,6 +908,7 @@ function Field({
   register,
   type = 'text',
   autoComplete,
+  inputProps,
 }: {
   id: string;
   label: string;
@@ -538,6 +917,8 @@ function Field({
   register: UseFormRegisterReturn;
   type?: string;
   autoComplete?: string;
+  /** Anything else the input needs — the autofill opt-outs, in practice. */
+  inputProps?: Record<string, string | number | boolean>;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -548,6 +929,7 @@ function Field({
         autoComplete={autoComplete}
         aria-invalid={Boolean(error)}
         aria-describedby={describedBy(error ? `${id}-error` : false, hint ? `${id}-hint` : false)}
+        {...inputProps}
         {...register}
       />
       {hint ? (

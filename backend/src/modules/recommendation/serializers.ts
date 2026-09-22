@@ -1,4 +1,6 @@
+import type { ScoringFormula } from '@/lib/scoring-formula';
 import { serializeCareer, serializeCollege, serializeProgram } from '@/modules/catalog/serializers';
+import type { StoredFormula } from '@/modules/recommendation/formula-service';
 import type {
   CareerRecommendation,
   ProgramRecommendation,
@@ -76,7 +78,54 @@ export function serializeRecommendationSet(set: RecommendationSet) {
     /** The RIASEC result these were computed from — the Holland Code the cards sit next to. */
     assessment_result_id: set.assessmentResultId,
     generated_at: set.generatedAt,
+    /** Scored before the last catalog or formula change — see `RecommendationSet.stale`. */
+    stale: set.stale,
     careers: set.careers.map(serializeCareerRecommendation),
     programs: set.programs.map(serializeProgramRecommendation),
+  };
+}
+
+/**
+ * The §27 formula, on the wire (2026-09-21).
+ *
+ * **camelCase, not snake_case, and that is the one deliberate exception in this module.** Every
+ * other wire shape here renames its fields because the database columns are one vocabulary and the
+ * API is another. A formula has no columns: the keys *are* the component names the engine
+ * multiplies by, and the admin screen sends back an object the server hands straight to
+ * `scoringFormulaSchema` and then to `lib/recommendation.ts`. Renaming them on the way out and back
+ * would mean two more mappings whose only job is to undo each other, and whose first divergence —
+ * a component added on the server and not in the mapper — would be a weight silently dropped from
+ * a composite.
+ *
+ * So this is a structural copy rather than a rename. It exists at all, instead of returning the
+ * object, so that adding an internal field to `ScoringFormula` is not automatically a public API
+ * change.
+ */
+export function serializeFormula(formula: ScoringFormula) {
+  return {
+    career: { ...formula.career },
+    program: { ...formula.program },
+    positionWeights: [...formula.positionWeights],
+    careerAlignmentDepth: [...formula.careerAlignmentDepth],
+    neutrals: { ...formula.neutrals },
+    academic: { ...formula.academic },
+    linkWeights: { ...formula.linkWeights },
+    topN: formula.topN,
+  };
+}
+
+/** The formula plus its provenance — what the screen puts under the heading. */
+export function serializeStoredFormula({
+  formula,
+  isDefault,
+  updatedAt,
+  updatedByName,
+}: StoredFormula) {
+  return {
+    formula: serializeFormula(formula),
+    /** True while nothing has been saved: the deployment is running the shipped weights. */
+    is_default: isDefault,
+    updated_at: updatedAt,
+    updated_by_name: updatedByName,
   };
 }

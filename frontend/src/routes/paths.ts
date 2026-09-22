@@ -49,6 +49,14 @@ export const paths = {
   adminCounselors: '/admin/counselors',
   // Prompt-driven: a counselor's assigned students, with their Holland Code and top recommendations.
   adminCounselorDetail: '/admin/counselors/:counselorId',
+  /**
+   * The §27 match formula (2026-09-21) — the weights that turn a student's results into a ranked
+   * list of careers and programs, as a screen an administrator owns rather than a constant in the
+   * Worker.
+   */
+  adminFormula: '/admin/formula',
+  /** Whether students' saved recommendations predate the last catalog/formula change; recompute and preview. */
+  adminMatching: '/admin/matching',
   /** What this deployment is spending of the Cloudflare free plan, and what it cannot measure. */
   adminPlatformUsage: '/admin/platform-usage',
   adminAuditLog: '/admin/audit-log',

@@ -65,7 +65,7 @@ const ABSOLUTE_CLAIM_PATTERN =
   /guaranteed|you will definitely|100% certain|you are destined|you will become/i;
 
 /** The thing being explained, with the catalog text retrieval searches on (§30, D4). */
-interface Target {
+export interface Target {
   kind: 'CAREER' | 'PROGRAM';
   label: string;
   description: string | null;
@@ -410,7 +410,8 @@ export class ExplanationService {
 
   // --- context loading -------------------------------------------------------------------
 
-  private async targetLabelFor(recommendation: Recommendation): Promise<Target> {
+  /** Public for the chat's "Explain more" turn, which names the target in the student's bubble. */
+  async targetLabelFor(recommendation: Recommendation): Promise<Target> {
     if (recommendation.matchType === 'CAREER') {
       const [career] = await this.db
         .select({ title: careers.title, description: careers.description })

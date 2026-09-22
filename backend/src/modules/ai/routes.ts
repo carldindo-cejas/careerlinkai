@@ -248,6 +248,22 @@ function createKnowledgeRoutes() {
     return c.json(successEnvelope(serializeKnowledgeDocument(document), 'Reprocessing queued.'));
   });
 
+  /** Bring an archived entry back: `archived_at` is cleared and it is re-embedded into the index. */
+  routes.post('/knowledge-documents/:id/unarchive', async (c) => {
+    const document = await ingestionFrom(createDatabase(c.env.DB), c.env).unarchive(
+      requireUser(c),
+      c.req.param('id'),
+      clientIp(c),
+    );
+
+    return c.json(
+      successEnvelope(
+        serializeKnowledgeDocument(document),
+        'Document restored. It will be retrievable by the AI once processing finishes.',
+      ),
+    );
+  });
+
   /**
    * **Write a knowledge entry, rather than upload one** (AiNormalisation Phase 1).
    *

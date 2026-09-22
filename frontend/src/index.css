@@ -208,3 +208,189 @@ h1, h2, h3, h4, h5, h6 {
     opacity: 0.55;
   }
 }
+
+/**
+ * The assistant launcher's orbit (2026-09-22): two glowing orbs riding the launcher's own ring,
+ * opposite each other, each trailing a tail that fades out behind it — so the motion reads as part
+ * of the mark rather than as two dots stuck beside it.
+ *
+ * Two nested rings rather than one: `.chat-orbit` always turns; `.chat-orbit-boost` turns only
+ * while the launcher is hovered or focused. Hover adds speed by running a second rotation on top,
+ * instead of changing one animation's duration — which restarts it mid-turn and makes the orbs
+ * jump. `pointer-events: none` so the ring can never steal the click from the button it decorates.
+ */
+.chat-orbit,
+.chat-orbit-boost {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+}
+
+/* -1px: centred on the launcher's 1px border, so the orbs travel along the circle itself. */
+.chat-orbit {
+  inset: -2px;
+  animation: chat-orbit-spin 3.6s linear infinite;
+}
+
+.chat-orbit-boost {
+  inset: 0;
+  animation: chat-orbit-spin 1.4s linear infinite paused;
+}
+
+.group:hover .chat-orbit-boost,
+.group:focus-visible .chat-orbit-boost {
+  animation-play-state: running;
+}
+
+/**
+ * The tails: one conic gradient, masked down to a thin ring. The orbs turn clockwise, so each tail
+ * sits a quarter-turn counter-clockwise of its orb — transparent at the far end, full colour where
+ * it meets the orb. Orb one is at 12 o'clock, orb two at 6.
+ */
+.chat-orbit-tail {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 270deg,
+    transparent 0deg,
+    rgb(28 216 218 / 0.9) 90deg,
+    transparent 90deg 180deg,
+    rgb(163 81 229 / 0.9) 270deg,
+    transparent 270deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  filter: blur(0.6px) drop-shadow(0 0 3px rgb(163 81 229 / 0.5));
+  opacity: 0.85;
+}
+
+/* An orb: a white-hot core fading through its colour to nothing, plus a soft halo that breathes. */
+.chat-orbit-dot {
+  position: absolute;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 9999px;
+  animation: chat-orb-pulse 1.8s ease-in-out infinite;
+  transition: transform 0.25s ease;
+}
+
+/* Centred on the tail's 3px stroke: 1.5px in from the ring's edge, minus half the orb. */
+.chat-orbit-dot--one {
+  top: -4.5px;
+  --orb: 28 216 218;
+}
+
+.chat-orbit-dot--two {
+  bottom: -4.5px;
+  --orb: 163 81 229;
+  animation-delay: -0.9s;
+}
+
+.chat-orbit-dot--one,
+.chat-orbit-dot--two {
+  background: radial-gradient(
+    circle,
+    #fff 0%,
+    rgb(var(--orb)) 30%,
+    rgb(var(--orb) / 0.45) 55%,
+    transparent 72%
+  );
+}
+
+.group:hover .chat-orbit-dot,
+.group:focus-visible .chat-orbit-dot {
+  transform: scale(1.3);
+}
+
+@keyframes chat-orb-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 6px 1px rgb(var(--orb) / 0.7),
+      0 0 14px 4px rgb(var(--orb) / 0.3);
+  }
+  50% {
+    box-shadow:
+      0 0 9px 2px rgb(var(--orb) / 0.9),
+      0 0 22px 7px rgb(var(--orb) / 0.4);
+  }
+}
+
+@keyframes chat-orbit-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/**
+ * "Explain more" — the one button on a recommendation card that hands the student to the AI, so
+ * it wears the orbit's colours (2026-09-22): a two-colour border and a sheen that sweeps across
+ * it every few seconds, brighter on hover.
+ */
+.shine-button {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--card), var(--card)) padding-box,
+    linear-gradient(90deg, #1cd8da, #a351e5) border-box;
+  transition:
+    box-shadow 0.25s ease,
+    transform 0.1s ease;
+}
+
+.shine-button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    110deg,
+    transparent 30%,
+    rgb(28 216 218 / 0.28) 45%,
+    rgb(163 81 229 / 0.28) 55%,
+    transparent 70%
+  );
+  transform: translateX(-120%);
+  animation: shine-sweep 3.2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.shine-button:hover,
+.shine-button:focus-visible {
+  box-shadow:
+    -3px 0 12px -2px rgb(28 216 218 / 0.55),
+    3px 0 12px -2px rgb(163 81 229 / 0.55);
+}
+
+.shine-button:hover::after {
+  animation-duration: 1.4s;
+}
+
+.shine-button:active {
+  transform: scale(0.98);
+}
+
+@keyframes shine-sweep {
+  0% {
+    transform: translateX(-120%);
+  }
+  55%,
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+/* Reduced motion keeps the colours and the glow, and drops the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-orbit,
+  .chat-orbit-boost,
+  .chat-orbit-dot,
+  .shine-button::after {
+    animation: none;
+  }
+}

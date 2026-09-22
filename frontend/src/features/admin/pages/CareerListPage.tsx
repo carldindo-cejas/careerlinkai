@@ -1,4 +1,4 @@
-import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { GraduationCap, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
@@ -10,6 +10,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { SearchInput } from '@/components/ui/search-input';
 import { Select } from '@/components/ui/select';
 import { CareerForm } from '@/features/admin/components/CareerForm';
+import { CareerProgramLinks } from '@/features/admin/components/CareerProgramLinks';
 import { useCareers, useDeleteCareer, useUpdateCareer } from '@/features/admin/hooks/useCatalog';
 import { useListFilters } from '@/hooks/useListFilters';
 import type { CatalogListQuery } from '@/services/catalogApi';
@@ -174,79 +175,95 @@ const PER_PAGE = 20;
 function CareerRow({ career, onEdit }: { career: Career; onEdit: () => void }) {
   const deleteCareer = useDeleteCareer();
   const updateCareer = useUpdateCareer();
+  const [showPrograms, setShowPrograms] = useState(false);
 
   const isArchived = career.status === 'archived';
 
   return (
     <Card>
-      <CardContent className="flex items-center justify-between gap-4 py-4">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-foreground">{career.title}</span>
+      <CardContent className="flex flex-col gap-3 py-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-foreground">{career.title}</span>
 
-            {career.typical_riasec_code ? (
-              <span
-                className="rounded-none bg-secondary px-1.5 py-0.5 font-mono text-xs font-semibold tracking-widest text-foreground/80"
-                title={describeHollandCode(career.typical_riasec_code) ?? undefined}
-              >
-                {career.typical_riasec_code}
-              </span>
-            ) : (
-              // Not a missing value to be nagged about — a career with no code is a valid
-              // entry that simply cannot be RIASEC-matched. Saying which is more useful
-              // than an empty cell.
-              <span className="text-xs text-accent">No RIASEC code — cannot be matched</span>
-            )}
+              {career.typical_riasec_code ? (
+                <span
+                  className="rounded-none bg-secondary px-1.5 py-0.5 font-mono text-xs font-semibold tracking-widest text-foreground/80"
+                  title={describeHollandCode(career.typical_riasec_code) ?? undefined}
+                >
+                  {career.typical_riasec_code}
+                </span>
+              ) : (
+                // Not a missing value to be nagged about — a career with no code is a valid
+                // entry that simply cannot be RIASEC-matched. Saying which is more useful
+                // than an empty cell.
+                <span className="text-xs text-accent">No RIASEC code — cannot be matched</span>
+              )}
 
-            <Badge tone={isArchived ? 'neutral' : 'success'}>{career.status}</Badge>
+              <Badge tone={isArchived ? 'neutral' : 'success'}>{career.status}</Badge>
+            </div>
+
+            <p className="mt-0.5 truncate text-sm text-muted-foreground">
+              {[career.employment_outlook?.name, formatSalaryRange(career.salary_min, career.salary_max)]
+                .filter(Boolean)
+                .join(' · ') || 'No outlook or salary recorded'}
+            </p>
           </div>
 
-          <p className="mt-0.5 truncate text-sm text-muted-foreground">
-            {[career.employment_outlook?.name, formatSalaryRange(career.salary_min, career.salary_max)]
-              .filter(Boolean)
-              .join(' · ') || 'No outlook or salary recorded'}
-          </p>
-        </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowPrograms((shown) => !shown)}
+              aria-expanded={showPrograms}
+              aria-label={`${showPrograms ? 'Hide' : 'Show'} programs that lead to ${career.title}`}
+            >
+              <GraduationCap className="size-4" aria-hidden="true" />
+              Programs
+            </Button>
 
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            loading={updateCareer.isPending}
-            onClick={() =>
-              updateCareer.mutate({
-                id: career.id,
-                payload: { status: isArchived ? 'active' : 'archived' },
-              })
-            }
-          >
-            {isArchived ? 'Restore' : 'Archive'}
-          </Button>
-
-          <Button variant="ghost" size="sm" onClick={onEdit} aria-label={`Edit ${career.title}`}>
-            <Pencil className="size-4" aria-hidden="true" />
-          </Button>
-
-          <Button
-            variant="ghost"
-            size="sm"
-            loading={deleteCareer.isPending}
-            aria-label={`Delete ${career.title}`}
-            onClick={() => {
-              if (
-                !window.confirm(
-                  `Remove ${career.title} from the catalog? It will be unlinked from every program. To stop recommending it while keeping it, archive it instead.`,
-                )
-              ) {
-                return;
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={updateCareer.isPending}
+              onClick={() =>
+                updateCareer.mutate({
+                  id: career.id,
+                  payload: { status: isArchived ? 'active' : 'archived' },
+                })
               }
+            >
+              {isArchived ? 'Restore' : 'Archive'}
+            </Button>
 
-              deleteCareer.mutate(career.id);
-            }}
-          >
-            <Trash2 className="size-4" aria-hidden="true" />
-          </Button>
+            <Button variant="ghost" size="sm" onClick={onEdit} aria-label={`Edit ${career.title}`}>
+              <Pencil className="size-4" aria-hidden="true" />
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={deleteCareer.isPending}
+              aria-label={`Delete ${career.title}`}
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    `Remove ${career.title} from the catalog? It will be unlinked from every program. To stop recommending it while keeping it, archive it instead.`,
+                  )
+                ) {
+                  return;
+                }
+
+                deleteCareer.mutate(career.id);
+              }}
+            >
+              <Trash2 className="size-4" aria-hidden="true" />
+            </Button>
+          </div>
         </div>
+
+        {showPrograms ? <CareerProgramLinks career={career} /> : null}
       </CardContent>
     </Card>
   );

@@ -72,17 +72,15 @@
  * are seed values an administrator is expected to refine, and every one is editable in the admin
  * catalog screens. Nothing here is shown to a student as a citation.
  *
- * ## Two things the source documents specify that this schema cannot yet hold
+ * ## The link taxonomy, and one thing the source documents specify that this schema cannot hold
  *
- * 1. **The DIRECT / RELATED / CONDITIONAL / BROAD taxonomy.** `program_careers` is (id,
- *    program_id, career_id) — there is no relationship column, and adding one is a migration plus
- *    a service plus an admin screen, which is not this change. The taxonomy is applied as an
- *    *editorial rule on what gets linked at all*: DIRECT and RELATED are linked, CONDITIONAL is
- *    linked where the credential is the programme's natural destination (Architect for BS
- *    Architecture), and BROAD is **not** linked. Linking BROAD roles would be actively harmful —
- *    §27 averages a programme's linked careers to get its RIASEC score, so attaching
- *    "project management, technical writing" style roles to every programme drags every average
- *    toward the same mean and flattens the ranking this catalog exists to sharpen.
+ * 1. **DIRECT / RELATED / CONDITIONAL / BROAD.** The first three are the `relationship` column on
+ *    `program_catalog_careers` (migration 0041), and every link in `MAPPINGS` carries one — the
+ *    grading rule is written out above that table. BROAD is **not** linked at all. Linking BROAD
+ *    roles would be actively harmful — §27 averages a programme's linked careers to get its RIASEC
+ *    score, so attaching "project management, technical writing" style roles to every programme
+ *    drags every average toward the same mean and flattens the ranking this catalog exists to
+ *    sharpen.
  * 2. **Per-institution accreditation** (PAASCU Level III, AACCUP, CHED COE/COD). There is no
  *    column; it is carried in `colleges.description`, where a student reads it, rather than
  *    dropped.
@@ -1037,7 +1035,7 @@ const CAREERS = [
   {
     title: 'Food Technologist',
     description:
-      'Develops food products and runs processing, preservation, quality assurance and food-safety systems (HACCP, GMP) in manufacturing plants and for regulators. Non-regulated as a title, though food-safety practice is governed by FDA and DA standards.',
+      'Develops food products and runs processing, preservation, quality assurance and food-safety systems (HACCP, GMP) in manufacturing plants and for regulators. Regulated under RA 11052, the Philippine Food Technology Act — practice requires passing the PRC Food Technologist Licensure Examination and registering with the Board.',
     min: 18000,
     max: 50000,
     outlook: OUTLOOK.moderate,
@@ -1638,68 +1636,255 @@ const OFFERINGS = {
 // --- 6. programme → career mapping ----------------------------------------------------------------
 //
 // **The rows §27 actually ranks programmes on.** A programme's RIASEC compatibility is the average
-// of its linked careers' Holland codes; an unmapped programme takes a neutral 50 and becomes
-// indistinguishable from every other unmapped one. Every canonical programme below is mapped, and
-// the emitter fails the build if one is not.
+// of its linked careers' Holland codes, weighted by how strongly the programme leads to each; an
+// unmapped programme takes a neutral 50 and becomes indistinguishable from every other unmapped
+// one. Every canonical programme below is mapped, and the emitter fails the build if one is not.
 //
-// The first career listed is the programme's DIRECT pathway in the PDF's taxonomy. What follows is
-// RELATED or licensed-CONDITIONAL. BROAD roles are deliberately absent — see the header.
+// Each link is graded (migration 0041; the formula's `linkWeights` say what each grade counts for):
+//
+//   * **direct** — what the curriculum is built to produce. A board examination or certificate of
+//     competency *the degree itself qualifies for* does not demote a link: BS Nursing → Registered
+//     Nurse is direct although the NLE stands in between, and so are BSA → CPA, BSMarE → Marine
+//     Engineer (STCW sea service) and JD → Lawyer (the Bar). Every career description already says
+//     which examination that is.
+//   * **related** — a common path for graduates that needs nothing the degree does not give.
+//   * **conditional** — reachable, but only with something the degree does *not* give: a graduate
+//     degree (Guidance Counselor, Clinical Psychologist, Urban and Regional Planner), years of
+//     progression (Chief Financial Officer, Ship Captain, School Administrator), another degree's
+//     licence (BSMarE → Mechanical Engineer, BSMID → Public Health Nurse, BSABE → Agriculturist), or
+//     a separate accreditation (DOLE safety officer, DENR pollution control officer, PNP-SOSIA).
+//
+// The grades follow the career descriptions above — a description that says "requires the PRC X
+// licence" makes the link conditional for every programme that is not the route to X. BROAD roles
+// are still deliberately absent — see the header.
 
 const MAPPINGS = {
-  BSCS: ['Software Developer', 'Data Scientist', 'Cybersecurity Analyst', 'AI/Machine Learning Engineer', 'Cloud Infrastructure Engineer', 'Enterprise Systems Architect', 'Quality Assurance Engineer'],
-  BSIT: ['Software Developer', 'Systems Administrator', 'Network Engineer', 'IT Support Specialist', 'Database Administrator', 'Cybersecurity Analyst', 'Cloud Infrastructure Engineer'],
-  BSIS: ['Business Systems Analyst', 'Database Administrator', 'Data Analyst', 'Software Developer', 'Supply Chain Analyst'],
-  BSCPE: ['Computer Engineer', 'Network Engineer', 'Software Developer', 'Systems Administrator', 'Embedded Systems Engineer'],
+  BSCS: {
+    direct: ['Software Developer'],
+    related: ['Data Scientist', 'Cybersecurity Analyst', 'AI/Machine Learning Engineer', 'Cloud Infrastructure Engineer', 'Quality Assurance Engineer'],
+    conditional: ['Enterprise Systems Architect'],
+  },
+  BSIT: {
+    direct: ['Software Developer', 'Systems Administrator', 'Network Engineer', 'IT Support Specialist'],
+    related: ['Database Administrator', 'Cybersecurity Analyst', 'Cloud Infrastructure Engineer'],
+  },
+  BSIS: {
+    direct: ['Business Systems Analyst'],
+    related: ['Database Administrator', 'Data Analyst', 'Software Developer', 'Supply Chain Analyst'],
+  },
+  BSCPE: {
+    direct: ['Computer Engineer', 'Embedded Systems Engineer'],
+    related: ['Network Engineer', 'Software Developer', 'Systems Administrator'],
+  },
 
-  BSCE: ['Civil Engineer', 'Geotechnical Engineer', 'Construction Project Manager', 'Quantity Surveyor', 'BIM Specialist', 'Occupational Health and Safety Officer'],
-  BSME: ['Mechanical Engineer', 'HVAC Design Engineer', 'Power Plant Engineer', 'Construction Project Manager', 'Maintenance Engineer', 'Occupational Health and Safety Officer'],
-  BSEE: ['Electrical Engineer', 'Power Plant Engineer', 'Construction Project Manager', 'Maintenance Engineer', 'Renewable Energy Specialist'],
-  BSABE: ['Agricultural and Biosystems Engineer', 'Agriculturist', 'Environmental Scientist', 'Food Technologist', 'Farm Operations Manager'],
-  BSARCH: ['Architect', 'BIM Specialist', 'Urban and Regional Planner', 'Construction Project Manager', 'Interior Designer', 'Quantity Surveyor'],
-  BSINDDES: ['Industrial Designer', 'CAD Design Technician', 'Graphic Designer', 'Multimedia Artist', 'UI/UX Designer'],
+  BSCE: {
+    direct: ['Civil Engineer', 'Geotechnical Engineer'],
+    related: ['Construction Project Manager', 'Quantity Surveyor', 'BIM Specialist'],
+    conditional: ['Occupational Health and Safety Officer'],
+  },
+  BSME: {
+    direct: ['Mechanical Engineer', 'HVAC Design Engineer', 'Power Plant Engineer'],
+    related: ['Construction Project Manager', 'Maintenance Engineer'],
+    conditional: ['Occupational Health and Safety Officer'],
+  },
+  BSEE: {
+    direct: ['Electrical Engineer', 'Power Plant Engineer'],
+    related: ['Construction Project Manager', 'Maintenance Engineer', 'Renewable Energy Specialist'],
+  },
+  // An ABE graduate sits the ABE board, not the Agriculturist one (RA 8435) nor the Food
+  // Technologist one (RA 11052).
+  BSABE: {
+    direct: ['Agricultural and Biosystems Engineer'],
+    related: ['Environmental Scientist', 'Farm Operations Manager'],
+    conditional: ['Agriculturist', 'Food Technologist'],
+  },
+  // Architect stays direct despite the two-year mentorship before the board: it is the degree's
+  // own licensure route. Interior Design is a separate PRC board (RA 10350).
+  BSARCH: {
+    direct: ['Architect'],
+    related: ['BIM Specialist', 'Construction Project Manager', 'Quantity Surveyor'],
+    conditional: ['Urban and Regional Planner', 'Interior Designer'],
+  },
+  BSINDDES: {
+    direct: ['Industrial Designer'],
+    related: ['CAD Design Technician', 'Graphic Designer', 'Multimedia Artist', 'UI/UX Designer'],
+  },
 
-  BSMARE: ['Marine Engineer', 'Power Plant Engineer', 'Port Operations Supervisor', 'Mechanical Engineer', 'Maintenance Engineer'],
-  BSMARTRANS: ['Deck Officer', 'Marine Surveyor', 'Port Operations Supervisor', 'Ship Captain'],
+  // Ashore, a marine engineer's certificate of competency is not the PRC Mechanical Engineer licence
+  // the plant and ME roles require.
+  BSMARE: {
+    direct: ['Marine Engineer'],
+    related: ['Port Operations Supervisor', 'Maintenance Engineer'],
+    conditional: ['Power Plant Engineer', 'Mechanical Engineer'],
+  },
+  BSMARTRANS: {
+    direct: ['Deck Officer'],
+    related: ['Port Operations Supervisor'],
+    conditional: ['Marine Surveyor', 'Ship Captain'],
+  },
 
   // The technologist tracks map to technician and supervisory roles, never to the licensed
   // engineering titles above. That boundary is the whole reason they are separate canonical
   // programmes, and a mapping that crossed it would quietly promise a PRC licence the curriculum
   // does not lead to.
-  BSINDTECH: ['Industrial Technologist', 'CAD Design Technician', 'Quality Assurance Engineer', 'Operations Manager', 'Occupational Health and Safety Officer', 'Instrumentation Technician'],
-  BSELECTECH: ['Electrical Technician', 'Industrial Technologist', 'CAD Design Technician', 'Instrumentation Technician', 'Occupational Health and Safety Officer'],
-  BSELXTECH: ['Electronics Technician', 'Industrial Technologist', 'IT Support Specialist', 'Instrumentation Technician', 'Embedded Systems Engineer'],
+  BSINDTECH: {
+    direct: ['Industrial Technologist'],
+    related: ['CAD Design Technician', 'Operations Manager', 'Instrumentation Technician'],
+    conditional: ['Occupational Health and Safety Officer'],
+  },
+  BSELECTECH: {
+    direct: ['Electrical Technician'],
+    related: ['Industrial Technologist', 'CAD Design Technician', 'Instrumentation Technician'],
+    conditional: ['Occupational Health and Safety Officer'],
+  },
+  BSELXTECH: {
+    direct: ['Electronics Technician'],
+    related: ['Industrial Technologist', 'IT Support Specialist', 'Instrumentation Technician', 'Embedded Systems Engineer'],
+  },
 
-  BSN: ['Registered Nurse', 'Public Health Nurse', 'Clinical Researcher', 'Nurse Administrator', 'Public Health Officer', 'Occupational Health and Safety Officer', 'Medical Sales Representative'],
-  BSPHARM: ['Pharmacist', 'Clinical Researcher', 'Laboratory Research Associate', 'Regulatory Affairs Specialist', 'Medical Sales Representative'],
-  BSPT: ['Physical Therapist', 'Public Health Officer', 'Sports Rehabilitation Specialist'],
-  BSMID: ['Midwife', 'Public Health Officer', 'Public Health Nurse'],
+  BSN: {
+    direct: ['Registered Nurse', 'Public Health Nurse'],
+    related: ['Clinical Researcher', 'Public Health Officer', 'Medical Sales Representative'],
+    conditional: ['Nurse Administrator', 'Occupational Health and Safety Officer'],
+  },
+  BSPHARM: {
+    direct: ['Pharmacist'],
+    related: ['Clinical Researcher', 'Laboratory Research Associate', 'Regulatory Affairs Specialist', 'Medical Sales Representative'],
+  },
+  BSPT: {
+    direct: ['Physical Therapist', 'Sports Rehabilitation Specialist'],
+    related: ['Public Health Officer'],
+  },
+  // Public health *nursing* needs the RN licence, which a midwifery degree does not lead to.
+  BSMID: {
+    direct: ['Midwife'],
+    related: ['Public Health Officer'],
+    conditional: ['Public Health Nurse'],
+  },
 
-  BSA: ['Certified Public Accountant', 'Tax Advisory Specialist', 'Financial Analyst', 'Internal Auditor', 'Chief Financial Officer'],
-  BSAIS: ['Business Systems Analyst', 'Internal Auditor', 'Data Analyst', 'Financial Analyst'],
-  BSBA: ['Marketing Specialist', 'Operations Manager', 'Business Development Specialist', 'Human Resources Specialist', 'Bank Operations Officer', 'Financial Analyst', 'Events Manager', 'Executive Assistant'],
-  BSENTREP: ['Entrepreneur', 'Business Development Specialist', 'Marketing Specialist', 'Operations Manager'],
-  BSOA: ['Office Administrator', 'Human Resources Specialist', 'Operations Manager', 'Executive Assistant'],
-  BSHM: ['Hotel Operations Manager', 'Operations Manager', 'Entrepreneur', 'Events Manager', 'Food and Beverage Supervisor', 'Tour Operations Manager'],
-  BSTM: ['Tourism Officer', 'Hotel Operations Manager', 'Marketing Specialist', 'Tour Operations Manager', 'Events Manager'],
+  BSA: {
+    direct: ['Certified Public Accountant', 'Tax Advisory Specialist'],
+    related: ['Financial Analyst', 'Internal Auditor'],
+    conditional: ['Chief Financial Officer'],
+  },
+  BSAIS: {
+    direct: ['Business Systems Analyst', 'Internal Auditor'],
+    related: ['Data Analyst', 'Financial Analyst'],
+  },
+  // One direct destination per common major: marketing, human resource and financial management.
+  BSBA: {
+    direct: ['Marketing Specialist', 'Human Resources Specialist', 'Financial Analyst'],
+    related: ['Operations Manager', 'Business Development Specialist', 'Bank Operations Officer', 'Events Manager', 'Executive Assistant'],
+  },
+  BSENTREP: {
+    direct: ['Entrepreneur'],
+    related: ['Business Development Specialist', 'Marketing Specialist', 'Operations Manager'],
+  },
+  BSOA: {
+    direct: ['Office Administrator', 'Executive Assistant'],
+    related: ['Human Resources Specialist', 'Operations Manager'],
+  },
+  BSHM: {
+    direct: ['Hotel Operations Manager', 'Food and Beverage Supervisor'],
+    related: ['Operations Manager', 'Entrepreneur', 'Events Manager', 'Tour Operations Manager'],
+  },
+  BSTM: {
+    direct: ['Tourism Officer', 'Tour Operations Manager'],
+    related: ['Hotel Operations Manager', 'Marketing Specialist', 'Events Manager'],
+  },
 
-  BEED: ['Elementary School Teacher', 'Curriculum Developer', 'Guidance Counselor', 'School Administrator'],
-  BSED: ['Secondary School Teacher', 'Curriculum Developer', 'Guidance Counselor', 'School Administrator'],
-  BPED: ['Physical Education Teacher', 'Secondary School Teacher', 'Elementary School Teacher', 'Athletic Coach', 'Sports Rehabilitation Specialist', 'School Administrator'],
+  BEED: {
+    direct: ['Elementary School Teacher'],
+    related: ['Curriculum Developer'],
+    conditional: ['Guidance Counselor', 'School Administrator'],
+  },
+  BSED: {
+    direct: ['Secondary School Teacher'],
+    related: ['Curriculum Developer'],
+    conditional: ['Guidance Counselor', 'School Administrator'],
+  },
+  // A BPEd graduate sits the secondary LET. Elementary teaching is the BEEd's examination, and
+  // rehabilitation (as opposed to conditioning) is physical therapy's licence.
+  BPED: {
+    direct: ['Physical Education Teacher'],
+    related: ['Secondary School Teacher', 'Athletic Coach'],
+    conditional: ['Elementary School Teacher', 'Sports Rehabilitation Specialist', 'School Administrator'],
+  },
 
-  BSPSY: ['Psychometrician', 'Human Resources Specialist', 'Clinical Psychologist', 'Guidance Counselor', 'Clinical Researcher'],
-  BSCRIM: ['Registered Criminologist', 'Police Officer', 'Crime Scene Investigator', 'Correctional Officer', 'Public Administration Officer', 'Security Operations Manager', 'Fire Officer', 'Legal Researcher'],
-  ABPOLSCI: ['Public Administration Officer', 'Communications Officer', 'Journalist', 'Lawyer', 'Policy Research Analyst', 'Legal Researcher'],
-  ABENG: ['Communications Officer', 'Journalist', 'Secondary School Teacher', 'Curriculum Developer', 'Content Writer and Editor'],
-  BPA: ['Public Administration Officer', 'Operations Manager', 'Human Resources Specialist', 'Policy Research Analyst', 'Security Operations Manager'],
-  JD: ['Lawyer', 'Public Administration Officer', 'Internal Auditor', 'Policy Research Analyst', 'Legal Researcher'],
+  BSPSY: {
+    direct: ['Psychometrician'],
+    related: ['Human Resources Specialist', 'Clinical Researcher'],
+    conditional: ['Clinical Psychologist', 'Guidance Counselor'],
+  },
+  // The criminologist board is the degree's own; PNP, BJMP and BuCor appointment is hiring, not a
+  // further credential. Security management adds PNP-SOSIA licensing (RA 11917).
+  BSCRIM: {
+    direct: ['Registered Criminologist', 'Police Officer', 'Correctional Officer'],
+    related: ['Crime Scene Investigator', 'Fire Officer', 'Public Administration Officer', 'Legal Researcher'],
+    conditional: ['Security Operations Manager'],
+  },
+  ABPOLSCI: {
+    direct: ['Public Administration Officer', 'Policy Research Analyst'],
+    related: ['Communications Officer', 'Journalist', 'Legal Researcher'],
+    conditional: ['Lawyer'],
+  },
+  // An AB English graduate needs 18 units of professional education before the LET.
+  ABENG: {
+    direct: ['Content Writer and Editor'],
+    related: ['Communications Officer', 'Journalist', 'Curriculum Developer'],
+    conditional: ['Secondary School Teacher'],
+  },
+  BPA: {
+    direct: ['Public Administration Officer'],
+    related: ['Operations Manager', 'Human Resources Specialist', 'Policy Research Analyst'],
+    conditional: ['Security Operations Manager'],
+  },
+  JD: {
+    direct: ['Lawyer'],
+    related: ['Legal Researcher', 'Public Administration Officer', 'Policy Research Analyst', 'Internal Auditor'],
+  },
 
-  BSMARBIO: ['Marine Biologist', 'Aquatic Resource Specialist', 'Environmental Scientist', 'Fisheries Technologist', 'Laboratory Research Associate'],
-  BSENVSCI: ['Environmental Scientist', 'Public Health Officer', 'Laboratory Research Associate', 'Pollution Control Officer', 'Renewable Energy Specialist'],
-  BSFISH: ['Fisheries Technologist', 'Aquatic Resource Specialist', 'Marine Biologist', 'Agriculturist', 'Farm Operations Manager', 'Agricultural Extension Worker'],
-  BSAGRI: ['Agriculturist', 'Environmental Scientist', 'Entrepreneur', 'Farm Operations Manager', 'Agricultural Extension Worker', 'Pollution Control Officer'],
-  BSFOR: ['Forester', 'Environmental Scientist', 'Agriculturist', 'Pollution Control Officer', 'Agricultural Extension Worker'],
-  BSFT: ['Food Technologist', 'Laboratory Research Associate', 'Quality Assurance Engineer', 'Entrepreneur', 'Regulatory Affairs Specialist', 'Food and Beverage Supervisor'],
+  // The Fisheries Technologist board is BS Fisheries' examination, and Aquatic Resource Specialist
+  // requires it — direct there, conditional from marine biology.
+  BSMARBIO: {
+    direct: ['Marine Biologist'],
+    related: ['Environmental Scientist', 'Laboratory Research Associate'],
+    conditional: ['Aquatic Resource Specialist', 'Fisheries Technologist'],
+  },
+  BSENVSCI: {
+    direct: ['Environmental Scientist'],
+    related: ['Laboratory Research Associate', 'Renewable Energy Specialist'],
+    conditional: ['Pollution Control Officer', 'Public Health Officer'],
+  },
+  BSFISH: {
+    direct: ['Fisheries Technologist', 'Aquatic Resource Specialist'],
+    related: ['Marine Biologist', 'Farm Operations Manager', 'Agricultural Extension Worker'],
+    conditional: ['Agriculturist'],
+  },
+  BSAGRI: {
+    direct: ['Agriculturist', 'Farm Operations Manager', 'Agricultural Extension Worker'],
+    related: ['Environmental Scientist', 'Entrepreneur'],
+    conditional: ['Pollution Control Officer'],
+  },
+  BSFOR: {
+    direct: ['Forester'],
+    related: ['Environmental Scientist', 'Agricultural Extension Worker'],
+    conditional: ['Agriculturist', 'Pollution Control Officer'],
+  },
+  BSFT: {
+    direct: ['Food Technologist'],
+    related: ['Laboratory Research Associate', 'Regulatory Affairs Specialist', 'Food and Beverage Supervisor', 'Entrepreneur'],
+  },
 };
+
+/** The grades a link may carry, in the order the SQL writes them (migration 0041's CHECK). */
+const RELATIONSHIPS = ['direct', 'related', 'conditional'];
+
+/** `MAPPINGS[code]` as one list of `{ title, relationship }`, direct first. */
+const linksOf = (code) =>
+  RELATIONSHIPS.flatMap((relationship) =>
+    (MAPPINGS[code]?.[relationship] ?? []).map((title) => ({ title, relationship })),
+  );
 
 // --- emitter ---------------------------------------------------------------------------------------
 
@@ -1846,8 +2031,14 @@ for (const [key, entries] of Object.entries(OFFERINGS)) {
 
 for (const program of PROGRAMS) {
   require_(
-    MAPPINGS[program.code] !== undefined && MAPPINGS[program.code].length > 0,
+    linksOf(program.code).length > 0,
     `${program.code} has no career mapping — §27 would score it a neutral 50.`,
+  );
+  // Every degree is built to produce *something*. A programme graded entirely related/conditional
+  // is a grading slip, and would rank below every peer on the same careers for no stated reason.
+  require_(
+    (MAPPINGS[program.code]?.direct ?? []).length > 0,
+    `${program.code} has no direct career — what is the degree for?`,
   );
   require_(
     offeredCodes.has(program.code),
@@ -1856,8 +2047,13 @@ for (const program of PROGRAMS) {
 }
 
 const mappedCareers = new Set();
-for (const [code, titles] of Object.entries(MAPPINGS)) {
+for (const [code, grades] of Object.entries(MAPPINGS)) {
   require_(programByCode.has(code), `MAPPINGS has an unknown programme "${code}".`);
+  for (const grade of Object.keys(grades)) {
+    require_(RELATIONSHIPS.includes(grade), `${code}: "${grade}" is not a relationship.`);
+  }
+  // Across grades too: one career both direct and related would be two links, and a second vote.
+  const titles = linksOf(code).map((link) => link.title);
   require_(new Set(titles).size === titles.length, `${code} maps the same career twice.`);
   for (const title of titles) {
     require_(careerByTitle.has(title), `${code} maps unknown career "${title}".`);
@@ -1906,13 +2102,19 @@ for (const [key, entries] of Object.entries(OFFERINGS)) {
   }
 }
 
+// One row per (canonical programme, career) — migration 0040. The mapping is a fact about the
+// programme, not about a campus, so it is written once on the canonical entry and every offering
+// inherits it through the `program_career_links` view. Writing it per offering, as this generator
+// did before 0040, would load every link as a college-specific extra and leave the canonical
+// programmes — the screen where admins now edit the mapping — empty.
 const mapRows = [];
-for (const program of programRows) {
-  for (const title of MAPPINGS[program.canonicalCode]) {
+for (const program of PROGRAMS) {
+  for (const { title, relationship } of linksOf(program.code)) {
     mapRows.push({
-      id: id('program_careers', program.id, careerIds.get(title)),
-      programId: program.id,
+      id: id('program_catalog_careers', catalogIds.get(program.code), careerIds.get(title)),
+      catalogId: catalogIds.get(program.code),
       careerId: careerIds.get(title),
+      relationship,
     });
   }
 }
@@ -2078,6 +2280,7 @@ w();
 w(`DELETE FROM recommendation_explanations;`);
 w(`DELETE FROM recommendations;`);
 w(`DELETE FROM program_careers;`);
+w(`DELETE FROM program_catalog_careers;`);
 w(`DELETE FROM programs;`);
 w(`DELETE FROM program_catalog;`);
 w(`DELETE FROM careers;`);
@@ -2196,10 +2399,10 @@ w(`-- so they are one canonical entry with the institution's own title kept on i
 w();
 writeInsert(
   'program_catalog',
-  'id, code, name, description, status, created_at, updated_at',
+  'id, code, name, description, recommended_strand, status, created_at, updated_at',
   PROGRAMS.map(
     (p) =>
-      `(${q(catalogIds.get(p.code))}, ${q(p.code)}, ${q(p.name)}, ${q(p.description)}, 'active', ${NOW}, ${NOW})`,
+      `(${q(catalogIds.get(p.code))}, ${q(p.code)}, ${q(p.name)}, ${q(p.description)}, ${q(p.strand)}, 'active', ${NOW}, ${NOW})`,
   ),
 );
 
@@ -2224,21 +2427,29 @@ writeInsert(
 
 w(`-- --- Programme ↔ career mapping (${mapRows.length}) ${'-'.repeat(Math.max(1, 50 - String(mapRows.length).length))}`);
 w(`--`);
+const gradeCounts = RELATIONSHIPS.map(
+  (grade) => `${mapRows.filter((m) => m.relationship === grade).length} ${grade}`,
+).join(', ');
+
 w(`-- **The rows §27 actually ranks programmes on.** A programme's RIASEC compatibility is the`);
-w(`-- *average* of its linked careers' Holland codes (\`programRiasecCompatibility\`); a programme`);
-w(`-- with no mapping takes the neutral 50 and is indistinguishable from every other unmapped one.`);
+w(`-- *weighted average* of its linked careers' Holland codes (\`programRiasecCompatibility\`); a`);
+w(`-- programme with no mapping takes the neutral 50 and is indistinguishable from every other`);
+w(`-- unmapped one.`);
 w(`--`);
-w(`-- The source document classifies pathways as DIRECT, RELATED, CONDITIONAL or BROAD.`);
-w(`-- \`program_careers\` has no column for that, so the taxonomy is applied as an editorial rule on`);
-w(`-- what gets linked: DIRECT and RELATED are linked, CONDITIONAL is linked where the credential`);
-w(`-- is the programme's natural destination, and **BROAD is not linked at all**. Attaching`);
-w(`-- transferable-skill roles to every programme would drag every programme's average toward the`);
-w(`-- same mean and flatten the ranking this catalog exists to sharpen.`);
+w(`-- Written on the **canonical** programme (migration 0040): every college offering inherits it`);
+w(`-- through the \`program_career_links\` view, and \`program_careers\` is left empty for the`);
+w(`-- college-specific extras an admin adds later.`);
+w(`--`);
+w(`-- Each link is graded direct, related or conditional (migration 0041) — ${gradeCounts}.`);
+w(`-- The grading rule is written out above \`MAPPINGS\` in the generator. BROAD roles are **not**`);
+w(`-- linked at all: attaching transferable-skill roles to every programme would drag every`);
+w(`-- programme's average toward the same mean and flatten the ranking this catalog exists to`);
+w(`-- sharpen.`);
 w();
 writeInsert(
-  'program_careers',
-  'id, program_id, career_id',
-  mapRows.map((m) => `(${q(m.id)}, ${q(m.programId)}, ${q(m.careerId)})`),
+  'program_catalog_careers',
+  'id, program_catalog_id, career_id, relationship',
+  mapRows.map((m) => `(${q(m.id)}, ${q(m.catalogId)}, ${q(m.careerId)}, ${q(m.relationship)})`),
 );
 
 const sql = out.join('\n');

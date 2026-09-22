@@ -25,6 +25,7 @@ import {
   listAssessmentsQuerySchema,
   reorderQuestionsSchema,
   updateQuestionSchema,
+  updateScoringConfigSchema,
   updateTemplateSchema,
 } from '@/modules/assessment/schemas';
 import {
@@ -275,6 +276,10 @@ builderRoutes.get('/assessment-templates/:templateId', async (c) => {
 
   const dimensions = await builder.dimensionsFor(template.id);
   const versions = await builder.versionsFor(template.id);
+  const scored = await builder.scoredStudentCounts(
+    versions.map((version) => version.id),
+    scoredCountScope(user, template),
+  );
   const taxonomy = new AssessmentTaxonomyService(db);
 
   return c.json(
@@ -293,7 +298,9 @@ builderRoutes.get('/assessment-templates/:templateId', async (c) => {
           // offers Copy instead. Server-decided, from the same policies the write routes call.
           { canManage: canManageTemplate(user, template), canCopy: canCopyTemplate(user, template) },
         ),
-        versions: versions.map(serializeVersionSummary),
+        versions: versions.map((version) =>
+          serializeVersionSummary(version, scored.get(version.id) ?? 0),
+        ),
       },
       'Template retrieved.',
     ),
@@ -695,25 +702,50 @@ builderRoutes.post('/assessment-versions/:versionId/duplicate', async (c) => {
   );
 });
 
+/**
+ * `PATCH /assessment-versions/{id}/scoring-config` — the Scoring panel: a DRAFT's composite weights
+ * and confidence bands. A published version refuses with the same 422 as a question edit; to
+ * re-weight it, Duplicate it. Students already scored keep their numbers, because every score is
+ * recomputed from the version they actually took.
+ */
+builderRoutes.patch('/assessment-versions/:versionId/scoring-config', async (c) => {
+  const input = await parseBody(c, updateScoringConfigSchema);
+  const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const user = requireUser(c);
+  const { version } = await authorizedVersion(builder, user, c.req.param('versionId'), 'manage');
+
+  const updated = await builder.updateScoringConfig(user, version, {
+    compositeWeights: input.composite_weights,
+    compositeRanges: input.composite_ranges,
+  });
+
+  return c.json(successEnvelope(serializeVersionSummary(updated), 'Scoring weights saved.'));
+});
+
 // --- Versions: the review payload, questions, the gate, publish -------------------------------
 
 /** The §31 review screen's payload — questions WITH scores and mappings (author's view). */
 builderRoutes.get('/assessment-versions/:versionId', async (c) => {
   const builder = new AssessmentBuilderService(createDatabase(c.env.DB));
+  const user = requireUser(c);
   const { version, template } = await authorizedVersion(
     builder,
-    requireUser(c),
+    user,
     c.req.param('versionId'),
     'view',
   );
 
   const content = await builder.versionContent(version.id);
   const readiness = await builder.publishReadiness(version.id);
+  const scored = await builder.scoredStudentCounts(
+    [version.id],
+    scoredCountScope(user, template),
+  );
 
   return c.json(
     successEnvelope(
       {
-        ...serializeVersionSummary(version),
+        ...serializeVersionSummary(version, scored.get(version.id) ?? 0),
         template: {
           id: template.id,
           title: template.title,
@@ -958,3 +990,15 @@ builderRoutes.post('/question-dimensions/:mappingId/confirm', async (c) => {
     ),
   );
 });
+
+/**
+ * Whose students a "N students scored" count covers. RIASEC and SCCT are shared by every school, so
+ * a counselor sees only students from their own classes; an admin sees everyone. A CUSTOM
+ * instrument is the counselor's own, so its count is left whole.
+ */
+function scoredCountScope(
+  user: { id: string; role: string },
+  template: { category: string },
+): string | undefined {
+  return user.role === 'counselor' && template.category !== 'CUSTOM' ? user.id : undefined;
+}

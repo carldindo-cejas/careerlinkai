@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, countDistinct, desc, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '@/db/client';
 import { RIASEC_DIMENSIONS, type RiasecDimension } from '@/db/enums';
@@ -30,15 +30,18 @@ import {
   rankTopDistinct,
   scoreCareer,
   scoreProgram,
-  TOP_N,
   type CareerTarget,
+  type LinkedCareer,
   type ProgramTarget,
   type RiasecProfile,
   type StudentSignals,
 } from '@/lib/recommendation';
+import type { ScoringFormula } from '@/lib/scoring-formula';
 import { AcademicCatalogService } from '@/modules/catalog/academic-catalog-service';
 import { ScoringService } from '@/modules/assessment/scoring-service';
 import { AuditService } from '@/modules/platform/audit-service';
+import { FormulaService } from '@/modules/recommendation/formula-service';
+import { RecommendationFreshnessService } from '@/modules/recommendation/freshness-service';
 
 /**
  * RecommendationService (FULLPLAN §27, §28) — the shell around the pure engine.
@@ -114,10 +117,26 @@ export interface ProgramRecommendation {
   college: College;
 }
 
+/**
+ * The catalog side of a generation, read once (see `loadScoringContext`) and shared by every student
+ * scored against it — so a page of several students costs one catalog read, not one each.
+ */
+export interface ScoringContext {
+  formula: ScoringFormula;
+  careers: CareerTarget[];
+  programs: { program: Program; collegeName: string; linked: LinkedCareer[] }[];
+}
+
 export interface RecommendationSet {
   /** The RIASEC result these were computed from — the Holland Code the cards sit next to. */
   assessmentResultId: string;
   generatedAt: string;
+  /**
+   * Generated before the last change to anything §27 scores against (2026-09-22) — the catalog
+   * links, a career's code, the formula. The cards are still the student's real results; they are
+   * just not what the system would say today, and the screens say so.
+   */
+  stale: boolean;
   careers: CareerRecommendation[];
   programs: ProgramRecommendation[];
 }
@@ -126,11 +145,13 @@ export class RecommendationService {
   private readonly catalog: AcademicCatalogService;
   private readonly scoring: ScoringService;
   private readonly audit: AuditService;
+  private readonly formulas: FormulaService;
 
   constructor(private readonly db: Database) {
     this.catalog = new AcademicCatalogService(db);
     this.scoring = new ScoringService(db);
     this.audit = new AuditService(db);
+    this.formulas = new FormulaService(db);
   }
 
   /**
@@ -147,7 +168,10 @@ export class RecommendationService {
    * The delete-then-insert below is what makes that true, and the unique index on
    * `(assessment_result_id, match_type, ranking)` is what would catch it if it stopped being true.
    */
-  async generateFor(studentId: string): Promise<{ careers: number; programs: number } | null> {
+  async generateFor(
+    studentId: string,
+    context?: ScoringContext,
+  ): Promise<{ careers: number; programs: number } | null> {
     const { riasec, scct } = await this.latestScoredResults(studentId);
 
     if (riasec === null || scct === null) {
@@ -172,8 +196,22 @@ export class RecommendationService {
 
     const student = await this.signalsFor(studentId, profile, careerConfidenceIndex);
 
-    const rankedCareers = await this.rankCareers(student);
-    const rankedPrograms = await this.rankPrograms(student);
+    /*
+      **Read once, here, and handed down.** The formula is an administrator-owned row (2026-09-21,
+      `FormulaService`), and this method ranks the entire catalog: a read inside the engine would be
+      one D1 query per career and per program, which is precisely the N+1 that
+      `scorableCareersForMany` exists to have already fixed. One read per generation, and every
+      score in the set is computed against the same formula — which is also what keeps a set
+      internally comparable if an admin saves a change mid-run.
+
+      A caller regenerating several students (`recomputeStale`) passes the context in, so the
+      catalog is read once per request rather than once per student.
+    */
+    const scoring = context ?? (await this.loadScoringContext());
+    const { formula } = scoring;
+
+    const rankedCareers = this.rankCareers(student, scoring);
+    const rankedPrograms = this.rankPrograms(student, scoring);
 
     const generatedAt = now();
 
@@ -242,6 +280,9 @@ export class RecommendationService {
         programs: rankedPrograms.length,
         top_career_score: rankedCareers[0]?.matchScore ?? null,
         top_program_score: rankedPrograms[0]?.matchScore ?? null,
+        // Which weights produced these scores. A set regenerated after a re-weighting is a
+        // different set from the same inputs, and this is the only row that says so.
+        formula_weights: { career: formula.career, program: formula.program },
       },
     });
 
@@ -317,10 +358,12 @@ export class RecommendationService {
      * on. One query for a four-row table, once per page.
      */
     const outlooks = await this.catalog.outlooksById();
+    const inputsChangedAt = await new RecommendationFreshnessService(this.db).changedAt();
 
     return {
       assessmentResultId,
       generatedAt: rows[0]!.createdAt,
+      stale: RecommendationFreshnessService.isStale(rows[0]!.createdAt, inputsChangedAt),
       careers: careerRows.flatMap((recommendation) => {
         const career = careerById.get(recommendation.targetCareerId!);
 
@@ -449,6 +492,7 @@ export class RecommendationService {
         .filter((id): id is string => id !== null),
     );
 
+    const inputsChangedAt = await new RecommendationFreshnessService(this.db).changedAt();
     const byStudent = new Map<string, typeof rows>();
     for (const row of rows) {
       const list = byStudent.get(row.studentId) ?? [];
@@ -463,6 +507,7 @@ export class RecommendationService {
       result.set(studentId, {
         assessmentResultId: studentRows[0]!.assessmentResultId,
         generatedAt: studentRows[0]!.createdAt,
+        stale: RecommendationFreshnessService.isStale(studentRows[0]!.createdAt, inputsChangedAt),
         careers: careerRows.flatMap((recommendation) => {
           const career = careerById.get(recommendation.targetCareerId!);
 
@@ -522,6 +567,24 @@ export class RecommendationService {
     }
 
     return codes;
+  }
+
+  /**
+   * How many students are currently holding a recommendation set.
+   *
+   * Read by the formula screen, which uses it to say plainly how many students still have scores
+   * computed under the previous weights — a re-weighting applies to future generations only (see
+   * `adminRecommendationRoutes`), and an administrator changing one deserves to know the size of
+   * what has not caught up rather than to discover it from a confused counselor.
+   *
+   * `COUNT(DISTINCT student_id)` rather than a row count: a student holds up to twenty rows.
+   */
+  async studentsWithSets(): Promise<number> {
+    const [row] = await this.db
+      .select({ total: countDistinct(recommendations.studentId) })
+      .from(recommendations);
+
+    return row?.total ?? 0;
   }
 
   /** The current rank-1 rows of each type — what the queued explanation job pre-explains. */
@@ -698,6 +761,9 @@ export class RecommendationService {
     }
 
     const student = await this.signalsFor(studentId, profile, careerConfidenceIndex);
+    // The same formula `generateFor` uses — this endpoint's whole claim is that it is the stored
+    // arithmetic restricted to a shortlist, not a second opinion about it.
+    const formula = await this.formulas.get();
     const rows = await this.db
       .select({ program: programs, college: colleges })
       .from(programs)
@@ -714,7 +780,9 @@ export class RecommendationService {
           careersOf.map((career) => ({
             title: career.title,
             typicalRiasecCode: career.typicalRiasecCode,
+            relationship: career.relationship,
           })),
+          formula,
         );
 
         return {
@@ -766,21 +834,169 @@ export class RecommendationService {
     };
   }
 
-  /** Every `active` career, scored and ranked (§27). */
-  private async rankCareers(student: StudentSignals) {
-    const rows = await this.db
+  /**
+   * Everything §27 ranks against that is **not** about the student: the formula, every active
+   * career, every rankable program and the careers each one leads to. Four-to-five D1 reads,
+   * whatever the size of the catalog.
+   *
+   * `rankablePrograms()` is **the single place recommendability is decided** and this asks nothing
+   * else: an `active` program under an `archived` college is not rankable, because a program's own
+   * status says nothing about whether the college still offers it. Likewise `scorableCareersFor()`
+   * is the only thing that decides which careers vote on a program's RIASEC average.
+   *
+   * **One query for every program's careers, not one per program.** This ranks the whole catalog,
+   * so the per-program version in a loop was an N+1 — and on Cloudflare that is not just slow: a
+   * Worker has a hard subrequest limit, D1 queries count against it, and generation runs inside the
+   * student's `submit()`, which has already spent budget scoring the attempt. See
+   * `scorableCareersForMany`.
+   */
+  async loadScoringContext(formula?: ScoringFormula): Promise<ScoringContext> {
+    const resolvedFormula = formula ?? (await this.formulas.get());
+
+    const careerRows = await this.db
       .select()
       .from(careers)
       .where(and(eq(careers.status, 'active'), isNull(careers.deletedAt)));
 
-    const targets: CareerTarget[] = rows.map((career) => ({
-      id: career.id,
-      title: career.title,
-      typicalRiasecCode: career.typicalRiasecCode,
-    }));
+    const rankable = await this.catalog.rankablePrograms();
+    const linkedByProgram = await this.catalog.scorableCareersForMany(
+      rankable.map(({ program }) => program.id),
+    );
 
-    const matches = targets.map((career) => ({
-      ...scoreCareer(student, career),
+    return {
+      formula: resolvedFormula,
+      careers: careerRows.map((career) => ({
+        id: career.id,
+        title: career.title,
+        typicalRiasecCode: career.typicalRiasecCode,
+      })),
+      programs: rankable.map(({ program, college }) => ({
+        program,
+        collegeName: college.name,
+        linked: (linkedByProgram.get(program.id) ?? []).map((career) => ({
+          title: career.title,
+          typicalRiasecCode: career.typicalRiasecCode,
+          relationship: career.relationship,
+        })),
+      })),
+    };
+  }
+
+  /**
+   * Regenerate the stalest few sets (2026-09-22) — the admin Matching page's "recompute" button,
+   * one page per request.
+   *
+   * **A page, not the whole school.** The platform runs on the Workers Free plan: 50 subrequests
+   * and 10 ms of CPU per invocation. Generation costs ~7 D1 calls per student on top of ~5 for the
+   * shared context, so a page of three stays near half the cap with the request's own auth reads on
+   * top. A queue does not help — a consumer invocation shares one budget across its whole batch —
+   * so the browser drives the loop instead, page after page, and the stale list is its own cursor
+   * (`RecommendationFreshnessService.staleStudents`): an interrupted run resumes where it stopped.
+   *
+   * A student whose set cannot be regenerated (no longer has both results scored, or the generation
+   * threw) is counted in `failed` and left as it was; the caller stops when a page makes no
+   * progress, so one such student cannot spin the loop forever.
+   */
+  async recomputeStale(limit: number): Promise<{
+    regenerated: number;
+    failed: number;
+    remaining: number;
+  }> {
+    const freshness = new RecommendationFreshnessService(this.db);
+    const inputsChangedAt = await freshness.changedAt();
+
+    if (inputsChangedAt === null) {
+      return { regenerated: 0, failed: 0, remaining: 0 };
+    }
+
+    const studentIds = await freshness.staleStudents(inputsChangedAt, limit);
+
+    if (studentIds.length === 0) {
+      return { regenerated: 0, failed: 0, remaining: 0 };
+    }
+
+    const context = await this.loadScoringContext();
+    let regenerated = 0;
+    let failed = 0;
+
+    for (const studentId of studentIds) {
+      try {
+        const result = await this.generateFor(studentId, context);
+
+        if (result === null) {
+          failed += 1;
+        } else {
+          regenerated += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            message: 'Bulk recommendation recompute failed for one student.',
+            student_id: studentId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+
+    const { staleSets } = await freshness.summary();
+
+    return { regenerated, failed, remaining: staleSets };
+  }
+
+  /**
+   * **What would a student with these results be shown?** (2026-09-22) — the admin Matching page's
+   * preview, and the only way to see the effect of a catalog or formula change without waiting for
+   * a real student.
+   *
+   * The same context and the same ranking `generateFor` uses, so a preview cannot disagree with what
+   * a real student would get. Nothing is written. `formula` scores against a draft instead of the
+   * saved one, which is how the formula screen can show a change before it is saved.
+   */
+  async preview(
+    student: StudentSignals,
+    formula?: ScoringFormula,
+  ): Promise<{
+    careers: { id: string; title: string; typicalRiasecCode: string | null; matchScore: number; reason: string; components: Record<string, number> }[];
+    programs: { id: string; name: string; collegeName: string; matchScore: number; reason: string; components: Record<string, number>; careers: string[] }[];
+  }> {
+    const context = await this.loadScoringContext(formula);
+    const byCareerId = new Map(context.careers.map((career) => [career.id, career]));
+    const byProgramId = new Map(context.programs.map((entry) => [entry.program.id, entry]));
+
+    return {
+      careers: this.rankCareers(student, context).map((match) => ({
+        id: match.careerId,
+        title: match.title,
+        typicalRiasecCode: byCareerId.get(match.careerId)?.typicalRiasecCode ?? null,
+        matchScore: match.matchScore,
+        reason: match.reason,
+        components: { ...match.components },
+      })),
+      programs: this.rankPrograms(student, context).map((match) => {
+        const entry = byProgramId.get(match.programId);
+
+        return {
+          id: match.programId,
+          name: match.name,
+          collegeName: entry?.collegeName ?? '',
+          matchScore: match.matchScore,
+          reason: match.reason,
+          components: { ...match.components },
+          careers: (entry?.linked ?? []).map((career) => career.title).sort(),
+        };
+      }),
+    };
+  }
+
+  /** Every `active` career, scored and ranked (§27). Pure — the context carries the catalog. */
+  private rankCareers(student: StudentSignals, context: ScoringContext) {
+    const { formula } = context;
+
+    const matches = context.careers.map((career) => ({
+      ...scoreCareer(student, career, formula),
       title: career.title,
     }));
 
@@ -788,50 +1004,23 @@ export class RecommendationService {
       matches,
       (m) => m.matchScore,
       (m) => m.title,
-      TOP_N,
+      formula.topN,
     );
   }
 
-  /**
-   * Every rankable program, scored and ranked (§27).
-   *
-   * `rankablePrograms()` is **the single place recommendability is decided** and this asks nothing
-   * else: an `active` program under an `archived` college is not rankable, because a program's own
-   * status says nothing about whether the college still offers it. Likewise `scorableCareersFor()`
-   * is the only thing that decides which careers vote on a program's RIASEC average. Both were
-   * built in Step 3 for exactly this call site.
-   */
-  private async rankPrograms(student: StudentSignals) {
-    const rankable = await this.catalog.rankablePrograms();
+  /** Every rankable program, scored and ranked (§27). Pure — the context carries the catalog. */
+  private rankPrograms(student: StudentSignals, context: ScoringContext) {
+    const { formula } = context;
 
-    // **One query for every program's careers, not one per program.** This ranks the whole catalog,
-    // so the per-program version in a loop was an N+1 — and on Cloudflare that is not just slow: a
-    // Worker has a hard subrequest limit, D1 queries count against it, and this runs inside the
-    // student's `submit()`, which has already spent budget scoring the attempt. It passed every
-    // local test (Miniflare enforces no such limit) and generated nothing at all on the deployed
-    // Worker. See `scorableCareersForMany`.
-    const linkedByProgram = await this.catalog.scorableCareersForMany(
-      rankable.map(({ program }) => program.id),
-    );
-
-    const matches = rankable.map(({ program }) => {
+    const matches = context.programs.map(({ program, linked }) => {
       const target: ProgramTarget = {
         id: program.id,
         name: program.name,
         recommendedStrand: program.recommendedStrand,
       };
 
-      const linked = linkedByProgram.get(program.id) ?? [];
-
       return {
-        ...scoreProgram(
-          student,
-          target,
-          linked.map((career) => ({
-            title: career.title,
-            typicalRiasecCode: career.typicalRiasecCode,
-          })),
-        ),
+        ...scoreProgram(student, target, linked, formula),
         name: program.name,
         /*
           What this row *is*, as opposed to which college's copy of it this row is. The canonical
@@ -847,7 +1036,7 @@ export class RecommendationService {
       (m) => m.matchScore,
       (m) => m.name,
       (m) => m.canonicalKey,
-      TOP_N,
+      formula.topN,
     );
   }
 

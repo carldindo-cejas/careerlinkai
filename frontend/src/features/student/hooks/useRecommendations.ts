@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { demoInstead, useTourDemo } from '@/features/student/tour/demoMode';
-import { aiApi } from '@/services/aiApi';
 import { catalogLinksApi, chatApi, recommendationApi } from '@/services/recommendationApi';
-import type { ChatTranscript } from '@/types/recommendation';
+import type { ChatTranscript, ChatTurn } from '@/types/recommendation';
 
 /**
  * Recommendation hooks (FULLPLAN §36). Components call these; these call the service.
@@ -75,18 +74,6 @@ export function useRegenerateStudentRecommendations(studentId: string) {
   });
 }
 
-/**
- * "Explain more" (§20, §30 — Phase 5a). A mutation, not a query: the student asks, once,
- * and the server answers 200 whatever happened to the model — an existing explanation, a
- * fresh one, or `explanation: null` with the deterministic reason as the fallback. The
- * card renders whichever arrived; there is no error state that hides the reason.
- */
-export function useExplainRecommendation() {
-  return useMutation({
-    mutationFn: (recommendationId: string) => aiApi.explainRecommendation(recommendationId),
-  });
-}
-
 // --- The relationship lookups (migration 0018) -----------------------------------------------
 
 export const catalogLinkKeys = {
@@ -135,11 +122,34 @@ export function useChatTranscript() {
   });
 }
 
+/** Ask one typed question. See `useChatTurn` for how the turn reaches the cache. */
+export function useAskChat() {
+  return useChatTurn((message: string) => chatApi.ask(message), (message) => message);
+}
+
 /**
- * Ask one question.
+ * "Explain more" on a recommendation card, answered in the chat (2026-09-22).
+ *
+ * The bubble shows a short "Explain more about …"; what the server runs is the §30 explanation for
+ * that one recommendation — the card sends its id, never the question text. The optimistic echo
+ * uses the same words the server will write, so the swap on success is invisible.
+ */
+export function useExplainInChat() {
+  return useChatTurn(
+    ({ recommendationId }: { recommendationId: string; title: string }) =>
+      chatApi.explain(recommendationId),
+    ({ title }) => `Explain more about ${title}`,
+  );
+}
+
+/** Every mutation that adds a turn shares this key, so the panel can say "Thinking…" for any. */
+export const chatTurnMutationKey = ['student', 'chat', 'turn'] as const;
+
+/**
+ * One turn, whatever asked it — the shared body of `useAskChat` and `useExplainInChat`.
  *
  * **Optimistic on the question, never on the answer.** The student's own message goes into the
- * cache immediately — they typed it, it is not in doubt, and waiting a round trip to show it makes
+ * cache immediately — they asked it, it is not in doubt, and waiting a round trip to show it makes
  * the panel feel broken. The answer is only ever what the server sent back, because the one thing
  * this panel must never do is put words in the assistant's mouth that no model produced and no
  * §27 calculation backs.
@@ -147,13 +157,17 @@ export function useChatTranscript() {
  * On failure the optimistic question is rolled back, so a message that never reached the server
  * does not sit in the transcript looking answered.
  */
-export function useAskChat() {
+function useChatTurn<TInput>(
+  send: (input: TInput) => Promise<ChatTurn>,
+  echo: (input: TInput) => string,
+) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (message: string) => chatApi.ask(message),
+    mutationKey: chatTurnMutationKey,
+    mutationFn: send,
 
-    onMutate: async (message: string) => {
+    onMutate: async (input: TInput) => {
       await queryClient.cancelQueries({ queryKey: chatKeys.transcript });
 
       const previous = queryClient.getQueryData<ChatTranscript>(chatKeys.transcript);
@@ -165,9 +179,9 @@ export function useAskChat() {
           {
             id: `pending-${Date.now()}`,
             role: 'user',
-            content: message,
+            content: echo(input),
             ai_request_id: null,
-            // The optimistic echo of what the student just typed — a question, so nothing to cite,
+            // The optimistic echo of what the student just asked — a question, so nothing to cite,
             // nothing to flag and nothing to ask the school to answer.
             sources: [],
             feedback: null,
@@ -180,7 +194,7 @@ export function useAskChat() {
       return { previous };
     },
 
-    onError: (_error, _message, context) => {
+    onError: (_error, _input, context) => {
       if (context?.previous !== undefined) {
         queryClient.setQueryData(chatKeys.transcript, context.previous);
       }

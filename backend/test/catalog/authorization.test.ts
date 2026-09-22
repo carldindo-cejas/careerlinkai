@@ -27,7 +27,10 @@ import {
  * catch it by naming them all.
  */
 
-/** All 15 catalog endpoints (§20). `{}` bodies are fine — the guard runs before validation. */
+/**
+ * All 22 catalog endpoints (§20, plus the mapping work of 2026-09-22). `{}` bodies are fine — the
+ * guard runs before validation.
+ */
 const ENDPOINTS: [string, string][] = [
   ['GET', '/admin/colleges'],
   ['POST', '/admin/colleges'],
@@ -44,6 +47,16 @@ const ENDPOINTS: [string, string][] = [
   ['DELETE', '/admin/careers/some-id'],
   ['POST', '/admin/programs/some-id/careers'],
   ['DELETE', '/admin/programs/some-id/careers/some-career-id'],
+  // Migration 0040 — what a canonical program leads to, edited once for every college.
+  ['POST', '/admin/canonical-programs/some-id/careers'],
+  ['DELETE', '/admin/canonical-programs/some-id/careers/some-career-id'],
+  ['GET', '/admin/careers/some-id/canonical-programs'],
+  // Migration 0041 — re-grading a link (direct / related / conditional).
+  ['PATCH', '/admin/canonical-programs/some-id/careers/some-career-id'],
+  ['PATCH', '/admin/programs/some-id/careers/some-career-id'],
+  // The mapping as a spreadsheet — export, and a preview-then-apply import.
+  ['GET', '/admin/catalog-mapping/export'],
+  ['POST', '/admin/catalog-mapping/import'],
 ];
 
 describe('a counselor is refused the /admin group entirely', () => {

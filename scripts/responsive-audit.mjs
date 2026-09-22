@@ -487,6 +487,16 @@ async function run() {
       name: 'counselor-assessment-builder',
       path: `/counselor/assessment-templates/${riasec.id}`,
     },
+    // The account page (2026-09-21). Worth a row of its own because it is the narrowest thing in
+    // the counselor shell that is *all* form: three stacked cards of labelled inputs, a modal over
+    // them, and a six-digit code field — which is exactly the shape that survives a desktop and
+    // then overflows at 320px.
+    {
+      role: 'counselor',
+      session: counselor,
+      name: 'counselor-profile',
+      path: '/counselor/profile',
+    },
 
     studentToken && { role: 'student', session: studentToken, name: 'student-dashboard', path: '/student' },
     studentToken && {

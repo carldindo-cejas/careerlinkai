@@ -2,13 +2,16 @@ import { and, asc, count, desc, eq, inArray, isNull, ne, or, sql, type SQL } fro
 import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 
 import type { Database } from '@/db/client';
+import type { LinkRelationship } from '@/db/enums';
 import {
   barangays,
   careers,
   colleges,
   employmentOutlooks,
+  programCareerLinks,
   programCareers,
   programCatalog,
+  programCatalogCareers,
   programs,
   provinces,
   regions,
@@ -20,19 +23,20 @@ import {
   type ProgramCatalogEntry,
   type User,
 } from '@/db/schema';
-import type { CatalogStatus } from '@/db/enums';
 import { uuid } from '@/lib/crypto';
-import { chunkIds } from '@/lib/d1-batching';
+import { chunkForInsert, chunkIds } from '@/lib/d1-batching';
 import { now } from '@/lib/datetime';
 import { isUniqueViolation, translateUniqueViolation } from '@/lib/db-errors';
 import { ApiError, paginate, type PaginatedData } from '@/lib/envelope';
 import { contains } from '@/lib/search';
 import type {
+  CreateCanonicalProgramInput,
   CreateCareerInput,
   CreateCollegeInput,
   CreateProgramInput,
   ListCanonicalProgramQuery,
   ListCatalogQuery,
+  UpdateCanonicalProgramInput,
   UpdateCareerInput,
   UpdateCollegeInput,
   UpdateProgramInput,
@@ -80,6 +84,19 @@ export interface ResolvedLocation {
   town: ResolvedPlace | null;
   barangay: ResolvedPlace | null;
 }
+
+/**
+ * A career as one offering's mapping shows it (migration 0040): the row, plus whether the link is
+ * **inherited** from the offering's canonical program or is this college's own extra. The admin
+ * screen needs the difference — an inherited chip is removed on the canonical page, not here.
+ */
+export type LinkedCareer = Career & { inherited: boolean; relationship: LinkRelationship };
+
+/** A career as a canonical program links it: the row, plus how strongly it leads there (0041). */
+export type CanonicalLinkedCareer = Career & { relationship: LinkRelationship };
+
+/** A career as the scorer reads it for one offering: live, active, and how strongly it is linked. */
+export type ScorableCareer = Career & { relationship: LinkRelationship };
 
 /** The address ids as they arrive from the schema — optional (leave), null (clear), or an id (set). */
 interface AddressInput {
@@ -352,7 +369,7 @@ export class AcademicCatalogService {
    */
   async listPrograms(
     collegeId: string,
-  ): Promise<{ program: Program; careers: Career[]; canonical: ProgramCatalogEntry | null }[]> {
+  ): Promise<{ program: Program; careers: LinkedCareer[]; canonical: ProgramCatalogEntry | null }[]> {
     await this.findCollege(collegeId);
 
     const rows = await this.db
@@ -409,6 +426,7 @@ export class AcademicCatalogService {
       input.code,
       input.name,
       timestamp,
+      input.recommended_strand ?? null,
     );
 
     const program: Program = {
@@ -420,7 +438,13 @@ export class AcademicCatalogService {
       name: input.name,
       departmentName: input.department_name ?? null,
       description: input.description ?? null,
-      recommendedStrand: input.recommended_strand ?? null,
+      // An explicit strand — including an explicit `null`, "no requirement" — is this college's
+      // answer and wins. Only an *omitted* one falls back to the canonical program's default
+      // (migration 0040), which is what makes a new campus offering start out scored like its twins.
+      recommendedStrand:
+        input.recommended_strand !== undefined
+          ? input.recommended_strand
+          : (canonical?.recommendedStrand ?? null),
       status: input.status ?? 'active',
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -615,7 +639,7 @@ export class AcademicCatalogService {
 
   async createCanonicalProgram(
     user: User,
-    input: { code: string; name: string; description?: string | null },
+    input: CreateCanonicalProgramInput,
     ipAddress: string | null,
   ): Promise<ProgramCatalogEntry> {
     const code = AcademicCatalogService.normalizeProgramCode(input.code);
@@ -629,6 +653,7 @@ export class AcademicCatalogService {
       name: input.name.trim(),
       description: input.description ?? null,
       status: 'active',
+      recommendedStrand: input.recommended_strand ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
       deletedAt: null,
@@ -649,12 +674,24 @@ export class AcademicCatalogService {
     return entry;
   }
 
+  /**
+   * Edit a canonical entry — and, when its strand **changes**, apply the new strand to every live
+   * offering of it (migration 0040).
+   *
+   * The canonical strand is a default rather than a lock: an offering may differ, because campuses
+   * genuinely set different admission requirements for the same degree. What makes it worth having
+   * is this write — "BS Nursing expects the Academic track" set once instead of on every campus.
+   *
+   * It fires only on a change, compared against what is stored, never on the key merely being
+   * present. A form that resends the unchanged strand alongside a rename must not quietly flatten a
+   * campus that was deliberately set apart.
+   */
   async updateCanonicalProgram(
     user: User,
     id: string,
-    input: { code?: string; name?: string; description?: string | null; status?: CatalogStatus },
+    input: UpdateCanonicalProgramInput,
     ipAddress: string | null,
-  ): Promise<ProgramCatalogEntry> {
+  ): Promise<{ entry: ProgramCatalogEntry; offeringsUpdated: number }> {
     const existing = await this.findCanonicalProgram(id);
     const code =
       input.code === undefined ? undefined : AcademicCatalogService.normalizeProgramCode(input.code);
@@ -663,15 +700,29 @@ export class AcademicCatalogService {
       await this.assertCanonicalCodeFree(code, existing.id);
     }
 
+    const strandChanged =
+      input.recommended_strand !== undefined &&
+      input.recommended_strand !== existing.recommendedStrand;
+    const timestamp = now();
+
     const changes = {
       ...(code !== undefined ? { code } : {}),
       ...(input.name !== undefined ? { name: input.name.trim() } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.status !== undefined ? { status: input.status } : {}),
-      updatedAt: now(),
+      ...(strandChanged ? { recommendedStrand: input.recommended_strand ?? null } : {}),
+      updatedAt: timestamp,
     };
 
     await this.db.update(programCatalog).set(changes).where(eq(programCatalog.id, existing.id));
+
+    const updated = strandChanged
+      ? await this.db
+          .update(programs)
+          .set({ recommendedStrand: input.recommended_strand ?? null, updatedAt: timestamp })
+          .where(and(eq(programs.programCatalogId, existing.id), isNull(programs.deletedAt)))
+          .returning({ id: programs.id })
+      : [];
 
     await this.audit.write({
       action: 'CANONICAL_PROGRAM_UPDATED',
@@ -679,12 +730,20 @@ export class AcademicCatalogService {
       userId: user.id,
       targetType: 'program_catalog',
       targetId: existing.id,
-      oldValues: { code: existing.code, name: existing.name, status: existing.status },
-      newValues: { ...input },
+      oldValues: {
+        code: existing.code,
+        name: existing.name,
+        status: existing.status,
+        recommended_strand: existing.recommendedStrand,
+      },
+      newValues: {
+        ...input,
+        ...(strandChanged ? { offerings_strand_updated: updated.length } : {}),
+      },
       ipAddress,
     });
 
-    return { ...existing, ...changes };
+    return { entry: { ...existing, ...changes }, offeringsUpdated: updated.length };
   }
 
   /**
@@ -707,6 +766,8 @@ export class AcademicCatalogService {
     const source = await this.findCanonicalProgram(sourceId);
     const target = await this.findCanonicalProgram(targetId);
     const timestamp = now();
+
+    await this.carryCareersThroughMerge(source.id, target.id);
 
     const moved = await this.db
       .update(programs)
@@ -731,6 +792,56 @@ export class AcademicCatalogService {
     });
 
     return { moved: moved.length, target };
+  }
+
+  /**
+   * Keep a merge from silently changing what the moved offerings lead to (migration 0040).
+   *
+   * Before 0040 a merge touched no links — they hung off the offerings, which kept them. Now an
+   * offering's inherited careers come from its canonical entry, so re-pointing it at the target
+   * would drop every career the *source* linked and the target does not. Those are written down onto
+   * the moved offerings as college extras instead: nothing a student was being matched on
+   * disappears, and the admin sees them as extras on each college's program to keep or remove.
+   *
+   * Promoting them onto the target instead was the alternative, and the wrong one — it would change
+   * the careers of every offering the target already had, on the strength of a merge about others.
+   */
+  private async carryCareersThroughMerge(sourceId: string, targetId: string): Promise<void> {
+    const [sourceLinks, targetLinks, offerings] = await Promise.all([
+      this.db
+        .select({
+          careerId: programCatalogCareers.careerId,
+          relationship: programCatalogCareers.relationship,
+        })
+        .from(programCatalogCareers)
+        .where(eq(programCatalogCareers.programCatalogId, sourceId)),
+      this.db
+        .select({ careerId: programCatalogCareers.careerId })
+        .from(programCatalogCareers)
+        .where(eq(programCatalogCareers.programCatalogId, targetId)),
+      this.db
+        .select({ id: programs.id })
+        .from(programs)
+        .where(eq(programs.programCatalogId, sourceId)),
+    ]);
+
+    const covered = new Set(targetLinks.map((link) => link.careerId));
+    const carried = sourceLinks.filter((link) => !covered.has(link.careerId));
+
+    const rows = offerings.flatMap((offering) =>
+      carried.map((link) => ({
+        id: uuid(),
+        programId: offering.id,
+        careerId: link.careerId,
+        relationship: link.relationship,
+      })),
+    );
+
+    // An offering may already carry the same career as an extra of its own; the unique index is
+    // the set rule, and the existing row is the one to keep.
+    for (const chunk of chunkForInsert(rows, programCareers)) {
+      await this.db.insert(programCareers).values(chunk).onConflictDoNothing();
+    }
   }
 
   /**
@@ -760,25 +871,26 @@ export class AcademicCatalogService {
   }
 
   /**
-   * **"Which college programs lead to this career?"** — `program_careers`, read in the direction
-   * nothing needed until now.
+   * **"Which college programs lead to this career?"** — the mapping, read in the direction nothing
+   * needed until now.
    *
    * §27 only ever traversed program → careers (to average their Holland codes). The student-facing
-   * "View related college programs" button traverses career → programs, over the same rows and the
-   * same `active` chain.
+   * "View related college programs" button traverses career → programs, over the same links (the
+   * `program_career_links` view, so inherited and college-specific alike) and the same `active`
+   * chain.
    */
   async programsForCareer(
     careerId: string,
   ): Promise<{ program: Program; college: College; canonical: ProgramCatalogEntry | null }[]> {
     return this.db
       .select({ program: programs, college: colleges, canonical: programCatalog })
-      .from(programCareers)
-      .innerJoin(programs, eq(programCareers.programId, programs.id))
+      .from(programCareerLinks)
+      .innerJoin(programs, eq(programCareerLinks.programId, programs.id))
       .innerJoin(colleges, eq(programs.collegeId, colleges.id))
       .leftJoin(programCatalog, eq(programs.programCatalogId, programCatalog.id))
       .where(
         and(
-          eq(programCareers.careerId, careerId),
+          eq(programCareerLinks.careerId, careerId),
           eq(programs.status, 'active'),
           isNull(programs.deletedAt),
           eq(colleges.status, 'active'),
@@ -849,12 +961,17 @@ export class AcademicCatalogService {
     return this.findCanonicalProgram(id);
   }
 
-  /** See `createProgram` for why an unmatched code creates the entry rather than refusing. */
+  /**
+   * See `createProgram` for why an unmatched code creates the entry rather than refusing. A minted
+   * entry takes the first offering's strand as its default — the only evidence there is of what
+   * the program expects.
+   */
   private async resolveCanonicalProgram(
     explicitId: string | null | undefined,
     code: string,
     name: string,
     timestamp: string,
+    strand: ProgramCatalogEntry['recommendedStrand'],
   ): Promise<ProgramCatalogEntry | null> {
     if (explicitId !== undefined) {
       return this.requireCanonicalProgram(explicitId);
@@ -880,6 +997,7 @@ export class AcademicCatalogService {
       name: name.trim(),
       description: null,
       status: 'active',
+      recommendedStrand: strand,
       createdAt: timestamp,
       updatedAt: timestamp,
       deletedAt: null,
@@ -1078,7 +1196,9 @@ export class AcademicCatalogService {
   // --- The program ↔ career mapping ----------------------------------------------------
 
   /**
-   * Link a career to a program.
+   * Link a career to one college's offering — a **college-specific extra** since migration 0040.
+   * What the program leads to everywhere is linked on its canonical entry
+   * (`attachCanonicalCareer`); this adds a destination on top of that for one campus.
    *
    * This is the part Phase 4 actually reads, so the invariants here are *scoring* invariants,
    * not bookkeeping ones: §27 averages `riasec_compatibility` over every career linked to a
@@ -1089,19 +1209,21 @@ export class AcademicCatalogService {
     programId: string,
     careerId: string,
     ipAddress: string | null,
-  ): Promise<{ program: Program; careers: Career[] }> {
+    relationship: LinkRelationship = 'direct',
+  ): Promise<{ program: Program; careers: LinkedCareer[] }> {
     const program = await this.findProgram(programId);
+    const career = await this.requireLinkableCareer(careerId);
 
-    const career = await this.db.query.careers.findFirst({ where: eq(careers.id, careerId) });
+    // Already inherited is already linked. A second row would be hidden by the view rather than
+    // double-counted, but it would also be a link that silently comes back to life the day the
+    // canonical one is removed — so it is refused, naming where the link actually lives.
+    const inheritedFrom = await this.inheritedFrom(program, career.id);
 
-    // A soft-deleted **or archived** career cannot be newly linked: the mapping row would be
-    // inert on the day it was made, since §27 drops archived careers from the average. The
-    // two cases share one message — an admin does not need to know which it was, and a
-    // "deleted" vs "archived" distinction here would only leak the state of a row they can
-    // no longer see.
-    if (career?.deletedAt !== null || career.status !== 'active') {
+    if (inheritedFrom !== null) {
       throw ApiError.validation({
-        career_id: ['That career is not in the catalog, or has been archived.'],
+        career_id: [
+          `${career.title} already comes from ${inheritedFrom.name} (${inheritedFrom.code}), which every college offering it shares.`,
+        ],
       });
     }
 
@@ -1121,6 +1243,7 @@ export class AcademicCatalogService {
         id: uuid(),
         programId: program.id,
         careerId: career.id,
+        relationship,
       });
     } catch (error) {
       // The pre-check above is a *race*: two concurrent requests can both find nothing and
@@ -1140,7 +1263,7 @@ export class AcademicCatalogService {
       userId: user.id,
       targetType: 'program',
       targetId: program.id,
-      newValues: { career_id: career.id, career_title: career.title },
+      newValues: { career_id: career.id, career_title: career.title, relationship },
       ipAddress,
     });
 
@@ -1158,7 +1281,7 @@ export class AcademicCatalogService {
     programId: string,
     careerId: string,
     ipAddress: string | null,
-  ): Promise<{ program: Program; careers: Career[] }> {
+  ): Promise<{ program: Program; careers: LinkedCareer[] }> {
     const program = await this.findProgram(programId);
 
     const link = await this.db.query.programCareers.findFirst({
@@ -1169,6 +1292,18 @@ export class AcademicCatalogService {
     });
 
     if (!link) {
+      // An inherited link is real — it is just not this college's to remove. Say where it is,
+      // rather than a 404 that reads as "there is no such link" to an admin looking right at it.
+      const inheritedFrom = await this.inheritedFrom(program, careerId);
+
+      if (inheritedFrom !== null) {
+        throw ApiError.validation({
+          career_id: [
+            `This career comes from ${inheritedFrom.name} (${inheritedFrom.code}) and applies to every college offering it. Unlink it on the Canonical programs page.`,
+          ],
+        });
+      }
+
       throw ApiError.notFound('That career is not linked to this program.');
     }
 
@@ -1185,6 +1320,316 @@ export class AcademicCatalogService {
     });
 
     return { program, careers: await this.careersForProgram(program.id) };
+  }
+
+  // --- What a canonical program leads to (migration 0040) --------------------------------
+
+  /**
+   * The careers a canonical program leads to, **archived ones included** — the admin's view, for
+   * the same reason `careersForProgram` keeps them: archiving is not unlinking, and the chip stays,
+   * struck through, so restoring the career restores its vote.
+   */
+  async canonicalCareers(canonicalId: string): Promise<CanonicalLinkedCareer[]> {
+    return (await this.canonicalCareersFor([canonicalId])).get(canonicalId) ?? [];
+  }
+
+  /** `canonicalCareers` for a page of entries — one query per chunk, not one per row (§20). */
+  async canonicalCareersFor(
+    canonicalIds: string[],
+  ): Promise<Map<string, CanonicalLinkedCareer[]>> {
+    const mapping = new Map<string, CanonicalLinkedCareer[]>();
+
+    for (const chunk of chunkIds(canonicalIds)) {
+      const rows = await this.db
+        .select({
+          canonicalId: programCatalogCareers.programCatalogId,
+          relationship: programCatalogCareers.relationship,
+          career: careers,
+        })
+        .from(programCatalogCareers)
+        .innerJoin(careers, eq(programCatalogCareers.careerId, careers.id))
+        .where(and(inArray(programCatalogCareers.programCatalogId, chunk), isNull(careers.deletedAt)))
+        .orderBy(asc(careers.title));
+
+      for (const row of rows) {
+        const list = mapping.get(row.canonicalId) ?? [];
+        list.push({ ...row.career, relationship: row.relationship });
+        mapping.set(row.canonicalId, list);
+      }
+    }
+
+    return mapping;
+  }
+
+  /**
+   * The canonical programs that lead to a career — the Careers page's "programs that lead here",
+   * the same links read from the other side. Live entries only, by name.
+   */
+  async canonicalProgramsForCareer(careerId: string): Promise<ProgramCatalogEntry[]> {
+    await this.findCareer(careerId);
+
+    const rows = await this.db
+      .select({ entry: programCatalog })
+      .from(programCatalogCareers)
+      .innerJoin(programCatalog, eq(programCatalogCareers.programCatalogId, programCatalog.id))
+      .where(and(eq(programCatalogCareers.careerId, careerId), isNull(programCatalog.deletedAt)))
+      .orderBy(asc(programCatalog.name), asc(programCatalog.id));
+
+    return rows.map((row) => row.entry);
+  }
+
+  /**
+   * Link a career to a canonical program — **every college offering it now leads there**, and
+   * every student's program scores read it on their next generation.
+   *
+   * Any college-specific extra that duplicates the new link is deleted in the same act. The view
+   * would hide it anyway, but left in place it would be a dormant link that silently reappears on
+   * that one campus if the canonical link is ever removed — and "removed from BSCS" should mean
+   * removed from BSCS everywhere.
+   */
+  async attachCanonicalCareer(
+    user: User,
+    canonicalId: string,
+    careerId: string,
+    ipAddress: string | null,
+    relationship: LinkRelationship = 'direct',
+  ): Promise<{ entry: ProgramCatalogEntry; careers: CanonicalLinkedCareer[] }> {
+    const entry = await this.findCanonicalProgram(canonicalId);
+    const career = await this.requireLinkableCareer(careerId);
+
+    const duplicate = await this.db.query.programCatalogCareers.findFirst({
+      where: and(
+        eq(programCatalogCareers.programCatalogId, entry.id),
+        eq(programCatalogCareers.careerId, career.id),
+      ),
+    });
+
+    if (duplicate) {
+      throw ApiError.validation({
+        career_id: [`${career.title} is already linked to ${entry.name}.`],
+      });
+    }
+
+    try {
+      await this.db.insert(programCatalogCareers).values({
+        id: uuid(),
+        programCatalogId: entry.id,
+        careerId: career.id,
+        relationship,
+      });
+    } catch (error) {
+      // The same race `attachCareer` documents: the unique index is the real guarantee.
+      if (isUniqueViolation(error)) {
+        throw ApiError.validation({
+          career_id: [`${career.title} is already linked to ${entry.name}.`],
+        });
+      }
+
+      throw error;
+    }
+
+    const absorbed = await this.db
+      .delete(programCareers)
+      .where(
+        and(
+          eq(programCareers.careerId, career.id),
+          inArray(
+            programCareers.programId,
+            this.db
+              .select({ id: programs.id })
+              .from(programs)
+              .where(eq(programs.programCatalogId, entry.id)),
+          ),
+        ),
+      )
+      .returning({ id: programCareers.id });
+
+    await this.audit.write({
+      action: 'CANONICAL_PROGRAM_CAREER_LINKED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'program_catalog',
+      targetId: entry.id,
+      newValues: {
+        career_id: career.id,
+        career_title: career.title,
+        relationship,
+        college_extras_absorbed: absorbed.length,
+      },
+      ipAddress,
+    });
+
+    return { entry, careers: await this.canonicalCareers(entry.id) };
+  }
+
+  /** Unlink a career from a canonical program — from every offering of it at once. A real delete. */
+  async detachCanonicalCareer(
+    user: User,
+    canonicalId: string,
+    careerId: string,
+    ipAddress: string | null,
+  ): Promise<{ entry: ProgramCatalogEntry; careers: CanonicalLinkedCareer[] }> {
+    const entry = await this.findCanonicalProgram(canonicalId);
+
+    const removed = await this.db
+      .delete(programCatalogCareers)
+      .where(
+        and(
+          eq(programCatalogCareers.programCatalogId, entry.id),
+          eq(programCatalogCareers.careerId, careerId),
+        ),
+      )
+      .returning({ id: programCatalogCareers.id });
+
+    if (removed.length === 0) {
+      throw ApiError.notFound(`That career is not linked to ${entry.name}.`);
+    }
+
+    await this.audit.write({
+      action: 'CANONICAL_PROGRAM_CAREER_UNLINKED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'program_catalog',
+      targetId: entry.id,
+      oldValues: { career_id: careerId },
+      ipAddress,
+    });
+
+    return { entry, careers: await this.canonicalCareers(entry.id) };
+  }
+
+  /**
+   * Re-grade an existing canonical link (migration 0041) — every college offering of the program
+   * scores against the new weight on its next generation.
+   */
+  async setCanonicalCareerRelationship(
+    user: User,
+    canonicalId: string,
+    careerId: string,
+    relationship: LinkRelationship,
+    ipAddress: string | null,
+  ): Promise<{ entry: ProgramCatalogEntry; careers: CanonicalLinkedCareer[] }> {
+    const entry = await this.findCanonicalProgram(canonicalId);
+
+    const link = await this.db.query.programCatalogCareers.findFirst({
+      where: and(
+        eq(programCatalogCareers.programCatalogId, entry.id),
+        eq(programCatalogCareers.careerId, careerId),
+      ),
+    });
+
+    if (!link) {
+      throw ApiError.notFound(`That career is not linked to ${entry.name}.`);
+    }
+
+    await this.db
+      .update(programCatalogCareers)
+      .set({ relationship })
+      .where(eq(programCatalogCareers.id, link.id));
+
+    await this.audit.write({
+      action: 'CANONICAL_PROGRAM_CAREER_REGRADED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'program_catalog',
+      targetId: entry.id,
+      oldValues: { career_id: careerId, relationship: link.relationship },
+      newValues: { career_id: careerId, relationship },
+      ipAddress,
+    });
+
+    return { entry, careers: await this.canonicalCareers(entry.id) };
+  }
+
+  /**
+   * Re-grade one college's own extra link. An inherited link is re-graded on its canonical program,
+   * for every college at once — the same rule `detachCareer` applies to removing one.
+   */
+  async setCareerRelationship(
+    user: User,
+    programId: string,
+    careerId: string,
+    relationship: LinkRelationship,
+    ipAddress: string | null,
+  ): Promise<{ program: Program; careers: LinkedCareer[] }> {
+    const program = await this.findProgram(programId);
+
+    const link = await this.db.query.programCareers.findFirst({
+      where: and(eq(programCareers.programId, program.id), eq(programCareers.careerId, careerId)),
+    });
+
+    if (!link) {
+      const inheritedFrom = await this.inheritedFrom(program, careerId);
+
+      if (inheritedFrom !== null) {
+        throw ApiError.validation({
+          relationship: [
+            `This career comes from ${inheritedFrom.name} (${inheritedFrom.code}). Change how strongly it applies on the Canonical programs page.`,
+          ],
+        });
+      }
+
+      throw ApiError.notFound('That career is not linked to this program.');
+    }
+
+    await this.db.update(programCareers).set({ relationship }).where(eq(programCareers.id, link.id));
+
+    await this.audit.write({
+      action: 'PROGRAM_CAREER_REGRADED',
+      module: MODULE,
+      userId: user.id,
+      targetType: 'program',
+      targetId: program.id,
+      oldValues: { career_id: careerId, relationship: link.relationship },
+      newValues: { career_id: careerId, relationship },
+      ipAddress,
+    });
+
+    return { program, careers: await this.careersForProgram(program.id) };
+  }
+
+  /**
+   * A career that may be newly linked: live **and active**. A soft-deleted or archived career
+   * would make a link that is inert on the day it is made, since §27 drops archived careers from
+   * the average. The two cases share one message — an admin does not need to know which it was,
+   * and a "deleted" vs "archived" distinction here would only leak the state of a row they can no
+   * longer see.
+   */
+  private async requireLinkableCareer(careerId: string): Promise<Career> {
+    const career = await this.db.query.careers.findFirst({ where: eq(careers.id, careerId) });
+
+    if (career?.deletedAt !== null || career.status !== 'active') {
+      throw ApiError.validation({
+        career_id: ['That career is not in the catalog, or has been archived.'],
+      });
+    }
+
+    return career;
+  }
+
+  /** The live canonical entry an offering inherits `careerId` from, or null if it does not. */
+  private async inheritedFrom(
+    program: Program,
+    careerId: string,
+  ): Promise<ProgramCatalogEntry | null> {
+    if (program.programCatalogId === null) {
+      return null;
+    }
+
+    const rows = await this.db
+      .select({ entry: programCatalog })
+      .from(programCatalogCareers)
+      .innerJoin(programCatalog, eq(programCatalogCareers.programCatalogId, programCatalog.id))
+      .where(
+        and(
+          eq(programCatalogCareers.programCatalogId, program.programCatalogId),
+          eq(programCatalogCareers.careerId, careerId),
+          isNull(programCatalog.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    return rows[0]?.entry ?? null;
   }
 
   // --- The Phase 4 read path -----------------------------------------------------------
@@ -1357,20 +1802,20 @@ export class AcademicCatalogService {
    * A program whose careers are all archived is therefore indistinguishable from an unmapped
    * one, and takes §27's neutral 50 — rather than an average over nothing.
    */
-  async scorableCareersFor(programId: string): Promise<Career[]> {
+  async scorableCareersFor(programId: string): Promise<ScorableCareer[]> {
     const rows = await this.db
-      .select({ career: careers })
-      .from(programCareers)
-      .innerJoin(careers, eq(programCareers.careerId, careers.id))
+      .select({ career: careers, relationship: programCareerLinks.relationship })
+      .from(programCareerLinks)
+      .innerJoin(careers, eq(programCareerLinks.careerId, careers.id))
       .where(
         and(
-          eq(programCareers.programId, programId),
+          eq(programCareerLinks.programId, programId),
           eq(careers.status, 'active'),
           isNull(careers.deletedAt),
         ),
       );
 
-    return rows.map((row) => row.career);
+    return rows.map((row) => ({ ...row.career, relationship: row.relationship }));
   }
 
   // --- Address & employment outlook (migrations 0012, 0013) ----------------------------
@@ -1556,7 +2001,7 @@ export class AcademicCatalogService {
    * the career brings its vote back rather than asking the admin to re-link it by hand.
    * `scorableCareersFor()` is the one that drops them.
    */
-  private async careersForProgram(programId: string): Promise<Career[]> {
+  private async careersForProgram(programId: string): Promise<LinkedCareer[]> {
     const mapping = await this.careersFor([programId]);
 
     return mapping.get(programId) ?? [];
@@ -1577,9 +2022,12 @@ export class AcademicCatalogService {
    *
    * Same rule as the single-program version: linked, live, and `active`. Archiving a career is
    * "stop recommending this", so it stops voting on the RIASEC average of every program it touches.
+   *
+   * "Linked" means the `program_career_links` view (migration 0040): the careers the offering's
+   * canonical program leads to plus the offering's own extras, each career once.
    */
-  async scorableCareersForMany(programIds: string[]): Promise<Map<string, Career[]>> {
-    const mapping = new Map<string, Career[]>();
+  async scorableCareersForMany(programIds: string[]): Promise<Map<string, ScorableCareer[]>> {
+    const mapping = new Map<string, ScorableCareer[]>();
 
     if (programIds.length === 0) {
       return mapping;
@@ -1600,12 +2048,16 @@ export class AcademicCatalogService {
      */
     for (const chunk of chunkIds(programIds)) {
       const rows = await this.db
-        .select({ programId: programCareers.programId, career: careers })
-        .from(programCareers)
-        .innerJoin(careers, eq(programCareers.careerId, careers.id))
+        .select({
+          programId: programCareerLinks.programId,
+          relationship: programCareerLinks.relationship,
+          career: careers,
+        })
+        .from(programCareerLinks)
+        .innerJoin(careers, eq(programCareerLinks.careerId, careers.id))
         .where(
           and(
-            inArray(programCareers.programId, chunk),
+            inArray(programCareerLinks.programId, chunk),
             eq(careers.status, 'active'),
             isNull(careers.deletedAt),
           ),
@@ -1613,7 +2065,7 @@ export class AcademicCatalogService {
 
       for (const row of rows) {
         const list = mapping.get(row.programId) ?? [];
-        list.push(row.career);
+        list.push({ ...row.career, relationship: row.relationship });
         mapping.set(row.programId, list);
       }
     }
@@ -1621,9 +2073,12 @@ export class AcademicCatalogService {
     return mapping;
   }
 
-  /** One query for N programs — the nested college view would otherwise be N+1. */
-  private async careersFor(programIds: string[]): Promise<Map<string, Career[]>> {
-    const mapping = new Map<string, Career[]>();
+  /**
+   * One query for N programs — the nested college view would otherwise be N+1. Each career says
+   * whether it is inherited from the canonical program or is this college's own extra.
+   */
+  private async careersFor(programIds: string[]): Promise<Map<string, LinkedCareer[]>> {
+    const mapping = new Map<string, LinkedCareer[]>();
 
     if (programIds.length === 0) {
       return mapping;
@@ -1634,15 +2089,24 @@ export class AcademicCatalogService {
     // statement shape that took recommendations down. Chunked so it cannot become the next one.
     for (const chunk of chunkIds(programIds)) {
       const rows = await this.db
-        .select({ programId: programCareers.programId, career: careers })
-        .from(programCareers)
-        .innerJoin(careers, eq(programCareers.careerId, careers.id))
-        .where(and(inArray(programCareers.programId, chunk), isNull(careers.deletedAt)))
+        .select({
+          programId: programCareerLinks.programId,
+          source: programCareerLinks.source,
+          relationship: programCareerLinks.relationship,
+          career: careers,
+        })
+        .from(programCareerLinks)
+        .innerJoin(careers, eq(programCareerLinks.careerId, careers.id))
+        .where(and(inArray(programCareerLinks.programId, chunk), isNull(careers.deletedAt)))
         .orderBy(asc(careers.title));
 
       for (const row of rows) {
         const list = mapping.get(row.programId) ?? [];
-        list.push(row.career);
+        list.push({
+          ...row.career,
+          inherited: row.source === 'canonical',
+          relationship: row.relationship,
+        });
         mapping.set(row.programId, list);
       }
     }

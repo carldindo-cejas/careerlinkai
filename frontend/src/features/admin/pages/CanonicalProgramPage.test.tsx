@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createQueryClient } from '@/app/queryClient';
 import { CanonicalProgramPage } from '@/features/admin/pages/CanonicalProgramPage';
 import { catalogApi } from '@/services/catalogApi';
-import type { CanonicalProgram } from '@/types/catalog';
+import type { CanonicalProgram, Career } from '@/types/catalog';
 
 vi.mock('@/services/catalogApi');
 
@@ -30,7 +30,9 @@ function canonical(id: string, code: string, name: string, offerings = 0): Canon
     name,
     description: null,
     status: 'active',
+    recommended_strand: null,
     offerings_count: offerings,
+    careers: [],
     created_at: null,
     updated_at: null,
   };
@@ -165,5 +167,136 @@ describe('CanonicalProgramPage — merge target picker', () => {
     await openMergePicker(user);
 
     expect(await screen.findByText(/showing the first 20/i)).toBeInTheDocument();
+  });
+});
+
+/**
+ * What a canonical program leads to, and its default strand (backend migration 0040) — edited here
+ * once for every college that offers the program.
+ */
+describe('CanonicalProgramPage — careers and strand', () => {
+  const ANALYST: Career = {
+    id: 'c-1',
+    title: 'Data Analyst',
+    description: null,
+    salary_min: null,
+    salary_max: null,
+    employment_outlook_id: null,
+    employment_outlook: null,
+    typical_riasec_code: 'ICE',
+    status: 'active',
+    created_at: null,
+    updated_at: null,
+  };
+
+  const MAPPED: CanonicalProgram = {
+    ...canonical('p-1', 'BSCS', 'BS Computer Science', 3),
+    recommended_strand: 'Academic',
+    careers: [ANALYST],
+  };
+
+  beforeEach(() => {
+    vi.mocked(catalogApi.listCanonicalPrograms).mockReset();
+    vi.mocked(catalogApi.listCareers).mockReset();
+    vi.mocked(catalogApi.attachCanonicalCareer).mockReset();
+    vi.mocked(catalogApi.detachCanonicalCareer).mockReset();
+    vi.mocked(catalogApi.updateCanonicalProgram).mockReset();
+
+    vi.mocked(catalogApi.listCareers).mockResolvedValue({
+      items: [ANALYST, { ...ANALYST, id: 'c-2', title: 'Web Developer', typical_riasec_code: 'IAR' }],
+      pagination: { current_page: 1, per_page: 20, total: 2, last_page: 1 },
+    });
+  });
+
+  /** An unmapped entry scores every one of its offerings at a flat neutral — findable by scanning. */
+  it('flags an entry that leads to no career', async () => {
+    vi.mocked(catalogApi.listCanonicalPrograms).mockResolvedValue(
+      listPage([canonical('p-9', 'BSX', 'BS Unmapped', 2)]),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText(/no careers — not matched/i)).toBeInTheDocument();
+  });
+
+  it('shows how many careers an entry leads to, and its strand', async () => {
+    vi.mocked(catalogApi.listCanonicalPrograms).mockResolvedValue(listPage([MAPPED]));
+
+    renderPage();
+
+    expect(await screen.findByText(/leads to 1 career · Academic/)).toBeInTheDocument();
+    expect(screen.queryByText(/no careers — not matched/i)).not.toBeInTheDocument();
+  });
+
+  it('links a career to the canonical program', async () => {
+    vi.mocked(catalogApi.listCanonicalPrograms).mockResolvedValue(listPage([MAPPED]));
+    vi.mocked(catalogApi.attachCanonicalCareer).mockResolvedValue(MAPPED);
+
+    const user = renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /edit careers bscs leads to/i }));
+    expect(screen.getByText(/applies to all 3 college offerings/i)).toBeInTheDocument();
+
+    await user.click(await screen.findByLabelText(/link a career to bscs/i));
+    await user.click(await screen.findByRole('option', { name: /web developer/i }));
+    await user.click(screen.getByRole('button', { name: /^link$/i }));
+
+    await waitFor(() => {
+      expect(catalogApi.attachCanonicalCareer).toHaveBeenCalledWith('p-1', 'c-2', 'direct');
+    });
+  });
+
+  it('unlinks a career from the canonical program', async () => {
+    vi.mocked(catalogApi.listCanonicalPrograms).mockResolvedValue(listPage([MAPPED]));
+    vi.mocked(catalogApi.detachCanonicalCareer).mockResolvedValue({ ...MAPPED, careers: [] });
+
+    const user = renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /edit careers bscs leads to/i }));
+    await user.click(screen.getByRole('button', { name: /unlink data analyst from bscs/i }));
+
+    await waitFor(() => {
+      expect(catalogApi.detachCanonicalCareer).toHaveBeenCalledWith('p-1', 'c-1');
+    });
+  });
+
+  /**
+   * The server writes a changed strand to every offering, and a campus may deliberately differ — so
+   * a rename must not resend the strand at all.
+   */
+  it('sends the strand only when it was changed', async () => {
+    vi.mocked(catalogApi.listCanonicalPrograms).mockResolvedValue(listPage([MAPPED]));
+    vi.mocked(catalogApi.updateCanonicalProgram).mockResolvedValue(MAPPED);
+
+    const user = renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /^edit bscs$/i }));
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(catalogApi.updateCanonicalProgram).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(catalogApi.updateCanonicalProgram).mock.calls[0]![1]).not.toHaveProperty(
+      'recommended_strand',
+    );
+  });
+
+  it('warns that a changed strand applies to every offering, then sends it', async () => {
+    vi.mocked(catalogApi.listCanonicalPrograms).mockResolvedValue(listPage([MAPPED]));
+    vi.mocked(catalogApi.updateCanonicalProgram).mockResolvedValue(MAPPED);
+
+    const user = renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /^edit bscs$/i }));
+    await user.selectOptions(screen.getByLabelText(/recommended strand/i), 'Technical-Professional');
+
+    expect(screen.getByText(/applies this strand to all 3 college offerings/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(catalogApi.updateCanonicalProgram).toHaveBeenCalledWith(
+        'p-1',
+        expect.objectContaining({ recommended_strand: 'Technical-Professional' }),
+      );
+    });
   });
 });

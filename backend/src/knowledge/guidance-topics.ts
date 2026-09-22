@@ -1,24 +1,58 @@
 import type { GuidanceEntry } from '@/knowledge/guidance';
+import { DEFAULT_FORMULA, type ScoringFormula } from '@/lib/scoring-formula';
 
 /**
  * Guidance about the student's own results: how the score is built, what RIASEC and SCCT mean, and
  * how strands are treated (AI-COVERAGE-PLAN.md Phase 3, topics 1–4).
  *
  * Every entry is one retrievable passage — kept under the chunker's ~1,680-character ceiling so a
- * topic is never split across two chunks. The numbers in the scoring entries are the constants in
- * `lib/recommendation.ts`; if those change, change these too (a test pins the weights).
+ * topic is never split across two chunks.
+ *
+ * ## The scoring passage is generated, not written (2026-09-21)
+ *
+ * It used to state the weights as literal text, with a comment asking whoever edited
+ * `lib/recommendation.ts` to remember to edit it too, and a test pinning the two together. That
+ * arrangement stopped being possible the moment an **administrator** could re-weight the formula:
+ * there is no deploy to remember anything during, and a passage cited to a student as the school's
+ * own guidance would have gone on quoting 60% at a deployment scoring on 45%.
+ *
+ * So `scoringGuide` takes the formula and writes the sentence. `syncGuidanceKnowledge` passes the
+ * stored one, and a saved formula asks for a re-sync (`PUT /admin/recommendation-formula`), so the
+ * indexed passage follows the arithmetic rather than trailing it.
  */
-export const RESULTS_GUIDANCE: GuidanceEntry[] = [
-  {
+
+/** A weight as a percentage, with a decimal only where one is needed: `0.6` → `60%`. */
+function percent(weight: number): string {
+  return `${Math.round(weight * 1000) / 10}%`;
+}
+
+/** A 0–100 neutral value as it reads in a sentence — `70`, not `70.0`. */
+function point(value: number): string {
+  return String(Math.round(value * 10) / 10);
+}
+
+/**
+ * How a match score is built, in this deployment's own weights.
+ *
+ * The prose around the numbers is fixed, and deliberately so: it explains *what each component
+ * means* and why a program can rank differently from the careers it leads to, and neither of those
+ * changes when the weights do.
+ */
+export function scoringGuide(formula: ScoringFormula = DEFAULT_FORMULA): GuidanceEntry {
+  return {
     slug: 'how-match-scores-work',
     title: 'Guide: How your match score is built',
     body: `How CareerLinkAI builds a match score. Every score on your recommendations page is arithmetic, not an AI opinion, and the same answers always give the same score.
-A career match adds up three parts: how well your RIASEC interests fit the career's typical interest code (60%), your SCCT career confidence (30%), and a fixed preference term (10%) that is the same for everyone.
-A program match adds up five parts: RIASEC fit averaged over all the careers the program leads to (35%), career alignment with your own recommended careers (25%), SCCT career confidence (20%), academic fit from your Math, Science and English grades (10%), and strand alignment (10%).
+A career match adds up three parts: how well your RIASEC interests fit the career's typical interest code (${percent(formula.career.riasecCompatibility)}), your SCCT career confidence (${percent(formula.career.careerConfidence)}), and a fixed preference term (${percent(formula.career.studentPreference)}) that is the same for everyone.
+A program match adds up five parts: RIASEC fit averaged over all the careers the program leads to (${percent(formula.program.riasecCompatibility)}), career alignment with your own recommended careers (${percent(formula.program.careerAlignment)}), SCCT career confidence (${percent(formula.program.careerConfidence)}), academic fit from your Math, Science and English grades (${percent(formula.program.academicFit)}), and strand alignment (${percent(formula.program.strandAlignment)}).
 Career alignment is the part that ties the two lists together: it scores the best careers a program leads to on exactly the same scale as your career list, so a program that leads to your top careers is pulled up even when its strand or its other careers do not suit you.
 That is why a program can still rank differently from the careers it leads to: your grades and your strand add points that interests alone do not. It is also why two programs with the same name rank the same at different colleges.
-A blank field is never a penalty. With no grades, academic fit counts as a neutral 60. With no strand, strand alignment counts as 70. Filling in your profile makes the program scores more precise.`,
-  },
+A blank field is never a penalty. With no grades, academic fit counts as a neutral ${point(formula.neutrals.academicUnknown)}. With no strand, strand alignment counts as ${point(formula.neutrals.strandUnknown)}. Filling in your profile makes the program scores more precise.`,
+  };
+}
+
+/** Every results entry but the scoring one, which is generated per formula above. */
+const FIXED_RESULTS_GUIDANCE: GuidanceEntry[] = [
   {
     slug: 'riasec-overview',
     title: 'Guide: What RIASEC and your Holland code mean',
@@ -75,20 +109,56 @@ Typical activities: bookkeeping and accounting, keeping records, checking for er
 Careers in this catalog that start with C include Certified Public Accountant, Financial Analyst, Internal Auditor, Tax Advisory Specialist, Business Systems Analyst, Database Administrator, Systems Administrator, IT Support Specialist, Quality Assurance Engineer, Quantity Surveyor, Supply Chain Analyst, Bank Operations Officer, Office Administrator, Executive Assistant and Regulatory Affairs Specialist.
 Programs that lead there include BS Accountancy, BS Accounting Information Systems, BS Information Systems, BS Information Technology, BS Office Administration and BS Business Administration.`,
   },
-  {
+];
+
+/**
+ * What SCCT measures, and how loudly it counts — the two percentages are the live composite
+ * weights, for the same reason `scoringGuide`'s are.
+ */
+export function scctGuide(formula: ScoringFormula = DEFAULT_FORMULA): GuidanceEntry {
+  return {
     slug: 'scct-overview',
     title: 'Guide: What SCCT career confidence means',
     body: `SCCT is Social Cognitive Career Theory. The SCCT assessment measures three beliefs that research links to career choices: Self-Efficacy (believing you can succeed at the tasks a career needs), Outcome Expectations (believing that effort will lead to good results), and Goal Orientation (intending to pursue a career goal).
-Each is scored from 0 to 100, and together they make your career confidence index, banded from Very Low to Very High. The index counts for 30% of every career match and 20% of every program match.
+Each is scored from 0 to 100, and together they make your career confidence index, banded from Very Low to Very High. The index counts for ${percent(formula.career.careerConfidence)} of every career match and ${percent(formula.program.careerConfidence)} of every program match.
 A low score is not a verdict on your ability. Confidence grows from experience: trying a subject or activity and succeeding at small steps, watching someone like you succeed, encouragement from teachers and family, and learning to manage worry. Joining a club, a short course, job shadowing or talking with someone who works in the field are practical ways to build it.
 If your interests are high but your confidence is low for a field, that is worth discussing with your guidance counselor.`,
-  },
-  {
+  };
+}
+
+/**
+ * What a strand does to a program score.
+ *
+ * Four of this passage's numbers are configurable and all four are stated — including the mismatch
+ * penalty, which is the one a student is most likely to want to argue with, and which they cannot
+ * argue with if they are not told what it is.
+ */
+export function strandGuide(formula: ScoringFormula = DEFAULT_FORMULA): GuidanceEntry {
+  return {
     slug: 'strands-and-programs',
     title: 'Guide: Senior high school strands and college programs',
     body: `CareerLinkAI records your senior high school strand as Academic or Technical-Professional, matching the two tracks of the strengthened senior high school curriculum. Some college programs list a recommended strand.
-How it affects a program score: strand alignment is 100 when your strand matches the program's recommended strand, 40 when it does not, and 70 when your strand or the program's is unknown. A program with no recommended strand counts as aligned. Strand alignment is 10% of a program score.
+How it affects a program score: strand alignment is ${point(formula.neutrals.strandAligned)} when your strand matches the program's recommended strand, ${point(formula.neutrals.strandMismatch)} when it does not, and ${point(formula.neutrals.strandUnknown)} when your strand or the program's is unknown. A program with no recommended strand counts as aligned. Strand alignment is ${percent(formula.program.strandAlignment)} of a program score.
 A mismatch is advice, not a bar. Colleges generally admit students from any senior high school track, although some may ask for bridging subjects or look closely at your grades in Math and Science for technical programs.
 If a program you want does not match your strand, ask your guidance counselor and the college's admissions office what they require. Update your strand on your profile if it is wrong, then rebuild your recommendations.`,
-  },
-];
+  };
+}
+
+/**
+ * The results topics, in their shipped order, written against one formula.
+ *
+ * Three of the ten passages state numbers the engine multiplies by; the other seven describe the
+ * RIASEC types and never change. Order is fixed because `guidanceDocuments()` syncs in a stable
+ * order and a reshuffle would rewrite rows that did not change.
+ */
+export function resultsGuidance(formula: ScoringFormula = DEFAULT_FORMULA): GuidanceEntry[] {
+  return [scoringGuide(formula), ...FIXED_RESULTS_GUIDANCE, scctGuide(formula), strandGuide(formula)];
+}
+
+/**
+ * The corpus as the **shipped** formula writes it.
+ *
+ * Kept for the callers that mean "what this release says" rather than "what this deployment is
+ * configured to say" — the corpus test, and anything reading the entries without a database.
+ */
+export const RESULTS_GUIDANCE: GuidanceEntry[] = resultsGuidance();

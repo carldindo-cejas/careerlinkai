@@ -90,6 +90,18 @@ export const chatApi = {
     return unwrap(httpClient.post<ApiSuccess<ChatTurn>>('/student/chat', { message }));
   },
 
+  /**
+   * "Explain more" on a recommendation card, answered as a chat turn (2026-09-22). Only the id is
+   * sent — the server writes the student's bubble and runs the §30 explanation for that match.
+   */
+  explain(recommendationId: string): Promise<ChatTurn> {
+    return unwrap(
+      httpClient.post<ApiSuccess<ChatTurn>>('/student/chat/explain', {
+        recommendation_id: recommendationId,
+      }),
+    );
+  },
+
   /** The Student Brief and starter questions (AI-COVERAGE-PLAN.md Phase 4). */
   getBrief(): Promise<StudentBrief> {
     return unwrap(httpClient.get<ApiSuccess<StudentBrief>>('/student/brief'));

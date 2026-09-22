@@ -1,6 +1,13 @@
 import { httpClient, unwrap } from '@/services/httpClient';
 import type { ApiSuccess } from '@/types/api';
 import type { Paginated } from '@/types/class';
+import type { ScoringFormula, ScoringFormulaResponse } from '@/types/formula';
+import type {
+  PreviewInput,
+  PreviewResult,
+  RecommendationFreshness,
+  RecomputePage,
+} from '@/types/matching';
 import type {
   AdminDashboard,
   AuditFilterOptions,
@@ -111,3 +118,67 @@ export const platformApi = {
 export interface AppSettings {
   counselor_signup_enabled: boolean;
 }
+
+/**
+ * The §27 match formula (2026-09-21) — admin-only, like the flags above it.
+ *
+ * It lives on this client rather than on `recommendationApi` because it is an *operator*
+ * configuration: the caller is the administration section of the admin shell, not the
+ * recommendation screens a student reads. The endpoints are served by the Recommendation module,
+ * which owns the arithmetic they configure.
+ */
+export const formulaApi = {
+  get(): Promise<ScoringFormulaResponse> {
+    return unwrap(
+      httpClient.get<ApiSuccess<ScoringFormulaResponse>>('/admin/recommendation-formula'),
+    );
+  },
+
+  /**
+   * Replace it, whole.
+   *
+   * `PUT`, not `PATCH`, and that follows from the data rather than from taste: the weights in a
+   * composite are not independent, and a request that changed one of them would leave the set
+   * summing to something other than 1 — which silently rescales every score in the system.
+   */
+  save(formula: ScoringFormula, currentPassword: string): Promise<ScoringFormula> {
+    return unwrap(
+      httpClient.put<ApiSuccess<ScoringFormula>>('/admin/recommendation-formula', {
+        ...formula,
+        current_password: currentPassword,
+      }),
+    );
+  },
+
+  reset(currentPassword: string): Promise<ScoringFormula> {
+    return unwrap(
+      httpClient.post<ApiSuccess<ScoringFormula>>('/admin/recommendation-formula/reset', {
+        current_password: currentPassword,
+      }),
+    );
+  },
+};
+
+/**
+ * Keeping recommendation sets current (backend 2026-09-22) — the admin Matching page.
+ *
+ * `recompute` handles one small page per call (the Worker's Free-plan subrequest budget allows about
+ * three students a request); the page's hook calls it again until nothing is left.
+ */
+export const matchingApi = {
+  freshness(): Promise<RecommendationFreshness> {
+    return unwrap(
+      httpClient.get<ApiSuccess<RecommendationFreshness>>('/admin/recommendations/freshness'),
+    );
+  },
+
+  recompute(): Promise<RecomputePage> {
+    return unwrap(httpClient.post<ApiSuccess<RecomputePage>>('/admin/recommendations/recompute', {}));
+  },
+
+  preview(input: PreviewInput): Promise<PreviewResult> {
+    return unwrap(
+      httpClient.post<ApiSuccess<PreviewResult>>('/admin/recommendations/preview', input),
+    );
+  },
+};

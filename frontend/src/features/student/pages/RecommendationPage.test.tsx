@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createQueryClient } from '@/app/queryClient';
 import { RecommendationPage } from '@/features/student/pages/RecommendationPage';
 import { catalogLinksApi, chatApi, recommendationApi } from '@/services/recommendationApi';
+import { useChatPanelStore } from '@/stores/chatPanelStore';
 import { useToastStore } from '@/stores/toastStore';
 import { ApiRequestError } from '@/types/api';
 import type { Career, College, Program } from '@/types/catalog';
@@ -133,6 +134,8 @@ function renderPage() {
 
 describe('RecommendationPage', () => {
   beforeEach(() => {
+    // The drawer's open flag is module state; a test that pressed "Explain more" leaves it open.
+    useChatPanelStore.setState({ open: false });
     // `mockReset` rather than `mockResolvedValue` alone: without it the call *counts* accumulate
     // across the file, so any "fetched exactly once" assertion silently measures every test that
     // ran before it instead of the one it is in.
@@ -195,6 +198,59 @@ describe('RecommendationPage', () => {
     await user.click(toggle);
 
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  /**
+   * "Explain more" hands the match to the assistant (2026-09-22): the card sends only its id, the
+   * chat shows a short "Explain more about …" bubble, and the answer lands in the conversation
+   * rather than on the card.
+   */
+  it('sends "Explain more" to the chat instead of printing it on the card', async () => {
+    const user = userEvent.setup();
+    vi.mocked(chatApi.explain).mockReset().mockResolvedValue({
+      conversation_id: 'conversation-1',
+      question: {
+        id: 'message-q',
+        role: 'user',
+        content: 'Explain more about Career 1',
+        ai_request_id: null,
+        sources: [],
+        feedback: null,
+        knowledge_request: null,
+        created_at: '2026-09-22T00:00:00Z',
+      },
+      answer: {
+        id: 'message-a',
+        role: 'assistant',
+        content: 'Career 1 suits your investigative streak.',
+        ai_request_id: null,
+        sources: [],
+        feedback: null,
+        knowledge_request: null,
+        created_at: '2026-09-22T00:00:01Z',
+      },
+      failure: null,
+    });
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /^Career 1 / }));
+    await user.click(screen.getByRole('button', { name: 'Explain more about Career 1' }));
+
+    expect(chatApi.explain).toHaveBeenCalledWith('rec-career-1');
+
+    // jsdom applies no media queries, so the desktop column and the drawer it opened both render;
+    // the first log is the column.
+    const [log] = await screen.findAllByRole('log', { name: 'Conversation' });
+
+    expect(await within(log!).findByText('Explain more about Career 1')).toBeInTheDocument();
+    expect(
+      await within(log!).findByText('Career 1 suits your investigative streak.'),
+    ).toBeInTheDocument();
+    // The card keeps its button; the paragraph is not printed onto it.
+    const careers = screen.getByRole('heading', { level: 2, name: 'Careers' }).closest('section')!;
+
+    expect(within(careers).queryByText('Career 1 suits your investigative streak.')).toBeNull();
+    expect(within(careers).getByRole('button', { name: 'Explain more about Career 1' })).toBeInTheDocument();
   });
 
   /** Three by default, five on request — never the full persisted ten. */
@@ -312,6 +368,7 @@ describe('RecommendationPage', () => {
         name: 'BS Computer Science',
         description: null,
         status: 'active',
+        recommended_strand: null,
         created_at: null,
         updated_at: null,
       },

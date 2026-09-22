@@ -336,6 +336,32 @@ export const createVersionSchema = z
 export type CreateVersionInput = z.infer<typeof createVersionSchema>;
 
 /**
+ * The Scoring panel's save. Shape only — whether the weights sum to 100%, name real dimensions and
+ * the bands tile 0–100 depends on the version, so the Service checks that (`compositeConfigErrors`),
+ * and publish re-checks it with the same function.
+ *
+ * Weights are fractions (0.4), as stored; the panel's percentages are a display concern.
+ */
+export const updateScoringConfigSchema = z
+  .object({
+    composite_weights: z.record(z.string().trim().min(1).max(20), z.number()),
+    composite_ranges: z
+      .array(
+        z
+          .object({
+            min: z.number().min(0).max(100),
+            max: z.number().min(0).max(100),
+            label: z.string().max(80),
+          })
+          .strict(),
+      )
+      .max(10),
+  })
+  .strict();
+
+export type UpdateScoringConfigInput = z.infer<typeof updateScoringConfigSchema>;
+
+/**
  * The answer set — **one declaration, read by both write paths, because they had drifted.**
  *
  * The add path capped nothing while the update path capped the array at 20, so bulk-add accepted an
